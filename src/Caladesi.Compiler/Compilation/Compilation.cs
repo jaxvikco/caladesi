@@ -299,5 +299,9 @@ public sealed partial class Compilation
         return result.ToImmutableArray();
     }
 
+    /// <summary>Emits the assembly (and optionally a portable PDB). Fails without writing when there are errors.</summary>
+    public Emit.EmitResult Emit(Stream peStream, Stream? pdbStream = null, string? pdbFileName = null) =>
+        new Emit.EmitModule(this).Emit(peStream, pdbStream, pdbFileName);
+
     public bool HasErrors => GetDiagnostics().Any(d => d.EffectiveSeverity == DiagnosticSeverity.Error);
 }
