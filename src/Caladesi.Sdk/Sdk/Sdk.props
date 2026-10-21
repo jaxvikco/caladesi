@@ -1,0 +1,5 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Caladesi.Sdk: Microsoft.NET.Sdk plus the Caladesi language. -->
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+  <Import Project="$(MSBuildThisFileDirectory)..\targets\Caladesi.props" />
+</Project>

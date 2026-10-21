@@ -1,0 +1,1 @@
+Waiting for the compiler's -testentry support: the project builds, but calac does not yet emit the Microsoft.Testing.Platform entry point / self-registered MSTest extensions, so `dotnet test` fails with "Entry point not found". Delete this file once -testentry is implemented.

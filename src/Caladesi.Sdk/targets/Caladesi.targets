@@ -1,0 +1,6 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Imported after Microsoft.NET.Sdk's targets (and Caladesi.LanguageTargets.targets). -->
+
+  <!-- Implicit usings would generate C# 'global using' lines into an .cala file. -->
+  <Target Name="GenerateGlobalUsings" />
+</Project>

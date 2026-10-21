@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Packs the Caladesi.Sdk MSBuild SDK. Not built on its own: eng/pack.sh first publishes calac and the task assembly and
+    passes their directories in (CalacPublishDir, CaladesiTasksDir).
+  -->
+  <PropertyGroup>
+    <PackageId>Caladesi.Sdk</PackageId>
+    <Description>MSBuild SDK for the Caladesi language (.calaproj). Includes the calac compiler.</Description>
+    <PackageType>MSBuildSdk</PackageType>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <IncludeSymbols>false</IncludeSymbols>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <DevelopmentDependency>true</DevelopmentDependency>
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <NoWarn>$(NoWarn);NU5128;NU5100;NU5105</NoWarn>
+    <CalacPublishDir Condition="'$(CalacPublishDir)' == ''">$(CaladesiRepoRoot)artifacts/pack-obj/calac/</CalacPublishDir>
+    <CaladesiTasksDir Condition="'$(CaladesiTasksDir)' == ''">$(CaladesiRepoRoot)artifacts/pack-obj/tasks/</CaladesiTasksDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="Sdk/**" Pack="true" PackagePath="Sdk/" />
+    <None Include="targets/**" Pack="true" PackagePath="targets/" />
+    <None Include="$(CaladesiTasksDir)Caladesi.Build.Tasks.dll" Pack="true" PackagePath="tasks/net10.0/" />
+    <None Include="$(CalacPublishDir)**" Pack="true" PackagePath="tools/net10.0/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

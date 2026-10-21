@@ -1,0 +1,15 @@
+function add(a: int, b: int): int {
+  return a + b;
+}
+
+function half(x: double): double {
+  return x / 2;
+}
+
+const sum = add(2, 3) * 4;
+Console.WriteLine(sum);
+Console.WriteLine(7 / 2);
+Console.WriteLine(7.0 / 2);
+Console.WriteLine(half(5));
+Console.WriteLine(2 ** 10);
+Console.WriteLine(10 % 3);

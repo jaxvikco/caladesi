@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Caladesi.Build.Tasks</RootNamespace>
+    <!-- MSBuild task assembly: loaded into MSBuild, exempt from AOT/trim rules. -->
+    <!-- Compile-only reference (never shipped); the host MSBuild provides the real assembly. -->
+    <NoWarn>$(NoWarn);NU1903</NoWarn>
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Build.Utilities.Core" PrivateAssets="all" ExcludeAssets="runtime" />
+  </ItemGroup>
+</Project>

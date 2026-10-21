@@ -1,0 +1,5 @@
+import { Calculator } from "MyLib";
+
+Console.WriteLine(Calculator.square(7));
+const calc = new Calculator();
+Console.WriteLine(calc.add(2, 3));

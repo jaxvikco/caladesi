@@ -1,0 +1,26 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <CaladesiSdkRoot>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', '..'))</CaladesiSdkRoot>
+    <CaladesiCompilerPath Condition="'$(CaladesiCompilerPath)' == ''">$(CaladesiSdkRoot)tools/net10.0/calac.dll</CaladesiCompilerPath>
+    <CaladesiTasksAssembly Condition="'$(CaladesiTasksAssembly)' == ''">$(CaladesiSdkRoot)tasks/net10.0/Caladesi.Build.Tasks.dll</CaladesiTasksAssembly>
+    <CaladesiRuntimeVersion Condition="'$(CaladesiRuntimeVersion)' == ''">0.1.0</CaladesiRuntimeVersion>
+    <!-- Set to false to take Caladesi.Runtime from somewhere else (e.g. a ProjectReference). -->
+    <CaladesiImplicitRuntimeReference Condition="'$(CaladesiImplicitRuntimeReference)' == ''">true</CaladesiImplicitRuntimeReference>
+
+    <!-- .cala is the source extension; the compiler is not Roslyn so none of the C# source generators apply. -->
+    <DefaultLanguageSourceExtension>.cala</DefaultLanguageSourceExtension>
+    <LanguageTargets>$(MSBuildThisFileDirectory)Caladesi.LanguageTargets.targets</LanguageTargets>
+    <EnableDefaultEmbeddedResourceItems>false</EnableDefaultEmbeddedResourceItems>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <SatelliteResourceLanguages Condition="'$(SatelliteResourceLanguages)' == ''">en</SatelliteResourceLanguages>
+    <!-- Microsoft.Testing.Platform.MSBuild generates entry points in C#/VB/F# only; calac does it for Caladesi (-testentry). -->
+    <GenerateTestingPlatformEntryPoint>false</GenerateTestingPlatformEntryPoint>
+    <GenerateSelfRegisteredExtensions>false</GenerateSelfRegisteredExtensions>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(CaladesiImplicitRuntimeReference)' == 'true' and '$(DisableImplicitFrameworkReferences)' != 'true'">
+    <PackageReference Include="Caladesi.Runtime" Version="$(CaladesiRuntimeVersion)" IsImplicitlyDefined="true" />
+  </ItemGroup>
+</Project>

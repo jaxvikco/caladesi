@@ -222,7 +222,7 @@ public sealed class MetadataMethodSymbol : MethodSymbol
             ConstantTypeCode.UInt64 => br.ReadUInt64(),
             ConstantTypeCode.Single => br.ReadSingle(),
             ConstantTypeCode.Double => br.ReadDouble(),
-            ConstantTypeCode.String => br.ReadSerializedString(),
+            ConstantTypeCode.String => br.ReadUTF16(br.RemainingBytes),
             ConstantTypeCode.NullReference => null,
             _ => null,
         };

@@ -38,6 +38,7 @@ public abstract class BoundTreeRewriter
             case BoundDelegateCreation n: return VisitDelegateCreation(n);
             case BoundSequence n: return VisitSequence(n);
             case BoundTypeOf n: return n;
+            case BoundAddressOf n: return VisitAddressOf(n);
             case BoundAwait n: return VisitAwait(n);
             case BoundThrowExpression n: return VisitThrowExpression(n);
             case BoundTypeExpression or BoundNamespaceExpression or BoundMethodGroup or BoundUnbound or BoundModuleExpression: return node;
@@ -238,6 +239,12 @@ public abstract class BoundTreeRewriter
         var s = VisitStmts(n.SideEffects);
         var v = VisitExpr(n.Value);
         return s == n.SideEffects && ReferenceEquals(v, n.Value) ? n : new BoundSequence(n.Locals, s, v) { Syntax = n.Syntax };
+    }
+
+    protected virtual BoundNode VisitAddressOf(BoundAddressOf n)
+    {
+        var o = VisitExpr(n.Operand);
+        return ReferenceEquals(o, n.Operand) ? n : new BoundAddressOf(o) { Syntax = n.Syntax };
     }
 
     protected virtual BoundNode VisitAwait(BoundAwait n)

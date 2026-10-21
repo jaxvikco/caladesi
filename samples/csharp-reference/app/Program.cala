@@ -1,0 +1,4 @@
+import { Greeter } from "CsLib";
+
+Console.WriteLine(Greeter.Greet("Caladesi"));
+Console.WriteLine(Greeter.Twice(21));
