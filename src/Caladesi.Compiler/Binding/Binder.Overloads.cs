@@ -152,10 +152,11 @@ public sealed partial class Binder
             }
             return true;
         }
-        if (args.Length < n - 1) return false;
         for (var i = 0; i < n - 1; i++)
         {
-            if (!ArgumentConvertible(args[i], ps[i].Type, ps[i].RefKind)) return false;
+            if (i < args.Length) { if (!ArgumentConvertible(args[i], ps[i].Type, ps[i].RefKind)) return false; }
+            else if (ps[i].IsOptional) defaultsUsed++;
+            else return false;
         }
         var elemType = ((ArrayTypeSymbol)ps[^1].Type).ElementType;
         for (var i = n - 1; i < args.Length; i++)

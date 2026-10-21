@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using Caladesi.Compiler.Bound;
 using Caladesi.Compiler.Diagnostics;
 using Caladesi.Compiler.Symbols;
+using Caladesi.Compiler.Symbols.Source;
 using Caladesi.Compiler.Syntax;
 
 namespace Caladesi.Compiler;
@@ -39,6 +40,8 @@ public sealed partial class Binder
         var coveredNull = false;
         var unionType = subjectType.StripNullable() as NamedTypeSymbol;
         var isUnion = unionType is { IsUnionType: true };
+        var enumSubject = unionType is { TypeKind: TypeKind.Enum };
+        var coveredEnum = new HashSet<long>();
 
         foreach (var section in sw.Sections)
         {
@@ -91,6 +94,14 @@ public sealed partial class Binder
                     if (value is BoundUnbound) value = ConvertImplicit(value, subjectType, label.Value);
                     if (value.Type == null) { ReportNotAValue(value, label.Value); continue; }
                     if (value is BoundLiteral { Value.IsNull: true }) coveredNull = true;
+                    if (enumSubject)
+                    {
+                        if (unionType is SourceLiteralEnumSymbol literalEnum && caseExpr.ConstantValue is { Value: string literalText })
+                        {
+                            if (literalEnum.FindMember(literalText)?.ConstantValue is { Value: { } lv }) coveredEnum.Add(Convert.ToInt64(lv));
+                        }
+                        else if (value.ConstantValue is { Value: { } enumConst } && enumConst is not string) coveredEnum.Add(Convert.ToInt64(enumConst));
+                    }
                     test = BindEquality(label.Value, new BoundLocal(tmp) { Syntax = sw.Expression }, value, BinaryOperatorKind.Equal);
                     if (test.HasErrors) continue;
                 }
@@ -109,7 +120,16 @@ public sealed partial class Binder
             if (missing.Count > 0) Report(Descriptors.NonExhaustiveSwitch, sw.Expression, string.Join(", ", missing));
         }
 
-        // bodies
+        var enumExhaustive = false;
+        if (enumSubject && defaultLabel == null)
+        {
+            var members = unionType!.GetMembers().OfType<FieldSymbol>().Where(f => f.IsConst && f.ConstantValue is { Value: not null }).ToList();
+            var missingMembers = members.Where(f => !coveredEnum.Contains(Convert.ToInt64(f.ConstantValue!.Value.Value))).ToList();
+            enumExhaustive = missingMembers.Count == 0 && members.Count > 0 && (subjectType is not NullableTypeSymbol || coveredNull);
+            if (!enumExhaustive && unionType is SourceLiteralEnumSymbol && missingMembers.Count > 0)
+                Report(Descriptors.NonExhaustiveSwitch, sw.Expression, string.Join(", ", missingMembers.Select(f => '"' + ((f as SourceFieldSymbol)?.LiteralText ?? f.Name) + '"')));
+        }
+
         var bodies = ImmutableArray.CreateBuilder<BoundStatement>();
         var lastCompletes = true;
         for (var i = 0; i < sw.Sections.Count; i++)
@@ -137,7 +157,7 @@ public sealed partial class Binder
         all.AddRange(bodies);
         all.Add(new BoundLabel(breakLabel) { Syntax = sw });
         var node = new BoundBlock(switchLocals.Add(tmp), all.ToImmutable()) { Syntax = sw };
-        var hasDefault = defaultLabel != null || (isUnion && coveredCases.Count == unionType!.UnionCases.Length && (subjectType is not NullableTypeSymbol || coveredNull));
+        var hasDefault = defaultLabel != null || enumExhaustive || (isUnion && coveredCases.Count == unionType!.UnionCases.Length && (subjectType is not NullableTypeSymbol || coveredNull));
         var completes = breakUsed || !hasDefault || lastCompletes || sw.Sections.Count == 0;
         _flow[node] = completes;
         return node;

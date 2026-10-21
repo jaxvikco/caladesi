@@ -183,6 +183,8 @@ internal static class SourceModuleVariables
         if (d.Initializer == null) return null;
         var c = container.Compilation;
         var binder = c.CreateBinder(container.File, container, new DiagnosticBag());
-        return binder.TryEvaluateConstant(d.Initializer.Value, field.Type);
+        var cv = binder.TryEvaluateConstant(d.Initializer.Value, field.Type);
+        // IL literals exist only for primitives, strings and enums; decimal and bigint constants are initialized at run time
+        return cv is { Value: decimal or System.Numerics.BigInteger } ? null : cv;
     }
 }

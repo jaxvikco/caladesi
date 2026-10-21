@@ -182,6 +182,7 @@ public sealed partial class Binder
                 return inner.Kind switch
                 {
                     ConversionKind.ImplicitNumeric or ConversionKind.EnumNumeric => Conversion.Implicit(ConversionKind.LiftedNumeric),
+                    ConversionKind.Boxing when sn.Underlying.IsValueType => Conversion.Implicit(ConversionKind.Boxing),
                     _ when sn.Underlying.IsValueType => Conversion.None,
                     _ => Conversion.Implicit(ConversionKind.TypeOnly),
                 };

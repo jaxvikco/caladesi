@@ -120,6 +120,9 @@ public sealed class FileScope
                     {
                         if (spc.NameToken.IsMissing) continue;
                         var members = LookupMemberOfModule(target, spc.NameToken.Text).ToList();
+                        // attributes can be imported without their `Attribute` suffix, as they are used in decorators
+                        if (members.Count == 0 && target is NamespaceSymbol)
+                            members = LookupMemberOfModule(target, spc.NameToken.Text + "Attribute").ToList();
                         if (members.Count == 0)
                         {
                             _importDiagnostics.Add(new ImportDiagnostic(Descriptors.ModuleHasNoExport, spc.NameToken.Span, [spec, spc.NameToken.Text]));

@@ -201,7 +201,7 @@ public sealed partial class Binder
             case ParameterSymbol p:
                 return ApplyNarrowing(new BoundParameter(p) { Syntax = syntax });
             case FieldSymbol f:
-                return new BoundFieldAccess(null, f) { Syntax = syntax };
+                return ApplyNarrowing(new BoundFieldAccess(null, f) { Syntax = syntax });
         }
         return Bad(syntax);
     }
@@ -226,10 +226,10 @@ public sealed partial class Binder
                 {
                     case FieldSymbol f:
                         Record(syntax, f);
-                        return new BoundFieldAccess(null, f) { Syntax = syntax };
+                        return ApplyNarrowing(new BoundFieldAccess(null, f) { Syntax = syntax });
                     case PropertySymbol { IsStatic: true } p:
                         Record(syntax, p);
-                        return new BoundPropertyAccess(null, p, ImmutableArray<BoundExpression>.Empty) { Syntax = syntax };
+                        return ApplyNarrowing(new BoundPropertyAccess(null, p, ImmutableArray<BoundExpression>.Empty) { Syntax = syntax });
                 }
             }
             foreach (var c in cands)

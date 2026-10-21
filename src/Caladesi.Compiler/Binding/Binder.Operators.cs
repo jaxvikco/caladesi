@@ -345,7 +345,7 @@ public sealed partial class Binder
         if (lt.SpecialType == SpecialType.BigInteger)
         {
             var pow = lt.GetMembers("Pow").OfType<MethodSymbol>().First();
-            return new BoundCall(null, pow, [left, ConvertImplicit(right, IntType, b)]) { Syntax = b };
+            return new BoundCall(null, pow, [left, rt.SpecialType == SpecialType.BigInteger ? ConvertExplicit(right, IntType, b) : ConvertImplicit(right, IntType, b)]) { Syntax = b };
         }
         if (!lt.SpecialType.IsNumeric() || !rt.SpecialType.IsNumeric() || lt.SpecialType == SpecialType.Char)
         {

@@ -40,6 +40,14 @@ internal sealed class DeclarationChecker(Compilation compilation)
                 }
             }
         }
+        // decorators
+        foreach (var type in compilation.AllSourceTypes.ToList())
+        {
+            foreach (var d in type.DecoratorSyntaxes) compilation.GetBoundAttribute(type.File, d, type);
+            foreach (var m in type.GetMembers())
+                foreach (var d in DecoratorSyntaxHelper.Of(m is SourceMethodSymbol sm ? sm.Declaration : m is SourcePropertySymbol sp ? sp.Declaration : m is SourceFieldSymbol sf ? sf.Declaration : null))
+                    compilation.GetBoundAttribute(type.File, d, type);
+        }
         // bind bodies (may create anonymous records, closures, ...)
         foreach (var type in compilation.AllSourceTypes.ToList())
             foreach (var m in type.GetMembers().OfType<SourceMethodSymbol>().ToList())
@@ -274,4 +282,19 @@ internal sealed class EntryPointChecker(Compilation compilation)
         }
         return null;
     }
+}
+
+internal static class DecoratorSyntaxHelper
+{
+    public static IEnumerable<DecoratorSyntax> Of(SyntaxNode? declaration) => declaration switch
+    {
+        FunctionDeclarationSyntax f => f.Decorators,
+        MethodDeclarationSyntax m => m.Decorators,
+        PropertyDeclarationSyntax p => p.Decorators,
+        ConstructorDeclarationSyntax c => c.Decorators,
+        AccessorDeclarationSyntax a => a.Decorators,
+        ClassDeclarationSyntax c => c.Decorators,
+        ParameterSyntax p => p.Decorators,
+        _ => [],
+    };
 }
