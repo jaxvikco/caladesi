@@ -52,6 +52,13 @@ static int Run(string[] args)
         trees.Add(tree);
     }
 
+    if (options.GenerateTestEntryPoint)
+    {
+        var entry = TestEntryPoint.Create(options.ToCompilationOptions(), options.TestHooks);
+        texts[entry.FilePath] = entry.Text;
+        trees.Add(entry);
+    }
+
     var refDiags = new DiagnosticBag();
     var references = Caladesi.Compiler.Symbols.Metadata.ReferenceSet.Create(options.References, refDiags);
     var compilation = Compilation.Create(options.ToCompilationOptions(), trees, references);

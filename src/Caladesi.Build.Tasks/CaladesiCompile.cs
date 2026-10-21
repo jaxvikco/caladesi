@@ -30,6 +30,8 @@ public sealed class CaladesiCompile : ToolTask
     public string? TargetFrameworkDisplayName { get; set; }
     public bool Optimize { get; set; }
     public bool GenerateTestEntryPoint { get; set; }
+    /// <summary>Full type names of Microsoft.Testing.Platform builder hooks (<c>TestingPlatformBuilderHook</c> items).</summary>
+    public ITaskItem[]? TestHooks { get; set; }
     /// <summary>Path of the dotnet host. Defaults to <c>dotnet</c> on PATH.</summary>
     public string? DotnetHostPath { get; set; }
 
@@ -68,6 +70,12 @@ public sealed class CaladesiCompile : ToolTask
         if (!string.IsNullOrEmpty(TargetFrameworkDisplayName)) Add("-targetframeworkdisplay:" + TargetFrameworkDisplayName);
         if (Optimize) Add("-optimize");
         if (GenerateTestEntryPoint) Add("-testentry");
+        if (TestHooks != null)
+            foreach (var h in TestHooks)
+            {
+                var typeName = h.GetMetadata("TypeFullName");
+                if (!string.IsNullOrEmpty(typeName)) Add("-testhook:" + typeName);
+            }
         foreach (var s in Sources) Add(s.GetMetadata("FullPath"));
         return sb.ToString();
     }
