@@ -281,7 +281,8 @@ internal sealed partial class EmitModule
             if (f.Type.TypeKind == TypeKind.Enum && cv != null) cv = Convert.ToInt32(cv);
             Metadata.AddConstant(handle, cv);
         }
-        if (f is SourceFieldSymbol { IsBackingField: true }) { }
+        if (f is SourceFieldSymbol { IsBackingField: false, Declaration: PropertyDeclarationSyntax fd } && f.ContainingSymbol is SourceNamedType fieldOwner)
+            EmitDecorators(DecoratorSyntaxHelper.Of(fd), handle, fieldOwner.File, fieldOwner);
     }
 
     // ------------------------------------------------------------------ properties
@@ -294,6 +295,8 @@ internal sealed partial class EmitModule
             Metadata.AddMethodSemantics(handle, MethodSemanticsAttributes.Getter, g);
         if (p.SetMethod != null && _methodDefs.TryGetValue(p.SetMethod.OriginalDefinition, out var s))
             Metadata.AddMethodSemantics(handle, MethodSemanticsAttributes.Setter, s);
+        if (p is SourcePropertySymbol { Declaration: PropertyDeclarationSyntax pd } && p.ContainingSymbol is SourceNamedType owner)
+            EmitDecorators(DecoratorSyntaxHelper.Of(pd), handle, owner.File, owner);
     }
 
     // ------------------------------------------------------------------ methods
@@ -364,6 +367,9 @@ internal sealed partial class EmitModule
             EncodeMethodSignatureWithModifiers(m), bodyOffset, paramList);
         if (handle != defHandle) throw new InvalidOperationException("Method row mismatch for " + m.Name);
 
+        if (m is SourceMethodSymbol { Declaration: { } methodDecl } && type is SourceNamedType ownerType)
+            EmitDecorators(DecoratorSyntaxHelper.Of(methodDecl), handle, ownerType.File, ownerType);
+
         foreach (var p in m.Parameters)
         {
             var pa = ParameterAttributes.None;
@@ -380,6 +386,8 @@ internal sealed partial class EmitModule
                 Metadata.AddConstant(ph, v);
             }
             if (p.IsParams) AddAttribute(ph, "System.ParamArrayAttribute");
+            if (type is SourceNamedType paramOwner && p.DeclaringSyntax != null)
+                EmitDecorators(DecoratorSyntaxHelper.Of(p.DeclaringSyntax), ph, paramOwner.File, paramOwner);
         }
         foreach (var tp in m.TypeParameters) AddGenericParameterRow(handle, tp);
         if (m.IsExtensionMethod && m.IsStatic) AddAttribute(handle, "System.Runtime.CompilerServices.ExtensionAttribute");
@@ -480,16 +488,16 @@ internal sealed partial class EmitModule
         if (type is SourceModuleClassSymbol mod && mod.HasExtensionMethods) AddAttribute(handle, "System.Runtime.CompilerServices.ExtensionAttribute");
         if (type is SourceUnionSymbol) AddCaladesiUnionAttribute(handle);
         if (type.TypeKind == TypeKind.Struct && type.IsReadOnlyStruct) AddAttribute(handle, "System.Runtime.CompilerServices.IsReadOnlyAttribute");
-        if (type is SourceNamedType snt) EmitDecorators(snt.DecoratorSyntaxes, handle, snt);
+        if (type is SourceNamedType snt) EmitDecorators(snt.DecoratorSyntaxes, handle, snt.File, snt);
     }
 
     private void AddCaladesiUnionAttribute(EntityHandle handle) => AddAttribute(handle, "Caladesi.Runtime.CaladesiUnionAttribute");
 
-    private void EmitDecorators(ImmutableArray<DecoratorSyntax> decorators, EntityHandle parent, SourceNamedType context)
+    private void EmitDecorators(IEnumerable<DecoratorSyntax> decorators, EntityHandle parent, SourceFile file, Symbol context)
     {
         foreach (var d in decorators)
         {
-            var info = new AttributeBinder(Compilation, context.File).Bind(d, context);
+            var info = new AttributeBinder(Compilation, file).Bind(d, context);
             if (info == null) continue;
             var (ctor, blob) = info.Value;
             _attributes.Add((parent, GetMethodEntity(ctor), Metadata.GetOrAddBlob(blob)));

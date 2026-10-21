@@ -303,5 +303,23 @@ public sealed partial class Compilation
     public Emit.EmitResult Emit(Stream peStream, Stream? pdbStream = null, string? pdbFileName = null) =>
         new Emit.EmitModule(this).Emit(peStream, pdbStream, pdbFileName);
 
+    private readonly Dictionary<DecoratorSyntax, BoundAttribute?> _boundAttributes = new(ReferenceEqualityComparer.Instance);
+
+    /// <summary>Binds a decorator once; diagnostics land in the body diagnostics.</summary>
+    internal BoundAttribute? GetBoundAttribute(SourceFile file, DecoratorSyntax decorator, Symbol? context)
+    {
+        lock (_lock)
+        {
+            if (_boundAttributes.TryGetValue(decorator, out var existing)) return existing;
+            var binder = CreateBinder(file, context, BodyDiagnostics);
+            var bound = binder.BindDecorator(decorator);
+            _boundAttributes[decorator] = bound;
+            return bound;
+        }
+    }
+
+    internal string? GetAssemblyNameOf(NamedTypeSymbol type) =>
+        type.IsFromSource ? Options.AssemblyName : type.ContainingAssembly?.Name;
+
     public bool HasErrors => GetDiagnostics().Any(d => d.EffectiveSeverity == DiagnosticSeverity.Error);
 }
