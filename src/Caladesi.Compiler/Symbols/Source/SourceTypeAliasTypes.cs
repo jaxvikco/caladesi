@@ -74,7 +74,7 @@ public sealed class SourceRecordSymbol : SourceNamedType
     }
 
     /// <summary>The record's properties in declaration order.</summary>
-    public ImmutableArray<SourcePropertySymbol> Properties => GetMembers().OfType<SourcePropertySymbol>().ToImmutableArray();
+    public ImmutableArray<SourcePropertySymbol> Properties => GetMembers().OfType<SourcePropertySymbol>().Where(p => p.BackingField != null).ToImmutableArray();
 
     public SourceMethodSymbol? PrimaryConstructor => GetMembers().OfType<SourceMethodSymbol>().FirstOrDefault(m => m.MethodKind == MethodKind.Constructor && m.SynthesizedKind == SynthesizedBodyKind.RecordConstructor);
 

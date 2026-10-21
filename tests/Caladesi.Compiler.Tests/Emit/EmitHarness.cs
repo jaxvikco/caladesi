@@ -24,6 +24,10 @@ internal static class EmitHarness
         var result = comp.Emit(pe, pdb, "Test.pdb");
         if (!result.Success)
             throw new InvalidOperationException("Compilation failed:\n" + TestCompiler.Format(result.Diagnostics.Where(d => d.EffectiveSeverity == Caladesi.Compiler.Diagnostics.DiagnosticSeverity.Error)));
+        var image = pe.ToArray();
+        var problems = ILVerifier.Verify("Test", image);
+        if (problems.Count > 0)
+            throw new InvalidOperationException("IL verification failed:\n" + string.Join("\n", problems));
         pe.Position = 0;
         var alc = new Alc([]);
         try

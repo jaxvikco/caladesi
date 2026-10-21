@@ -121,6 +121,28 @@ public sealed partial class Binder
 
         if (tt.IsErrorType) { foreach (var e in elems) if (e is not SpreadElementSyntax) BindValue(e); return Bad(syntax); }
 
+        if (tt is NamedTypeSymbol { IsTuple: true } tuple && target != null)
+        {
+            var targs = tuple.TypeArguments;
+            if (elems.Any(e => e is SpreadElementSyntax) || targs.Length != elems.Length || targs.Length > 7)
+            {
+                Report(Descriptors.CollectionNotConvertible, syntax, target.ToDisplayString());
+                foreach (var e in elems) if (e is not SpreadElementSyntax) BindValue(e);
+                return Bad(syntax);
+            }
+            var items = ImmutableArray.CreateBuilder<BoundExpression>(targs.Length);
+            for (var i = 0; i < targs.Length; i++)
+            {
+                var item = BindToType(elems[i], targs[i]);
+                if (item.HasErrors) return Bad(syntax);
+                items.Add(item);
+            }
+            var tctor = tuple.InstanceConstructors.First(c => c.Parameters.Length == targs.Length);
+            BoundExpression created = new BoundObjectCreation(tctor, tuple, items.ToImmutable(), ImmutableArray<BoundMemberInit>.Empty) { Syntax = syntax };
+            if (wrapNullable) created = new BoundConversion(created, ConversionKind.ToNullable, target) { Syntax = syntax };
+            return created;
+        }
+
         if (tt is ArrayTypeSymbol at)
         {
             kind = CollectionKind.Array;
@@ -622,7 +644,14 @@ public sealed partial class Binder
     {
         if (members.Any(m => m.IsSpread))
         {
-            Report(Descriptors.FeatureNotSupported, syntax, "Spread in an object literal without a target type");
+            // `{ ...p, x: 3 }` without a target: the result has the type of the spread operand
+            if (members[0].IsSpread && members.Count(m => m.IsSpread) == 1)
+            {
+                var spreadSource = Speculatively(() => BindValue(members[0].Value!));
+                if (spreadSource.Type?.StripNullable() is NamedTypeSymbol spreadType && spreadSource is not BoundBadExpression)
+                    return BindSpreadObject(syntax, members, spreadType);
+            }
+            Report(Descriptors.FeatureNotSupported, syntax, "Spread in an object literal without a target type (only a single leading '...expr' of a record type is supported)");
             return Bad(syntax);
         }
         var names = new List<string>();

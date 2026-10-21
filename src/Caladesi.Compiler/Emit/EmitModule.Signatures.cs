@@ -247,7 +247,8 @@ internal sealed partial class EmitModule
         }
         var def = m.OriginalDefinition;
         var container = m.ContainingSymbol as NamedTypeSymbol;
-        var isOnConstructedType = container is ConstructedNamedType;
+        // members of a generic type are always referenced through the type's own instantiation (Box<!0>::m), even inside the type
+        var isOnConstructedType = container is ConstructedNamedType || container is { IsGenericType: true };
         if (!isOnConstructedType && _methodDefs.TryGetValue(def, out var md)) return md;
         if (_memberRefs.TryGetValue(m, out var existing)) return existing;
         var parent = container != null ? GetTypeEntity(container) : throw new InvalidOperationException("Method without container: " + m.Name);
@@ -261,7 +262,7 @@ internal sealed partial class EmitModule
     {
         var def = f.OriginalDefinition;
         var container = f.ContainingSymbol as NamedTypeSymbol;
-        var isOnConstructedType = container is ConstructedNamedType;
+        var isOnConstructedType = container is ConstructedNamedType || container is { IsGenericType: true };
         if (!isOnConstructedType && _fieldDefs.TryGetValue(def, out var fd)) return fd;
         if (_memberRefs.TryGetValue(f, out var existing)) return existing;
         var parent = GetTypeEntity(container!);

@@ -424,7 +424,7 @@ internal sealed partial class EmitModule
     private void EmitBodyIL(NamedTypeSymbol type, MethodSymbol m, ILBuilder il, SourceFile? file)
     {
         if (m is SourceMethodSymbol { SynthesizedKind: var kind } sm && kind is not (SynthesizedBodyKind.None or SynthesizedBodyKind.Custom
-            or SynthesizedBodyKind.DefaultConstructor or SynthesizedBodyKind.StaticConstructor))
+            or SynthesizedBodyKind.DefaultConstructor or SynthesizedBodyKind.InheritedConstructor or SynthesizedBodyKind.StaticConstructor))
         {
             new SynthesizedBodyEmitter(this, sm, il).Emit();
             return;

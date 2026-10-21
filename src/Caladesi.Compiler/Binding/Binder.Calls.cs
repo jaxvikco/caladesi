@@ -302,30 +302,30 @@ public sealed partial class Binder
         {
             var only = parts[0];
             if (only.Type!.SpecialType == SpecialType.String) return only;
-            var m1 = concat.First(m => m.Parameters.Length == 1 && m.Parameters[0].Type.SpecialType == SpecialType.Object);
+            var m1 = concat.First(m => m.Parameters.Length == 1 && m.Parameters[0].Type.StripNullable().SpecialType == SpecialType.Object);
             return new BoundCall(null, m1, [BoxToObject(only, syntax)]) { Syntax = syntax };
         }
         var allStrings = parts.All(p => p.Type!.SpecialType == SpecialType.String);
         if (allStrings && parts.Count <= 4)
         {
-            var m = concat.First(x => x.Parameters.Length == parts.Count && x.Parameters.All(pp => pp.Type.SpecialType == SpecialType.String && !pp.IsParams));
+            var m = concat.First(x => x.Parameters.Length == parts.Count && x.Parameters.All(pp => pp.Type.StripNullable().SpecialType == SpecialType.String && !pp.IsParams));
             return new BoundCall(null, m, parts.ToImmutableArray()) { Syntax = syntax };
         }
         if (!allStrings && parts.Count <= 3)
         {
-            var m = concat.First(x => x.Parameters.Length == parts.Count && x.Parameters.All(pp => pp.Type.SpecialType == SpecialType.Object && !pp.IsParams));
+            var m = concat.First(x => x.Parameters.Length == parts.Count && x.Parameters.All(pp => pp.Type.StripNullable().SpecialType == SpecialType.Object && !pp.IsParams));
             return new BoundCall(null, m, parts.Select(p => BoxToObject(p, syntax)).ToImmutableArray()) { Syntax = syntax };
         }
         if (allStrings)
         {
-            var m = concat.First(x => x.Parameters.Length == 1 && x.Parameters[0].IsParams && x.Parameters[0].Type is ArrayTypeSymbol { ElementType.SpecialType: SpecialType.String });
-            var arr = new BoundArrayCreation((ArrayTypeSymbol)m.Parameters[0].Type, new BoundLiteral(new ConstantValue(parts.Count), IntType), parts.ToImmutableArray()) { Syntax = syntax };
+            var m = concat.First(x => x.Parameters.Length == 1 && x.Parameters[0].IsParams && x.Parameters[0].Type.StripNullable() is ArrayTypeSymbol { ElementType: var e1 } && e1.StripNullable().SpecialType == SpecialType.String);
+            var arr = new BoundArrayCreation((ArrayTypeSymbol)m.Parameters[0].Type.StripNullable(), new BoundLiteral(new ConstantValue(parts.Count), IntType), parts.ToImmutableArray()) { Syntax = syntax };
             return new BoundCall(null, m, [arr]) { Syntax = syntax };
         }
         else
         {
-            var m = concat.First(x => x.Parameters.Length == 1 && x.Parameters[0].IsParams && x.Parameters[0].Type is ArrayTypeSymbol { ElementType.SpecialType: SpecialType.Object });
-            var arr = new BoundArrayCreation((ArrayTypeSymbol)m.Parameters[0].Type, new BoundLiteral(new ConstantValue(parts.Count), IntType), parts.Select(p => BoxToObject(p, syntax)).ToImmutableArray()) { Syntax = syntax };
+            var m = concat.First(x => x.Parameters.Length == 1 && x.Parameters[0].IsParams && x.Parameters[0].Type.StripNullable() is ArrayTypeSymbol { ElementType: var e2 } && e2.StripNullable().SpecialType == SpecialType.Object);
+            var arr = new BoundArrayCreation((ArrayTypeSymbol)m.Parameters[0].Type.StripNullable(), new BoundLiteral(new ConstantValue(parts.Count), IntType), parts.Select(p => BoxToObject(p, syntax)).ToImmutableArray()) { Syntax = syntax };
             return new BoundCall(null, m, [arr]) { Syntax = syntax };
         }
     }
