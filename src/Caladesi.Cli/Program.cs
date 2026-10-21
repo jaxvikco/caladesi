@@ -1,4 +1,79 @@
+using Caladesi.Cli;
 using Caladesi.Compiler;
+using Caladesi.Compiler.Diagnostics;
+using Caladesi.Compiler.Syntax;
+using Caladesi.Compiler.Text;
 
-Console.WriteLine($"calac {CompilerInfo.Version}");
-return 0;
+return Run(args);
+
+static int Run(string[] args)
+{
+    var options = CliOptions.Parse(args);
+    if (options.ShowVersion)
+    {
+        Console.WriteLine($"calac {CompilerInfo.Version}");
+        return 0;
+    }
+    foreach (var e in options.Errors) Console.Error.WriteLine($"calac : error CALC0001: {e}");
+    if (options.Errors.Count > 0) return 1;
+    if (options.Sources.Count == 0)
+    {
+        Console.Error.WriteLine("calac : error CALC0002: no source files");
+        Console.Error.WriteLine("usage: calac [-out:file] [-target:exe|library] [-ref:assembly]... [@response-file] source.cala...");
+        return 1;
+    }
+    if (options.Output == null)
+    {
+        Console.Error.WriteLine("calac : error CALC0003: -out is required");
+        return 1;
+    }
+
+    var texts = new Dictionary<string, SourceText>();
+    var trees = new List<SyntaxTree>();
+    foreach (var source in options.Sources)
+    {
+        string text;
+        try { text = File.ReadAllText(source); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"{source} : error CALC0004: cannot read file: {ex.Message}");
+            return 1;
+        }
+        var tree = SyntaxTree.ParseText(text, Path.GetFullPath(source));
+        texts[tree.FilePath] = tree.Text;
+        trees.Add(tree);
+    }
+
+    var refDiags = new DiagnosticBag();
+    var references = Caladesi.Compiler.Symbols.Metadata.ReferenceSet.Create(options.References, refDiags);
+    var compilation = Compilation.Create(options.ToCompilationOptions(), trees, references);
+
+    using var pe = new MemoryStream();
+    using var pdb = new MemoryStream();
+    var pdbName = options.PdbOutput != null ? Path.GetFileName(options.PdbOutput) : null;
+    var result = compilation.Emit(pe, options.PdbOutput != null ? pdb : null, pdbName);
+
+    foreach (var d in refDiags.Items.Concat(result.Diagnostics).Distinct())
+    {
+        if (d.EffectiveSeverity == DiagnosticSeverity.Hidden) continue;
+        texts.TryGetValue(d.FilePath ?? "", out var text);
+        var line = d.Format(text);
+        if (d.EffectiveSeverity == DiagnosticSeverity.Error) Console.Error.WriteLine(line);
+        else Console.WriteLine(line);
+    }
+    if (!result.Success) return 1;
+
+    try
+    {
+        var dir = Path.GetDirectoryName(Path.GetFullPath(options.Output));
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+        File.WriteAllBytes(options.Output, pe.ToArray());
+        if (options.PdbOutput != null) File.WriteAllBytes(options.PdbOutput, pdb.ToArray());
+    }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+    {
+        Console.Error.WriteLine($"calac : error CALC0005: cannot write output: {ex.Message}");
+        return 1;
+    }
+    return 0;
+}
