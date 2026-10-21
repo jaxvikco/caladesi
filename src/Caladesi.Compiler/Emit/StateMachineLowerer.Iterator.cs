@@ -16,7 +16,7 @@ internal sealed partial class StateMachineLowerer
     private void DeclareIteratorMembers()
     {
         var rt = (NamedTypeSymbol)_method.ReturnType.StripNullable();
-        _isEnumerable = rt.OriginalDefinition.MetadataName is "IEnumerable`1" or "IEnumerable";
+        _isEnumerable = rt.OriginalDefinition.MetadataName is "IEnumerable`1" or "IEnumerable" or "IAsyncEnumerable`1";
         var t = _payload!;
         var enumeratorT = Wk("System.Collections.Generic.IEnumerator`1").Construct(t);
         var enumeratorObj = Wk("System.Collections.IEnumerator");
@@ -68,6 +68,16 @@ internal sealed partial class StateMachineLowerer
     {
         var resume = new LabelSymbol("<resume>");
         var k = newState(resume);
+        if (_kind == Kind.AsyncIterator)
+            return Block([
+                Assign(Field(_currentField!), n.Expression),
+                Assign(State(), IntLit(k)),
+                CallStmt(Builder(), BuilderMethod("SetResult", 1), new BoundLiteral(new ConstantValue(true), Bool)),
+                new BoundGoto(_suspendLabel),
+                new BoundLabel(resume),
+                Assign(State(), IntLit(-1)),
+                new BoundIf(Field(_disposingField!), new BoundGoto(disposeTarget ?? _exitLabel), null),
+            ]);
         return Block([
             Assign(Field(_currentField!), n.Expression),
             Assign(State(), IntLit(k)),

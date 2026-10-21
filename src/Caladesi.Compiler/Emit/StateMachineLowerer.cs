@@ -13,7 +13,7 @@ namespace Caladesi.Compiler.Emit;
 /// </summary>
 internal sealed partial class StateMachineLowerer
 {
-    private enum Kind { Async, Iterator }
+    private enum Kind { Async, Iterator, AsyncIterator }
 
     private readonly Compilation _c;
     private readonly LoweredProgram _program;
@@ -47,13 +47,11 @@ internal sealed partial class StateMachineLowerer
         _method = method;
         _container = container;
         _ordinal = ordinal;
-        _kind = method.IsIterator ? Kind.Iterator : Kind.Async;
+        _kind = method.IsIterator ? (method.IsAsync ? Kind.AsyncIterator : Kind.Iterator) : Kind.Async;
     }
 
     public static void Lower(Compilation c, LoweredProgram program, MethodSymbol method, NamedTypeSymbol container, int ordinal, BoundBlock body)
     {
-        if (method.IsIterator && method.IsAsync)
-            throw new NotSupportedException("async iterators are not supported yet");
         new StateMachineLowerer(c, program, method, container, ordinal).Run(body);
     }
 
@@ -81,9 +79,9 @@ internal sealed partial class StateMachineLowerer
         var spiller = new SuspensionSpiller(finder, NewTemp, Bool);
         body = spiller.Spill(body);
 
-        if (_kind == Kind.Iterator) _disposingPlaceholder = NewTemp(Bool);
+        if (_kind != Kind.Async) _disposingPlaceholder = NewTemp(Bool);
         var tryRewriter = new TryRewriter(_c, finder, NewTemp, _kind == Kind.Async ? _payload : null,
-            _kind == Kind.Iterator ? () => new BoundLocal(_disposingPlaceholder!) : null, _endLabel);
+            _kind != Kind.Async ? () => new BoundLocal(_disposingPlaceholder!) : null, _kind == Kind.AsyncIterator ? _exitLabel : _endLabel);
         body = (BoundBlock)tryRewriter.Visit(body)!;
 
         var collected = new Collector();
@@ -94,12 +92,13 @@ internal sealed partial class StateMachineLowerer
         var states = new StateRewriter(this, tryRewriter.DisposeTargets);
         body = (BoundBlock)states.Visit(body)!;
 
-        var moveNextBody = _kind == Kind.Async ? AssembleAsyncMoveNext(body, states) : AssembleIteratorMoveNext(body, states);
+        var moveNextBody = _kind == Kind.Iterator ? AssembleIteratorMoveNext(body, states) : AssembleAsyncMoveNext(body, states);
         _program.Bodies[_moveNext] = moveNextBody;
-        if (_kind == Kind.Async) _program.Bodies[_cls.Members.OfType<SynthesizedMethodSymbol>().First(m => m.Name == "SetStateMachine")] = Block([]);
+        if (_kind != Kind.Iterator) _program.Bodies[_cls.Members.OfType<SynthesizedMethodSymbol>().First(m => m.Name == "SetStateMachine")] = Block([]);
         _program.Types.Add(_cls);
 
         if (_kind == Kind.Iterator) BuildIteratorSupportBodies();
+        else if (_kind == Kind.AsyncIterator) BuildAsyncIteratorSupportBodies();
         var stub = _kind == Kind.Async ? BuildAsyncStub() : BuildIteratorStub();
         _program.Bodies[_method] = stub;
     }
@@ -107,9 +106,10 @@ internal sealed partial class StateMachineLowerer
     private void AnalyzeSignature()
     {
         var rt = _method.ReturnType.StripNullable();
-        if (_kind == Kind.Iterator)
+        if (_kind != Kind.Async)
         {
             _payload = rt is NamedTypeSymbol { IsGenericType: true } n ? n.TypeArguments[0] : _c.GetSpecialType(SpecialType.Object);
+            if (_kind == Kind.AsyncIterator) _builderType = Wk("System.Runtime.CompilerServices.AsyncTaskMethodBuilder`1").Construct(Bool);
             return;
         }
         string builder;
@@ -192,12 +192,13 @@ internal sealed partial class StateMachineLowerer
         var name = "<" + _method.Name + ">d__" + _ordinal;
         _cls = SynthesizedClassFactory.Create(_c, _container, _method, name, null, out _closed);
         _ctor = NewMethod(".ctor", Void);
-        _moveNext = NewMethod("MoveNext", _kind == Kind.Async ? Void : Bool);
+        _moveNext = NewMethod("MoveNext", _kind == Kind.Iterator ? Bool : Void);
         _stateField = NewField("<>1__state", Int);
         _smLocal = new LocalSymbol("<sm>", _closed, false, _method) { IsSynthesized = true };
 
         if (_kind == Kind.Async) DeclareAsyncMembers(col);
-        else DeclareIteratorMembersEntry();
+        else if (_kind == Kind.Iterator) DeclareIteratorMembersEntry();
+        else DeclareAsyncIteratorMembers();
 
         if (!_method.IsStatic)
         {
@@ -346,6 +347,8 @@ internal sealed partial class StateMachineLowerer
 
         protected override BoundNode VisitReturn(BoundReturn n) => _o.LowerReturn(n);
 
+        protected override BoundNode VisitYieldBreak(BoundYieldBreak n) => new BoundGoto(_o._kind == Kind.AsyncIterator ? _o._exitLabel : _o._endLabel);
+
         protected override BoundNode VisitYieldReturn(BoundYieldReturn n) =>
             _o.LowerYieldReturn(n, NewState, _disposeTargets.GetValueOrDefault(n));
 
@@ -370,14 +373,14 @@ internal sealed partial class StateMachineLowerer
     {
         _cls.AddInterface(Wk("System.Runtime.CompilerServices.IAsyncStateMachine"));
         _builderField = NewField("<>t__builder", _builderType!);
-        if (_payload != null) _retvalField = NewField("<>s__retval", _payload);
+        if (_payload != null && _kind == Kind.Async) _retvalField = NewField("<>s__retval", _payload);
         NewMethod("SetStateMachine", Void, true, ("stateMachine", Wk("System.Runtime.CompilerServices.IAsyncStateMachine")));
         _ = col;
     }
 
     private void DeclareKindSpecificFields()
     {
-        if (_kind == Kind.Iterator) DeclareIteratorFields();
+        if (_kind != Kind.Async) DeclareIteratorFields();
     }
 
     private BoundExpression Builder() => Field(_builderField!);
@@ -447,9 +450,11 @@ internal sealed partial class StateMachineLowerer
             CallStmt(Builder(), BuilderMethod("SetException", 1), new BoundLocal(ex)),
             new BoundReturn(null),
         ]);
-        var setResult = _payload != null
-            ? CallStmt(Builder(), BuilderMethod("SetResult", 1), Field(_retvalField!))
-            : CallStmt(Builder(), BuilderMethod("SetResult", 0));
+        var setResult = _kind == Kind.AsyncIterator
+            ? CallStmt(Builder(), BuilderMethod("SetResult", 1), new BoundLiteral(new ConstantValue(false), Bool))
+            : _payload != null
+                ? CallStmt(Builder(), BuilderMethod("SetResult", 1), Field(_retvalField!))
+                : CallStmt(Builder(), BuilderMethod("SetResult", 0));
         var stmts = new List<BoundStatement>
         {
             Assign(new BoundLocal(_smLocal), SelfThis()),
