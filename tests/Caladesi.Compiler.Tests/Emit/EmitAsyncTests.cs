@@ -96,4 +96,43 @@ public class EmitAsyncTests
         Assert.AreEqual("main\n", output);
         Assert.AreEqual(7, code);
     }
+
+    [TestMethod]
+    public void AsyncGeneratorAndForAwait() => Check("""
+        async function* numbers(n: int): AsyncIterable<int> {
+          for (let i = 0; i < n; i++) {
+            await Task.Delay(1);
+            yield i * 10;
+          }
+        }
+        let total = 0;
+        for await (const x of numbers(4)) total += x;
+        Console.WriteLine(total);
+        """, "60\n");
+
+    [TestMethod]
+    public void AsyncGeneratorFinallyRunsOnEarlyExit() => Check("""
+        async function* gen(): AsyncIterable<string> {
+          try {
+            yield "a";
+            yield "b";
+          } finally {
+            await Task.Yield();
+            Console.WriteLine("cleanup");
+          }
+        }
+        for await (const s of gen()) { Console.WriteLine(s); break; }
+        """, "a\ncleanup\n");
+
+    [TestMethod]
+    public void AwaitUsing() => Check("""
+        class Res implements IAsyncDisposable {
+          async DisposeAsync(): ValueTask { await Task.Yield(); Console.WriteLine("disposed"); }
+        }
+        async function run(): Task {
+          await using r = new Res();
+          Console.WriteLine("body");
+        }
+        await run();
+        """, "body\ndisposed\n");
 }

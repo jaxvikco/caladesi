@@ -51,7 +51,8 @@ public abstract class BoundTreeRewriter
             case BoundWhile n: return VisitWhile(n);
             case BoundDoWhile n: return VisitDoWhile(n);
             case BoundFor n: return VisitFor(n);
-            case BoundGoto or BoundLabel or BoundYieldBreak or BoundNoOp: return node;
+            case BoundYieldBreak yb: return VisitYieldBreak(yb);
+            case BoundGoto or BoundLabel or BoundNoOp: return node;
             case BoundConditionalGoto n: return VisitConditionalGoto(n);
             case BoundReturn n: return VisitReturn(n);
             case BoundThrow n: return VisitThrow(n);
@@ -355,6 +356,8 @@ public abstract class BoundTreeRewriter
         if (!ReferenceEquals(fin, n.Finally)) changed = true;
         return changed ? new BoundTry(body, catches.MoveToImmutable(), fin) { Syntax = n.Syntax } : n;
     }
+
+    protected virtual BoundNode VisitYieldBreak(BoundYieldBreak n) => n;
 
     protected virtual BoundNode VisitYieldReturn(BoundYieldReturn n)
     {
