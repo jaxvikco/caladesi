@@ -25,10 +25,35 @@ internal sealed partial class MethodBodyEmitter
             case BoundLiteral lit:
                 if (used) EmitConstant(lit.Value.Value, lit.Type!);
                 return;
+            case BoundIsNull isn:
+            {
+                var ot = _m.ClrType(isn.Operand.Type!);
+                if (_m.IsNullableValue(isn.Operand.Type!))
+                {
+                    EmitAddress(isn.Operand);
+                    _il.Call(ILOpCode.Call, _m.GetMethodEntity(((NamedTypeSymbol)ot).GetMembers("get_HasValue").OfType<MethodSymbol>().First()), 1, 1);
+                    _il.LdcI4(0);
+                    _il.Op(ILOpCode.Ceq, -1);
+                }
+                else if (EmitModule.IsValueTypeLike(ot))
+                {
+                    EmitExpression(isn.Operand, false);
+                    _il.LdcI4(0);
+                }
+                else
+                {
+                    EmitExpression(isn.Operand, true);
+                    if (ot is TypeParameterSymbol) _il.Token(ILOpCode.Box, _m.GetTypeEntity(ot), 0);
+                    _il.Op(ILOpCode.Ldnull, 1);
+                    _il.Op(ILOpCode.Ceq, -1);
+                }
+                if (!used) _il.Op(ILOpCode.Pop, -1);
+                return;
+            }
             case BoundAddressOf ao:
                 EmitAddress(ao.Operand);
                 if (!used) _il.Op(ILOpCode.Pop, -1);
-                break;
+                return;
             case BoundLocal l:
                 if (used) _il.Ldloc(GetLocal(l.Local).Index);
                 return;

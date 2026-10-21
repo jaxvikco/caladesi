@@ -22,6 +22,23 @@ internal static class SynthesizedClassFactory
         var map = new Dictionary<TypeParameterSymbol, int>();
         var tps = ImmutableArray.CreateBuilder<TypeParameterSymbol>();
         var args = ImmutableArray.CreateBuilder<TypeSymbol>();
+        if (container is SynthesizedNamedType { MethodTypeParameterMap: { } inherited } enclosing)
+        {
+            // nested in a closure class of a generic method: the originals are reached through the enclosing class's map
+            var byOrdinal = inherited.ToDictionary(kv => kv.Value, kv => kv.Key);
+            foreach (var tp in classTps)
+            {
+                tps.Add(Copy(tp, tp.Ordinal, cls));
+                args.Add(byOrdinal.TryGetValue(tp.Ordinal, out var original) ? original : tp);
+            }
+            foreach (var kv in inherited) map[kv.Key] = kv.Value;
+            cls.SetTypeParameters(tps.ToImmutable());
+            cls.OwnArityValue = 0;
+            cls.MethodTypeParameterMap = map;
+            closed = cls.Construct(args.ToImmutable());
+            _ = enclosing;
+            return cls;
+        }
         foreach (var tp in classTps)
         {
             tps.Add(Copy(tp, tp.Ordinal, cls));

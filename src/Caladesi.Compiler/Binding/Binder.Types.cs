@@ -151,10 +151,10 @@ public sealed partial class Binder
         return new NullableTypeSymbol(e);
     }
 
-    private ImmutableArray<TypeSymbol> BindTypeArguments(TypeArgumentListSyntax list)
+    private ImmutableArray<TypeSymbol> BindTypeArguments(TypeArgumentListSyntax list, bool allowVoid = false)
     {
         var b = ImmutableArray.CreateBuilder<TypeSymbol>(list.Arguments.Count);
-        foreach (var a in list.Arguments) b.Add(BindType(a));
+        foreach (var a in list.Arguments) b.Add(BindType(a, allowVoid));
         return b.MoveToImmutable();
     }
 

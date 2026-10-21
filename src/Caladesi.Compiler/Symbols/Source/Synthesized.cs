@@ -86,6 +86,7 @@ public sealed class SynthesizedMethodSymbol : MethodSymbol
     public override bool IsAbstract => IsAbstractFlag;
     public override Accessibility DeclaredAccessibility => Accessibility_;
     public override bool IsFromSource => true;
+    public override ImmutableArray<MethodSymbol> ExplicitInterfaceImplementations => Overrides;
     public override bool IsAsync => IsAsyncMethod;
     public override bool IsIterator => IsIteratorMethod;
     public override Symbol? AssociatedSymbol => Associated;

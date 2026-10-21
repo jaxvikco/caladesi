@@ -226,6 +226,9 @@ internal sealed partial class EmitModule
 
     private void EmitMethodImpls(NamedTypeSymbol type, TypeDefinitionHandle handle)
     {
+        foreach (var method in _emitMembers[type].OfType<MethodSymbol>())
+            foreach (var impl in method.ExplicitInterfaceImplementations)
+                Metadata.AddMethodImplementation(handle, _methodDefs[method.OriginalDefinition], GetMethodEntity(impl));
         if (type is not (SourceClassSymbol or SourceRecordSymbol)) return;
         foreach (var iface in type.AllInterfaces)
         {
@@ -318,6 +321,8 @@ internal sealed partial class EmitModule
         if (m.MethodKind is MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.UserDefinedOperator or MethodKind.Conversion) attrs |= MethodAttributes.SpecialName;
         if (!m.IsStatic)
         {
+            if (m.ExplicitInterfaceImplementations.Length > 0)
+                return (attrs & ~MethodAttributes.MemberAccessMask) | MethodAttributes.Private | MethodAttributes.Virtual | MethodAttributes.Final | MethodAttributes.NewSlot;
             var virt = m.IsVirtual || m.IsAbstract || m.IsOverride || isInterface;
             var implementsInterface = !isInterface && type.TypeKind != TypeKind.Enum && type.AllInterfaces.Length > 0 && m.DeclaredAccessibility == Accessibility.Public && !virt
                 && m.MethodKind is MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet;
