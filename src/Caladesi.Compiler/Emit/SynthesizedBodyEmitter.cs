@@ -31,7 +31,7 @@ internal sealed class SynthesizedBodyEmitter
     private Compilation C => _m.Compilation;
     private bool IsStruct => _type.TypeKind == TypeKind.Struct;
     private NamedTypeSymbol Self => _type.IsGenericType ? _type.Construct(_type.TypeArguments) : _type;
-    private ImmutableArray<SourcePropertySymbol> Props => ((SourceRecordSymbol)_type).Properties;
+    private ImmutableArray<SourcePropertySymbol> Props => _type.GetMembers().OfType<SourcePropertySymbol>().Where(p => p.BackingField != null).ToImmutableArray();
 
     public void Emit()
     {

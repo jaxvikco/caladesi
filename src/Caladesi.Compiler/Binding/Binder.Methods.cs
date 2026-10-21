@@ -134,7 +134,13 @@ public sealed partial class Binder
 
         // 1. base constructor call
         BoundStatement? baseCall = null;
-        if (baseType != null)
+        if (m.InheritedBaseConstructor is { } inheritedCtor)
+        {
+            var at = (SyntaxNode?)(cls as SourceNamedType)?.DeclaringSyntax;
+            var forwarded = m.Parameters.Select(p => (BoundExpression)new BoundParameter(p) { Syntax = at }).ToImmutableArray();
+            baseCall = new BoundExpressionStatement(new BoundCall(ThisRef(cls, at!), inheritedCtor, forwarded, VoidType) { Syntax = at, IsBaseCall = true }) { Syntax = at };
+        }
+        else if (baseType != null)
         {
             if (explicitSuper)
             {

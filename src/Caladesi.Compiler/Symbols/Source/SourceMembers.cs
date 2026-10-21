@@ -11,6 +11,7 @@ public enum SynthesizedBodyKind
     AutoGetter,
     AutoSetter,
     DefaultConstructor,
+    InheritedConstructor,
     EnumValueField,
     RecordConstructor,
     RecordCopyConstructor,
@@ -99,6 +100,8 @@ public sealed class SourceMethodSymbol : MethodSymbol
     public bool IsExpressionBodyImplicitReturn { get; init; }
     /// <summary>For union constructors / conversions: the case this member wraps.</summary>
     public int UnionCaseIndex { get; init; } = -1;
+    /// <summary>For an inherited constructor: the base constructor it forwards its arguments to.</summary>
+    public MethodSymbol? InheritedBaseConstructor { get; init; }
 
     public override string Name => _name;
     public override string MetadataName => _emitName ?? _name;
@@ -161,7 +164,12 @@ public sealed class SourceMethodSymbol : MethodSymbol
         {
             if (!_params.IsDefault) return _params;
             if (!ExplicitParameters.IsDefault) return _params = ExplicitParameters;
-            if (ParameterList == null) return _params = ImmutableArray<ParameterSymbol>.Empty;
+            if (ParameterList == null)
+            {
+                if (_kind == MethodKind.PropertySet && AssociatedProperty != null)
+                    return _params = [new ParameterSymbol("value", AssociatedProperty.Type, 0, this)];
+                return _params = ImmutableArray<ParameterSymbol>.Empty;
+            }
             var binder = CreateBinder();
             _params = binder.BindParameters(this, ParameterList);
             return _params;
@@ -206,13 +214,13 @@ public sealed class SourceMethodSymbol : MethodSymbol
         if (_bodyBound) return _boundBody;
         _bodyBound = true;
         if (SyntheticBodyFactory != null) { _boundBody = SyntheticBodyFactory(this); return _boundBody; }
-        if (BodySyntax == null && !(_kind == MethodKind.Constructor && SynthesizedKind == SynthesizedBodyKind.DefaultConstructor)) return null;
+        if (BodySyntax == null && !(_kind == MethodKind.Constructor && SynthesizedKind is SynthesizedBodyKind.DefaultConstructor or SynthesizedBodyKind.InheritedConstructor)) return null;
         var binder = _compilation.CreateBinder(_file, this, _compilation.BodyDiagnostics);
         _boundBody = binder.BindMethodBody(this);
         return _boundBody;
     }
 
-    public bool HasBody => BodySyntax != null || SyntheticBodyFactory != null || _kind == MethodKind.Constructor && SynthesizedKind == SynthesizedBodyKind.DefaultConstructor;
+    public bool HasBody => BodySyntax != null || SyntheticBodyFactory != null || _kind == MethodKind.Constructor && SynthesizedKind is SynthesizedBodyKind.DefaultConstructor or SynthesizedBodyKind.InheritedConstructor;
 
     public override MethodSymbol? OverriddenMethod
     {

@@ -9,5 +9,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Caladesi.Compiler\Caladesi.Compiler.csproj" />
     <ProjectReference Include="..\..\src\Caladesi.Runtime\Caladesi.Runtime.csproj" />
+    <PackageReference Include="Microsoft.ILVerification" />
   </ItemGroup>
 </Project>

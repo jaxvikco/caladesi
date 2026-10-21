@@ -230,7 +230,18 @@ public sealed class SourceClassSymbol : SourceNamedType
 
         foreach (var g in accessorGroups.Values) b.AddRange(CreateAccessorProperty(g));
 
-        if (!hasCtor && !IsStatic)
+        var inherited = !hasCtor && !IsStatic && TypeKind == TypeKind.Class ? InheritedConstructors() : ImmutableArray<MethodSymbol>.Empty;
+        foreach (var bc in inherited)
+        {
+            b.Add(new SourceMethodSymbol(Compilation, File, this, ".ctor", MethodKind.Constructor, default, null,
+                _mods.IsAbstract ? Accessibility.Protected : bc.DeclaredAccessibility == Accessibility.Protected ? Accessibility.Protected : Accessibility.Public)
+            {
+                SynthesizedKind = SynthesizedBodyKind.InheritedConstructor,
+                InheritedBaseConstructor = bc,
+                ExplicitParameters = bc.Parameters.Select(p => p.WithType(p.Type, null!)).ToImmutableArray(),
+            });
+        }
+        if (!hasCtor && !IsStatic && inherited.IsEmpty)
         {
             b.Add(new SourceMethodSymbol(Compilation, File, this, ".ctor", MethodKind.Constructor, default, null,
                 _mods.IsAbstract ? Accessibility.Protected : Accessibility.Public)
@@ -251,6 +262,17 @@ public sealed class SourceClassSymbol : SourceNamedType
             });
         }
         return b.ToImmutable();
+    }
+
+    /// <summary>TypeScript semantics: a derived class without its own constructor inherits the base class constructors.</summary>
+    private ImmutableArray<MethodSymbol> InheritedConstructors()
+    {
+        var baseType = BaseType;
+        if (baseType == null || baseType.SpecialType is SpecialType.Object or SpecialType.ValueType or SpecialType.Enum) return ImmutableArray<MethodSymbol>.Empty;
+        var ctors = baseType.InstanceConstructors.Where(c => c.DeclaredAccessibility is Accessibility.Public or Accessibility.Protected or Accessibility.ProtectedOrInternal
+            || c.DeclaredAccessibility == Accessibility.Internal && baseType.IsFromSource).ToImmutableArray();
+        if (ctors.All(c => c.Parameters.Length == 0)) return ImmutableArray<MethodSymbol>.Empty;
+        return ctors;
     }
 
     private void AddProperty(ImmutableArray<Symbol>.Builder b, ImmutableArray<(Symbol, ExpressionSyntax)>.Builder inst,
