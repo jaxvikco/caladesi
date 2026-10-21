@@ -75,4 +75,25 @@ public class EmitAsyncTests
         async function boom(): Task<int> { await Task.Yield(); throw new InvalidOperationException("bad"); }
         try { boom().Wait(); } catch (e: AggregateException) { Console.WriteLine(e.InnerException!.Message); }
         """, "bad\n");
+
+    [TestMethod]
+    public void TopLevelAwait() => Check("""
+        async function twice(x: int): Task<int> { await Task.Yield(); return x * 2; }
+        const v = await twice(21);
+        Console.WriteLine(v);
+        """, "42\n");
+
+    [TestMethod]
+    public void AsyncMainWithExitCode()
+    {
+        var (output, code) = EmitHarness.Run("""
+            async function main(args: string[]): Task<int> {
+              await Task.Delay(1);
+              Console.WriteLine("main");
+              return 7;
+            }
+            """);
+        Assert.AreEqual("main\n", output);
+        Assert.AreEqual(7, code);
+    }
 }

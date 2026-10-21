@@ -9,6 +9,9 @@ namespace Caladesi.Compiler;
 
 public sealed partial class Binder
 {
+    /// <summary>Binding the initializer of a top-level variable: it runs in the entry method, where <c>await</c> is allowed.</summary>
+    internal void EnableTopLevelAwait() => _isAsyncContext = true;
+
     private void EnterFunction(SourceMethodSymbol m)
     {
         _function = m;
