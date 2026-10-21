@@ -33,4 +33,8 @@ public static class Descriptors
     public static readonly DiagnosticDescriptor NamespaceNotSupported = E(27, "Namespace declarations are not supported; the namespace is derived from the folder path.");
     public static readonly DiagnosticDescriptor FeatureNotSupported = E(28, "{0} is not supported.");
     public static readonly DiagnosticDescriptor RegexNotSupported = E(29, "Regular expression literals are not supported.");
+
+    // ---- Compilation / references (0100-0149)
+    public static readonly DiagnosticDescriptor CannotReadReference = E(100, "Cannot read reference '{0}': {1}");
+    public static readonly DiagnosticDescriptor CoreLibraryMissing = E(101, "A reference to the core library (System.Runtime) is required.");
 }
