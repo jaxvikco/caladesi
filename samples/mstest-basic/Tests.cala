@@ -1,11 +1,15 @@
-import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { TestClassAttribute, TestMethodAttribute, Assert } from "Microsoft.VisualStudio.TestTools.UnitTesting";
 
 @TestClass
 export class Tests {
   @TestMethod
   addsNumbers(): void {
-    if (2 + 2 !== 4) {
-      throw new Exception("2 + 2 should be 4");
-    }
+    Assert.AreEqual(4, 2 + 2);
+  }
+
+  @TestMethod
+  stringsCompare(): void {
+    Assert.AreEqual("ab", "a" + "b");
+    Assert.IsTrue("hello".StartsWith("he"));
   }
 }

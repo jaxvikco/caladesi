@@ -78,6 +78,7 @@
                  TargetFrameworkDisplayName="$(TargetFrameworkMonikerDisplayName)"
                  Optimize="$(Optimize)"
                  GenerateTestEntryPoint="$(CaladesiGenerateTestEntryPoint)"
+                 TestHooks="@(TestingPlatformBuilderHook)"
                  YieldDuringToolExecution="true" />
 
     <ItemGroup>

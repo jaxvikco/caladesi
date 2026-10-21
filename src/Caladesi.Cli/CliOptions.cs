@@ -24,6 +24,7 @@ internal sealed class CliOptions
     public List<string> Defines { get; } = new();
     public List<string> NoWarn { get; } = new();
     public List<string> GlobalImports { get; } = new();
+    public List<string> TestHooks { get; } = new();
     public List<string> Sources { get; } = new();
     public List<string> Errors { get; } = new();
     private bool _globalImportsSet;
@@ -92,6 +93,7 @@ internal sealed class CliOptions
             case "nullable": Nullable = !value.Equals("disable", StringComparison.OrdinalIgnoreCase); break;
             case "warnaserror": WarnAsError = !value.Equals("-", StringComparison.Ordinal) && !value.Equals("false", StringComparison.OrdinalIgnoreCase); break;
             case "optimize": Optimize = !value.Equals("-", StringComparison.Ordinal) && !value.Equals("false", StringComparison.OrdinalIgnoreCase); break;
+            case "testhook": if (value.Length > 0) TestHooks.Add(value); break;
             case "testentry": GenerateTestEntryPoint = !value.Equals("false", StringComparison.OrdinalIgnoreCase); break;
             case "targetframework": TargetFramework = value; break;
             case "targetframeworkdisplay": TargetFrameworkDisplayName = value; break;
