@@ -624,7 +624,7 @@ public sealed partial class Binder
         return Speculatively(() =>
         {
             var bound = BindExpression(initializer);
-            if (bound is BoundUnbound { IsLambda: false } u) bound = u.BindToType(null);
+            if (bound is BoundUnbound u && HasNaturalType(u)) bound = u.BindToType(null);
             return WidenInferredType(bound, initializer, report: false);
         });
     }

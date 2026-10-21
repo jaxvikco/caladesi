@@ -17,12 +17,13 @@ internal static class Lowerer
         var originalTypes = program.Types.ToList();
         foreach (var type in originalTypes)
         {
+            var ordinal = 0;
             foreach (var m in type.GetMembers().OfType<SourceMethodSymbol>())
             {
                 var body = m.GetBoundBody();
                 if (body == null) continue;
                 if (type is SourceNamedType snt) program.MethodFiles[m] = snt.File;
-                var lowered = LowerMethod(compilation, program, m, body);
+                var lowered = LowerMethod(compilation, program, type, m, ordinal++, body);
                 program.Bodies[m] = lowered;
             }
         }
@@ -30,9 +31,10 @@ internal static class Lowerer
         return program;
     }
 
-    private static BoundBlock LowerMethod(Compilation compilation, LoweredProgram program, SourceMethodSymbol method, BoundBlock body)
+    private static BoundBlock LowerMethod(Compilation compilation, LoweredProgram program, NamedTypeSymbol type, SourceMethodSymbol method, int ordinal, BoundBlock body)
     {
-        // later passes plug in here: closure conversion, iterator and async state machines
+        body = ClosureLowerer.Lower(compilation, program, method, type, ordinal, body);
+        // later passes plug in here: iterator and async state machines
         return body;
     }
 }

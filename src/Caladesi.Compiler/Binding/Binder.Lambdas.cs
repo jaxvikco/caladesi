@@ -92,10 +92,33 @@ public sealed partial class Binder
         };
         Func<TypeSymbol?, BoundExpression> bindToType = target =>
         {
+            target ??= NaturalDelegateType(info);
             if (target == null) return Bad(syntax);
             return WithCapturedState(capturedScope, capturedNarrow, () => BindLambdaToDelegate(syntax, info, names, parameterList, target, isAsync, isGenerator, body));
         };
         return new BoundUnbound(syntax, bindToType) { IsLambda = true, Lambda = info };
+    }
+
+    /// <summary>True when a lambda can be bound without a target delegate type (all parameters annotated).</summary>
+    internal static bool HasNaturalType(BoundUnbound u) =>
+        !u.IsLambda || u.Lambda is { IsGenerator: false } l && l.ExplicitParameterTypes.All(t => t != null);
+
+    /// <summary>The Func/Action type of a lambda whose parameters are all annotated (<c>(x: int) =&gt; x + 1</c> is <c>Func&lt;int, int&gt;</c>).</summary>
+    private TypeSymbol? NaturalDelegateType(LambdaInfo info)
+    {
+        if (info.IsGenerator || info.ExplicitParameterTypes.Any(t => t == null) || info.ParameterCount > 16) return null;
+        var ps = info.ExplicitParameterTypes.Select(t => t!).ToImmutableArray();
+        var ret = info.ExplicitReturnType ?? info.InferReturnType(ps);
+        if (ret == null) return null;
+        if (info.IsAsync && info.ExplicitReturnType == null) ret = WrapInTask(ret);
+        var n = ps.Length;
+        if (ret.IsVoid)
+        {
+            var action = _c.GetWellKnownType(n == 0 ? "System.Action" : "System.Action`" + n);
+            return n == 0 ? action : action?.Construct(ps);
+        }
+        var func = _c.GetWellKnownType("System.Func`" + (n + 1));
+        return func?.Construct(ps.Add(ret));
     }
 
     private T WithCapturedState<T>(Scope scope, ImmutableDictionary<NarrowPath, TypeSymbol> narrow, Func<T> f)
