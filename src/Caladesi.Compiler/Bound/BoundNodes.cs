@@ -244,6 +244,12 @@ public sealed class BoundSequence(ImmutableArray<LocalSymbol> locals, ImmutableA
     public BoundExpression Value { get; } = value;
 }
 
+/// <summary>True when the operand is null (a reference) or has no value (a nullable value type). Used by lowering.</summary>
+public sealed class BoundIsNull(BoundExpression operand, TypeSymbol boolType) : BoundExpression(boolType)
+{
+    public BoundExpression Operand { get; } = operand;
+}
+
 /// <summary>Passes the managed address of an l-value (field, local, parameter, array element) to a <c>ref</c> parameter.</summary>
 public sealed class BoundAddressOf(BoundExpression operand) : BoundExpression(operand.Type)
 {

@@ -15,6 +15,7 @@ internal static class Lowerer
         foreach (var a in compilation.AnonymousRecords) program.Types.Add(a);
 
         var originalTypes = program.Types.ToList();
+        var ordinalCounter = 10000;
         foreach (var type in originalTypes)
         {
             var ordinal = 0;
@@ -27,6 +28,12 @@ internal static class Lowerer
                 program.Bodies[m] = lowered;
             }
         }
+        // lambdas created by closure conversion may themselves be async or iterators
+        foreach (var lm in program.Bodies.Keys.OfType<SynthesizedMethodSymbol>().Where(m => m.LambdaOrigin != null && (m.IsAsync || m.IsIterator)).ToList())
+        {
+            var host = (NamedTypeSymbol)lm.ContainingSymbol!;
+            StateMachineLowerer.Lower(compilation, program, lm, host, ordinalCounter++, program.Bodies[lm]);
+        }
         program.EntryPoint = new EntryPointChecker(compilation).FindEntryPoint();
         return program;
     }
@@ -34,7 +41,7 @@ internal static class Lowerer
     private static BoundBlock LowerMethod(Compilation compilation, LoweredProgram program, NamedTypeSymbol type, SourceMethodSymbol method, int ordinal, BoundBlock body)
     {
         body = ClosureLowerer.Lower(compilation, program, method, type, ordinal, body);
-        // later passes plug in here: iterator and async state machines
-        return body;
+        if (method.IsAsync || method.IsIterator) StateMachineLowerer.Lower(compilation, program, method, type, ordinal, body);
+        return program.Bodies.TryGetValue(method, out var stub) && method.IsAsync | method.IsIterator ? stub : body;
     }
 }
