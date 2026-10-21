@@ -1,0 +1,66 @@
+function len(s: string | null): int {
+  if (s === null) return -1;
+  return s.Length;
+}
+function first(xs: string[] | null): string | null { return xs?.[0] ?? null; }
+
+let name: string | null = null;
+name ??= "default";
+Console.WriteLine(name!.Length);
+Console.WriteLine(len(null));
+Console.WriteLine(len("abc"));
+Console.WriteLine(first(null) ?? "none");
+Console.WriteLine(first(["z"]));
+
+let n: int? = null;
+Console.WriteLine(n ?? 5);
+n = 3;
+Console.WriteLine(n! + 1);
+const m: int | null = n;
+if (m !== null) Console.WriteLine(m + 100);
+
+class Node { next: Node | null = null; value = 0; constructor(v: int) { this.value = v; } }
+const head = new Node(1);
+head.next = new Node(2);
+Console.WriteLine(head.next?.value);
+Console.WriteLine(head.next?.next?.value ?? -1);
+
+enum Color { Red, Green = 5, Blue }
+type Dir = "up" | "down" | "left";
+function move(d: Dir): string {
+  switch (d) {
+    case "up": return "U";
+    case "down": return "D";
+    case "left": return "L";
+  }
+}
+const c: Color = Color.Green;
+Console.WriteLine(c);
+Console.WriteLine(Color.Blue as int);
+Console.WriteLine(move("down"));
+const dd: Dir = "left";
+Console.WriteLine(dd);
+
+class Circle { constructor(public r: double) {} }
+class Square { constructor(public s: double) {} }
+type Shape = Circle | Square;
+function area(s: Shape): double {
+  switch (s) {
+    case Circle: return 3 * s.r * s.r;
+    case Square: return s.s * s.s;
+  }
+}
+Console.WriteLine(area(new Circle(2)));
+Console.WriteLine(area(new Square(3)));
+function describe(x: int | string): string {
+  if (x instanceof string) return "s:" + x;
+  return "i:" + x;
+}
+Console.WriteLine(describe(5));
+Console.WriteLine(describe("q"));
+function check(o: object): string {
+  if (o instanceof Circle) return "circle " + o.r;
+  return "other";
+}
+Console.WriteLine(check(new Circle(1)));
+Console.WriteLine(check("x"));

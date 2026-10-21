@@ -1,0 +1,2 @@
+import { Point } from "../geo/shapes";
+export function show(p: Point): string { return `(${p.x}, ${p.y})`; }

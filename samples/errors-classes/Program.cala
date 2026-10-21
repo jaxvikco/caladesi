@@ -1,0 +1,7 @@
+class A { m() {} }
+class B extends A { m() {} }
+interface I { f(): void; }
+class C implements I {}
+abstract class D { abstract g(): void; }
+const d = new D();
+Console.WriteLine(1);

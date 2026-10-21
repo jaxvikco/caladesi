@@ -1,0 +1,48 @@
+interface Shape {
+  readonly name: string;
+  area(): double;
+}
+
+abstract class Base implements Shape {
+  static count = 0;
+  protected id: int;
+  constructor(public readonly name: string) {
+    Base.count++;
+    this.id = Base.count;
+  }
+  abstract area(): double;
+  describe(): string { return `${this.name}#${this.id} area=${this.area()}`; }
+}
+
+class Circle extends Base {
+  constructor(private radius: double) { super("circle"); }
+  override area(): double { return Math.PI * this.radius ** 2; }
+}
+
+class Rect extends Base {
+  constructor(public w: double, public h: double) { super("rect"); }
+  override area(): double { return this.w * this.h; }
+  get perimeter(): double { return 2 * (this.w + this.h); }
+  set width(v: double) { this.w = v; }
+}
+
+sealed class Final { static readonly Answer = 42; }
+
+const shapes: Shape[] = [new Circle(1), new Rect(2, 3)];
+for (const s of shapes) Console.WriteLine(`${s.name}: ${s.area().ToString("F2")}`);
+const r = new Rect(1, 2);
+r.width = 10;
+Console.WriteLine(r.perimeter);
+Console.WriteLine(r.describe());
+Console.WriteLine(Base.count);
+Console.WriteLine(Final.Answer);
+
+type Point = { x: int; y: int; label?: string };
+struct type Vec = { x: double; y: double };
+const p: Point = { x: 1, y: 2 };
+const q = { ...p, y: 5 };
+Console.WriteLine(p === q);
+Console.WriteLine(q);
+const v = new Vec(1.5, 2);
+Console.WriteLine(v);
+Console.WriteLine(p.label === null);

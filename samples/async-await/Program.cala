@@ -1,0 +1,70 @@
+async function add(a: int, b: int): Task<int> {
+  await Task.Delay(1);
+  return a + b;
+}
+
+async function one(): Task<int> { await Task.Yield(); return 1; }
+
+async function work(n: int): Task<int> {
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    try {
+      await Task.Delay(1);
+      if (i === 2) throw new Exception("two");
+      sum += i;
+    } catch (e: Exception) {
+      await Task.Delay(1);
+      sum += 100;
+    } finally {
+      await Task.Yield();
+      sum += 1000;
+    }
+  }
+  return sum;
+}
+
+async function* numbers(n: int): AsyncIterable<int> {
+  for (let i = 0; i < n; i++) {
+    await Task.Delay(1);
+    yield i * 10;
+  }
+}
+
+async function* withCleanup(): AsyncIterable<string> {
+  try {
+    yield "a";
+    yield "b";
+  } finally {
+    await Task.Yield();
+    Console.WriteLine("cleanup");
+  }
+}
+
+class Res implements IAsyncDisposable {
+  async DisposeAsync(): ValueTask { await Task.Yield(); Console.WriteLine("disposed"); }
+}
+
+class Svc {
+  name = "svc";
+  async greet(who: string): Task<string> { await Task.Yield(); return `${this.name} hello ${who}`; }
+}
+
+async function boom(): Task<int> { await Task.Yield(); throw new InvalidOperationException("bad"); }
+
+Console.WriteLine(await add(2, 3));
+Console.WriteLine(10 + await one() + (await one()) * 3);
+Console.WriteLine(await work(4));
+let total = 0;
+for await (const x of numbers(4)) total += x;
+Console.WriteLine(total);
+for await (const s of withCleanup()) { Console.WriteLine(s); break; }
+{
+  await using r = new Res();
+  Console.WriteLine("body");
+}
+const f = async (x: int): Task<int> => { await Task.Yield(); return x * 2; };
+Console.WriteLine(await new Svc().greet("bob"));
+Console.WriteLine(await f(21));
+try { await boom(); } catch (e: InvalidOperationException) { Console.WriteLine(e.Message); }
+const results = await Task.WhenAll([add(1, 1), add(2, 2), add(3, 3)]);
+Console.WriteLine(results.Sum());

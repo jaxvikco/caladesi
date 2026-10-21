@@ -1,0 +1,10 @@
+class Circle { r = 1; }
+class Square { s = 1; }
+type Shape = Circle | Square;
+function area(s: Shape): double {
+  switch (s) {
+    case Circle: return 1;
+  }
+  return 0;
+}
+Console.WriteLine(1);

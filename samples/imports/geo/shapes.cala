@@ -1,0 +1,9 @@
+export type Point = { x: int; y: int };
+export function distance(a: Point, b: Point): double {
+  const dx = a.x - b.x, dy = a.y - b.y;
+  return Math.Sqrt(dx * dx + dy * dy);
+}
+export const ORIGIN: Point = { x: 0, y: 0 };
+export class Counter { count = 0; inc(): int { return ++this.count; } }
+export enum Level { Low, High }
+function hidden(): int { return 1; }

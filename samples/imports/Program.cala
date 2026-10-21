@@ -1,0 +1,11 @@
+import { Point, distance, ORIGIN, Counter, Level } from "./geo/shapes";
+import * as S from "./util/strings";
+import type { Point as P2 } from "./geo/shapes";
+
+const p: P2 = { x: 3, y: 4 };
+Console.WriteLine(distance(p, ORIGIN));
+Console.WriteLine(S.show(p));
+const c = new Counter();
+c.inc(); 
+Console.WriteLine(c.inc());
+Console.WriteLine(Level.High);
