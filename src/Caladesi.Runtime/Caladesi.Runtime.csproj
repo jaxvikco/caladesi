@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="$(CaladesiRepoRoot)eng/Aot.props" />
+  <PropertyGroup>
+    <PackageId>Caladesi.Runtime</PackageId>
+    <Description>Runtime support library for assemblies produced by the Caladesi compiler.</Description>
+    <RootNamespace>Caladesi.Runtime</RootNamespace>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+</Project>

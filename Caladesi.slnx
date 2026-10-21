@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Caladesi.Cli/Caladesi.Cli.csproj" />
+    <Project Path="src/Caladesi.Compiler/Caladesi.Compiler.csproj" />
+    <Project Path="src/Caladesi.LanguageServer/Caladesi.LanguageServer.csproj" />
+    <Project Path="src/Caladesi.Runtime/Caladesi.Runtime.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Caladesi.Compiler.Tests/Caladesi.Compiler.Tests.csproj" />
+    <Project Path="tests/Caladesi.E2E/Caladesi.E2E.csproj" />
+    <Project Path="tests/Caladesi.LanguageServer.Tests/Caladesi.LanguageServer.Tests.csproj" />
+  </Folder>
+</Solution>

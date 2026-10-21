@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="$(CaladesiRepoRoot)eng/Aot.props" />
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>calac</AssemblyName>
+    <RootNamespace>Caladesi.Cli</RootNamespace>
+    <PublishAot>true</PublishAot>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Caladesi.Compiler\Caladesi.Compiler.csproj" />
+  </ItemGroup>
+</Project>

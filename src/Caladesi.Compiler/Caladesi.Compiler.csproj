@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="$(CaladesiRepoRoot)eng/Aot.props" />
+  <PropertyGroup>
+    <RootNamespace>Caladesi.Compiler</RootNamespace>
+    <InternalsVisibleToTests>true</InternalsVisibleToTests>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Caladesi.Runtime\Caladesi.Runtime.csproj" />
+  </ItemGroup>
+</Project>
