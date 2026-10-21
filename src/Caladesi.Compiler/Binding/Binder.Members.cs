@@ -312,6 +312,17 @@ public sealed partial class Binder
             return ApplyNarrowing(new BoundArrayAccess(left, idx, arr.ElementType) { Syntax = ea });
         }
 
+        if (lt is NamedTypeSymbol { IsTuple: true } tuple && args.Length == 1)
+        {
+            if (args[0].ConstantValue is { Value: int ti } && ti >= 0 && ti < Math.Min(tuple.TypeArguments.Length, 7))
+            {
+                var itemField = tuple.GetMembers("Item" + (ti + 1)).OfType<FieldSymbol>().FirstOrDefault();
+                if (itemField != null) return new BoundFieldAccess(left, itemField) { Syntax = ea };
+            }
+            Report(Descriptors.TupleIndexMustBeConstant, ea, tuple.ToDisplayString());
+            return Bad(ea, left);
+        }
+
         // indexers
         var indexers = new List<PropertySymbol>();
         var seen = new HashSet<TypeSymbol>();

@@ -182,6 +182,7 @@ public static class Descriptors
     public static readonly DiagnosticDescriptor VoidDeref = E(315, "Cannot access a member of a 'void' value.");
     public static readonly DiagnosticDescriptor VoidNotAllowed = E(316, "'void' is only allowed as a return type.");
     public static readonly DiagnosticDescriptor WrongArgumentCount = E(317, "'{0}' expects {1} argument(s) but got {2}.");
+    public static readonly DiagnosticDescriptor TupleIndexMustBeConstant = E(319, "A tuple of type '{0}' can only be indexed with a constant in range.");
     public static readonly DiagnosticDescriptor YieldNotAllowedHere = E(318, "'yield' is only allowed in a generator function.");
     public static readonly DiagnosticDescriptor NoEntryPoint = E(170, "Program does not contain an entry point; add top-level statements or a 'main' function.");
 }

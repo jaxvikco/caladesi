@@ -146,7 +146,6 @@ public sealed partial class Binder
                 }
                 else
                 {
-                    if (ps[i].IsParams) { defaultsUsed++; continue; }
                     if (!ps[i].IsOptional) return false;
                     defaultsUsed++;
                 }
@@ -333,8 +332,13 @@ public sealed partial class Binder
     }
 
     /// <summary>Positive if converting to <paramref name="t1"/> is better, negative if <paramref name="t2"/> is better, 0 if equal.</summary>
+    private static TypeSymbol StripReferenceNullability(TypeSymbol t) =>
+        t is NullableTypeSymbol { Underlying: { } u } && !u.IsValueType && u is not TypeParameterSymbol ? u : t;
+
     private int CompareConversions(BoundExpression arg, TypeSymbol t1, TypeSymbol t2)
     {
+        t1 = StripReferenceNullability(t1);
+        t2 = StripReferenceNullability(t2);
         if (t1.Equals(t2)) return 0;
         if (arg is BoundUnbound { IsLambda: true } or BoundMethodGroup)
         {
@@ -358,6 +362,7 @@ public sealed partial class Binder
         var st = arg.Type;
         if (st != null)
         {
+            st = StripReferenceNullability(st);
             if (st.Equals(t1)) return 1;
             if (st.Equals(t2)) return -1;
         }
