@@ -674,7 +674,7 @@ public sealed partial class Binder
 
     private BoundExpression ConvertImplicitForInference(BoundExpression v, LiteralMember m)
     {
-        if (v is BoundUnbound u && !u.IsLambda) return u.BindToType(null);
+        if (v is BoundUnbound u && HasNaturalType(u)) return u.BindToType(null);
         Report(Descriptors.CannotInferType, m.NameNode);
         return Bad(m.NameNode);
     }

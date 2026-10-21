@@ -286,7 +286,7 @@ public sealed partial class Binder
             }
             else
             {
-                if (v is BoundUnbound u && !u.IsLambda) v = u.BindToType(null);
+                if (v is BoundUnbound u && HasNaturalType(u)) v = u.BindToType(null);
                 var t = WidenInferredType(v, d.Initializer.Value, report: true);
                 init = t.IsErrorType ? Bad(d, v) : ConvertImplicit(v, t, d.Initializer.Value);
                 declared = t;

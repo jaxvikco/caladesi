@@ -156,6 +156,7 @@ internal sealed partial class EmitModule
         foreach (var type in _program.Types)
         {
             var handle = typeIndex[type];
+            _classTypeParameterMap = (type as SynthesizedNamedType)?.MethodTypeParameterMap;
             var members = _emitMembers[type];
             var (firstField, firstMethod, firstProp) = _firstRows[type];
             var nested = type.ContainingSymbol is NamedTypeSymbol;
@@ -218,6 +219,7 @@ internal sealed partial class EmitModule
                 foreach (var p in props) EmitProperty(p);
             }
             EmitMethodImpls(type, handle);
+            _classTypeParameterMap = null;
         }
         _ = typeIndex;
     }
@@ -346,12 +348,7 @@ internal sealed partial class EmitModule
         {
             il = new ILBuilder();
             _program.MethodFiles.TryGetValue(m, out file);
-            _classTypeParameterMap = _program.ClassTypeParameterMaps.GetValueOrDefault(m);
-            try
-            {
-                EmitBodyIL(type, m, il, file);
-            }
-            finally { _classTypeParameterMap = null; }
+            EmitBodyIL(type, m, il, file);
             localSig = BuildLocalSignature(il);
             bodyOffset = _bodies.AddMethodBody(il.Encoder, il.MaxStack, localSig, il.Locals.Count > 0 ? MethodBodyAttributes.InitLocals : MethodBodyAttributes.None);
         }
@@ -529,8 +526,10 @@ internal sealed partial class EmitModule
         foreach (var g in gps)
         {
             var h = Metadata.AddGenericParameter(g.Owner, g.Attrs, Metadata.GetOrAddString(g.Name), g.Index);
+            _classTypeParameterMap = (g.Symbol.Container as SynthesizedNamedType)?.MethodTypeParameterMap;
             foreach (var c in g.Symbol.ConstraintTypes)
                 Metadata.AddGenericParameterConstraint(h, GetTypeEntity(c));
+            _classTypeParameterMap = null;
         }
         foreach (var a in _attributes.OrderBy(a => CodedIndex.HasCustomAttribute(a.Parent)))
             Metadata.AddCustomAttribute(a.Parent, a.Ctor, a.Value);

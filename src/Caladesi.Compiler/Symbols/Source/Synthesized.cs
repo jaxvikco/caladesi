@@ -66,6 +66,10 @@ public sealed class SynthesizedMethodSymbol : MethodSymbol
     /// <summary>The source method this was derived from (lambda bodies, state machines): used for debug info.</summary>
     public MethodSymbol? SourceMethod { get; init; }
     public SynthesizedBodyKind SynthesizedKind { get; init; }
+    /// <summary>For a method generated from a lambda or local function: the lambda it came from.</summary>
+    public Caladesi.Compiler.Bound.LambdaSymbol? LambdaOrigin { get; init; }
+    public bool IsAsyncMethod { get; init; }
+    public bool IsIteratorMethod { get; init; }
     public Symbol? Associated { get; init; }
     public ImmutableArray<MethodSymbol> Overrides { get; init; } = ImmutableArray<MethodSymbol>.Empty;
 
@@ -82,6 +86,8 @@ public sealed class SynthesizedMethodSymbol : MethodSymbol
     public override bool IsAbstract => IsAbstractFlag;
     public override Accessibility DeclaredAccessibility => Accessibility_;
     public override bool IsFromSource => true;
+    public override bool IsAsync => IsAsyncMethod;
+    public override bool IsIterator => IsIteratorMethod;
     public override Symbol? AssociatedSymbol => Associated;
     internal void SetReturnType(TypeSymbol t) => _returnType = t;
     internal void SetParameters(ImmutableArray<ParameterSymbol> p) => _params = p;
@@ -107,10 +113,17 @@ public sealed class SynthesizedNamedType : NamedTypeSymbol
         TypeParameters_ = typeParameters.IsDefault ? ImmutableArray<TypeParameterSymbol>.Empty : typeParameters;
     }
 
+    /// <summary>Supplies the type parameters after construction (they need this type as their container).</summary>
+    public void SetTypeParameters(ImmutableArray<TypeParameterSymbol> tps) => TypeParameters_ = tps;
+    /// <summary>Number of type parameters this type declares itself (the rest are inherited from its containing type).</summary>
+    public int OwnArityValue { get; set; } = -1;
+    /// <summary>For closure classes: maps the original method's type parameters to the ordinals of this class's own copies; applied when encoding signatures.</summary>
+    public Dictionary<TypeParameterSymbol, int>? MethodTypeParameterMap { get; set; }
+
     private string Name_ { get; }
     private TypeKind TypeKind_ { get; }
     private Accessibility Accessibility_ { get; }
-    private ImmutableArray<TypeParameterSymbol> TypeParameters_ { get; }
+    private ImmutableArray<TypeParameterSymbol> TypeParameters_ { get; set; }
     public bool IsSealedFlag { get; init; } = true;
     public bool IsAbstractFlag { get; init; }
     public bool IsStaticFlag { get; init; }
@@ -130,7 +143,7 @@ public sealed class SynthesizedNamedType : NamedTypeSymbol
     public override ImmutableArray<NamedTypeSymbol> Interfaces => _interfaces;
     public override ImmutableArray<TypeParameterSymbol> TypeParameters => TypeParameters_;
     public override ImmutableArray<TypeSymbol> TypeArguments => TypeParameters_.CastArray<TypeSymbol>();
-    public override int OwnArity => TypeParameters_.Length;
+    public override int OwnArity => OwnArityValue >= 0 ? OwnArityValue : TypeParameters_.Length;
 
     public void AddMember(Symbol m) => _members.Add(m);
     public void AddInterface(NamedTypeSymbol i) => _interfaces = _interfaces.Add(i);

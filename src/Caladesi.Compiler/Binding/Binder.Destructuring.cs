@@ -158,7 +158,7 @@ public sealed partial class Binder
     {
         var rhs = BindValue(a.Right);
         if (rhs is BoundBadExpression) return Bad(a, rhs);
-        if (rhs is BoundUnbound u && !u.IsLambda) rhs = u.BindToType(null);
+        if (rhs is BoundUnbound u && HasNaturalType(u)) rhs = u.BindToType(null);
         if (rhs.Type == null || rhs.HasErrors) return Bad(a, rhs);
         var t = rhs.Type.StripNullable();
         var tmp = new LocalSymbol("<da>", rhs.Type, true, LocalOwner) { IsSynthesized = true };

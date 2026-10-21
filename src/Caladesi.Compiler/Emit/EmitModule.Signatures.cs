@@ -14,9 +14,9 @@ internal sealed partial class EmitModule
 {
     private readonly Dictionary<AssemblySymbol, AssemblyReferenceHandle> _assemblyRefs = new();
     private readonly Dictionary<NamedTypeSymbol, EntityHandle> _typeHandles = new();
-    private readonly Dictionary<TypeSymbol, TypeSpecificationHandle> _typeSpecs = new();
-    private readonly Dictionary<Symbol, EntityHandle> _memberRefs = new();
-    private readonly Dictionary<(EntityHandle, string), MethodSpecificationHandle> _methodSpecs = new();
+    private readonly Dictionary<(TypeSymbol, bool), TypeSpecificationHandle> _typeSpecs = new();
+    private readonly Dictionary<(Symbol, bool), EntityHandle> _memberRefs = new();
+    private readonly Dictionary<(EntityHandle, string, bool), MethodSpecificationHandle> _methodSpecs = new();
 
     public Compilation Compilation { get; }
     public MetadataBuilder Metadata { get; } = new();
@@ -173,9 +173,9 @@ internal sealed partial class EmitModule
     {
         t = ClrType(t);
         if (t is NamedTypeSymbol nt && !nt.IsGenericType) return GetTypeDefOrRef(nt);
-        if (_typeSpecs.TryGetValue(t, out var h)) return h;
+        if (_typeSpecs.TryGetValue((t, _classTypeParameterMap != null), out var h)) return h;
         h = Metadata.AddTypeSpecification(EncodeTypeBlob(t));
-        _typeSpecs[t] = h;
+        _typeSpecs[(t, _classTypeParameterMap != null)] = h;
         return h;
     }
 
@@ -237,7 +237,7 @@ internal sealed partial class EmitModule
             var enc = new BlobEncoder(bb).MethodSpecificationSignature(cm.TypeArguments.Length);
             foreach (var a in cm.TypeArguments) EncodeType(enc.AddArgument(), a);
             var blob = Metadata.GetOrAddBlob(bb);
-            var key = (baseHandle, string.Join(",", cm.TypeArguments.Select(a => a.ToDisplayString())));
+            var key = (baseHandle, string.Join(",", cm.TypeArguments.Select(a => a.ToDisplayString())), _classTypeParameterMap != null);
             if (!_methodSpecs.TryGetValue(key, out var spec))
             {
                 spec = Metadata.AddMethodSpecification(baseHandle, blob);
@@ -250,11 +250,15 @@ internal sealed partial class EmitModule
         // members of a generic type are always referenced through the type's own instantiation (Box<!0>::m), even inside the type
         var isOnConstructedType = container is ConstructedNamedType || container is { IsGenericType: true };
         if (!isOnConstructedType && _methodDefs.TryGetValue(def, out var md)) return md;
-        if (_memberRefs.TryGetValue(m, out var existing)) return existing;
+        if (_memberRefs.TryGetValue((m, _classTypeParameterMap != null), out var existing)) return existing;
         var parent = container != null ? GetTypeEntity(container) : throw new InvalidOperationException("Method without container: " + m.Name);
         var name = def.MetadataName;
-        var handle = Metadata.AddMemberReference(parent, Metadata.GetOrAddString(name), EncodeMethodSignature(def));
-        _memberRefs[m] = handle;
+        var savedMap = _classTypeParameterMap;
+        _classTypeParameterMap = (def.ContainingSymbol as SynthesizedNamedType)?.MethodTypeParameterMap;
+        var signature = EncodeMethodSignature(def);
+        _classTypeParameterMap = savedMap;
+        var handle = Metadata.AddMemberReference(parent, Metadata.GetOrAddString(name), signature);
+        _memberRefs[(m, _classTypeParameterMap != null)] = handle;
         return handle;
     }
 
@@ -264,10 +268,14 @@ internal sealed partial class EmitModule
         var container = f.ContainingSymbol as NamedTypeSymbol;
         var isOnConstructedType = container is ConstructedNamedType || container is { IsGenericType: true };
         if (!isOnConstructedType && _fieldDefs.TryGetValue(def, out var fd)) return fd;
-        if (_memberRefs.TryGetValue(f, out var existing)) return existing;
+        if (_memberRefs.TryGetValue((f, _classTypeParameterMap != null), out var existing)) return existing;
         var parent = GetTypeEntity(container!);
-        var handle = Metadata.AddMemberReference(parent, Metadata.GetOrAddString(def.Name), EncodeFieldSignature(def.Type));
-        _memberRefs[f] = handle;
+        var savedMap = _classTypeParameterMap;
+        _classTypeParameterMap = (def.ContainingSymbol as SynthesizedNamedType)?.MethodTypeParameterMap;
+        var signature = EncodeFieldSignature(def.Type);
+        _classTypeParameterMap = savedMap;
+        var handle = Metadata.AddMemberReference(parent, Metadata.GetOrAddString(def.Name), signature);
+        _memberRefs[(f, _classTypeParameterMap != null)] = handle;
         return handle;
     }
 }
