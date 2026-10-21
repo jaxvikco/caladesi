@@ -197,6 +197,7 @@ public sealed class MetadataMethodSymbol : MethodSymbol
                 }
             }
             pt = Nullability.Apply(pt, flag);
+            if (isParams) pt = pt.StripNullable();
             if (optional && def == null && !pt.IsValueType) def = ConstantValue.Null;
             b.Add(new ParameterSymbol(name, pt, i, this, refKind, isParams, def, optional, isThis: isExt && i == 0));
         }

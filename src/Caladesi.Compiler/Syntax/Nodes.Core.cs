@@ -454,6 +454,7 @@ public sealed class ForInStatementSyntax(SyntaxToken forKeyword, SyntaxToken ope
     : StatementSyntax(SyntaxKind.ForInStatement, forKeyword, open, left, inKeyword, expression, close, body)
 {
     public SyntaxToken InKeyword => Tok(3);
+    public ExpressionSyntax Expression => Node<ExpressionSyntax>(4);
     public StatementSyntax Body => Node<StatementSyntax>(6);
 }
 

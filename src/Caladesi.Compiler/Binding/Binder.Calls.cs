@@ -1,0 +1,388 @@
+using System.Collections.Immutable;
+using Caladesi.Compiler.Bound;
+using Caladesi.Compiler.Diagnostics;
+using Caladesi.Compiler.Symbols;
+using Caladesi.Compiler.Syntax;
+
+namespace Caladesi.Compiler;
+
+public sealed partial class Binder
+{
+    private bool _isAsyncContext;
+
+    // ------------------------------------------------------------------ arguments
+
+    private ImmutableArray<BoundExpression> BindArguments(SeparatedSyntaxList<ExpressionSyntax> list)
+    {
+        var b = ImmutableArray.CreateBuilder<BoundExpression>(list.Count);
+        for (var i = 0; i < list.Count; i++)
+        {
+            var a = list[i];
+            if (a is SpreadElementSyntax sp)
+            {
+                if (i != list.Count - 1) Report(Descriptors.SpreadMustBeLast, sp);
+                b.Add(BindValue(sp.Expression));
+            }
+            else b.Add(BindValue(a));
+        }
+        return b.MoveToImmutable();
+    }
+
+    // ------------------------------------------------------------------ invocation
+
+    private BoundExpression BindInvocation(InvocationExpressionSyntax inv, TypeSymbol? target)
+    {
+        var calleeSyntax = inv.Expression;
+        if (calleeSyntax is SuperExpressionSyntax)
+        {
+            Report(Descriptors.SuperCallPosition, calleeSyntax);
+            BindArguments(inv.Arguments.Arguments);
+            return Bad(inv);
+        }
+        var callee = BindExpression(calleeSyntax);
+        if (callee is BoundBadExpression)
+        {
+            BindArguments(inv.Arguments.Arguments);
+            return Bad(inv, callee);
+        }
+        if (callee is BoundConditionalAccess ca && calleeSyntax is not ParenthesizedExpressionSyntax)
+            return LiftConditional(ca, inner => BindInvocationOn(inner, inv, target), inv);
+        return BindInvocationOn(callee, inv, target);
+    }
+
+    private BoundExpression BindInvocationOn(BoundExpression callee, InvocationExpressionSyntax inv, TypeSymbol? target)
+    {
+        var args = BindArguments(inv.Arguments.Arguments);
+        switch (callee)
+        {
+            case BoundMethodGroup mg:
+                return BindMethodGroupCall(mg, args, inv, target);
+            case BoundTypeExpression:
+                Report(Descriptors.UseNewForType, inv.Expression);
+                return Bad(inv, callee);
+            case BoundNamespaceExpression or BoundModuleExpression:
+                ReportNotAValue(callee, inv.Expression);
+                return Bad(inv, callee);
+        }
+        var t = callee.Type;
+        if (t == null || t.IsErrorType) return Bad(inv, callee);
+        if (t is NullableTypeSymbol nt)
+        {
+            Report(Descriptors.PossiblyNull, inv.Expression, inv.Expression.ToFullString().Trim());
+            t = nt.Underlying;
+        }
+        if (t is NamedTypeSymbol { TypeKind: TypeKind.Delegate } d && d.DelegateInvokeMethod is { } invoke)
+        {
+            var res = ResolveOverloads([invoke], args, ImmutableArray<TypeSymbol>.Empty, inv, "invoke", report: true);
+            if (res == null) return Bad(inv, callee);
+            return new BoundCall(callee, res.Method, res.Arguments) { Syntax = inv };
+        }
+        Report(Descriptors.NotCallable, inv.Expression, t.ToDisplayString());
+        return Bad(inv, callee);
+    }
+
+    private BoundExpression BindMethodGroupCall(BoundMethodGroup mg, ImmutableArray<BoundExpression> args, InvocationExpressionSyntax inv, TypeSymbol? target)
+    {
+        if (args.Any(a => a is BoundBadExpression)) return Bad(inv, [mg, .. args]);
+        var candidates = mg.Candidates;
+        var recvIsType = mg.Receiver is BoundTypeExpression;
+        ResolvedCall? res = null;
+        if (candidates.Length > 0)
+            res = ResolveOverloads(candidates, args, mg.TypeArguments, inv, mg.Name, report: false, expectedType: target);
+
+        BoundExpression? extReceiver = null;
+        if (res == null && mg.Receiver is { } r && !recvIsType && r.Type != null)
+        {
+            var ext = LookupExtensionMethods(mg.Name);
+            if (ext.Count > 0)
+            {
+                res = ResolveOverloads(ext, args, mg.TypeArguments, inv, mg.Name, report: false, extensionReceiver: r, expectedType: target);
+                if (res != null) extReceiver = r;
+            }
+        }
+        if (res == null)
+        {
+            if (candidates.Length > 0) ResolveOverloads(candidates, args, mg.TypeArguments, inv, mg.Name, report: true);
+            else if (mg.Receiver is { } rr && rr.Type != null)
+            {
+                var ext = LookupExtensionMethods(mg.Name);
+                if (ext.Count > 0) ResolveOverloads(ext, args, mg.TypeArguments, inv, mg.Name, report: true, extensionReceiver: rr);
+                else Report(Descriptors.MemberNotFound, inv.Expression, mg.Name, rr.Type.ToDisplayString());
+            }
+            else Report(Descriptors.NotCallable, inv.Expression);
+            return Bad(inv, [mg, .. args]);
+        }
+
+        var m = res.Method;
+        BoundExpression? receiver = null;
+        if (extReceiver != null || m.IsStatic)
+        {
+            receiver = null;
+            if (m.IsStatic && mg.Receiver is { } sr && sr is not BoundTypeExpression && extReceiver == null && mg.Receiver.Type != null)
+                Report(Descriptors.StaticViaInstance, inv.Expression, m.Name, mg.Receiver.Type.ToDisplayString());
+        }
+        else
+        {
+            if (recvIsType)
+            {
+                Report(Descriptors.InstanceViaType, inv.Expression, m.Name, ((BoundTypeExpression)mg.Receiver!).TypeSym.ToDisplayString());
+                return Bad(inv, [mg, .. args]);
+            }
+            receiver = mg.Receiver ?? ImplicitThis(inv);
+            if (receiver is BoundBadExpression) return Bad(inv, [mg, .. args]);
+        }
+        return new BoundCall(receiver, m, res.Arguments) { Syntax = inv, IsBaseCall = mg.IsBaseAccess };
+    }
+
+    private BoundExpression ImplicitThis(SyntaxNode at)
+    {
+        var t = CurrentType;
+        if (t == null || _isStaticContext)
+        {
+            Report(Descriptors.ThisNotAvailable, at);
+            return Bad(at);
+        }
+        _usesThis = true;
+        return new BoundThis(t) { Syntax = at };
+    }
+
+    // ------------------------------------------------------------------ new
+
+    private BoundExpression BindNew(NewExpressionSyntax n, TypeSymbol? target)
+    {
+        var typeSyntax = n.Type;
+        var type = BindNewType(typeSyntax, target);
+        var args = n.Arguments != null ? BindArguments(n.Arguments.Arguments) : ImmutableArray<BoundExpression>.Empty;
+        if (type.IsErrorType || args.Any(a => a is BoundBadExpression)) return BadFrom(n, args.CastArray<BoundNode>());
+        return BuildObjectCreation(type, args, n, typeSyntax);
+    }
+
+    private TypeSymbol BindNewType(TypeSyntax typeSyntax, TypeSymbol? target)
+    {
+        // target-typed `new List()` : infer type arguments from the expected type
+        if (typeSyntax is IdentifierNameSyntax id && target != null && !id.Identifier.IsMissing)
+        {
+            var cands = _file.Scope.Lookup(id.Identifier.Text);
+            var generic = cands.OfType<NamedTypeSymbol>().FirstOrDefault(c => c.OwnArity > 0);
+            if (generic != null && !cands.OfType<NamedTypeSymbol>().Any(c => c.OwnArity == 0))
+            {
+                var tt = target.StripNullable();
+                if (tt is NamedTypeSymbol { IsGenericType: true } nt && ReferenceEquals(nt.OriginalDefinition, generic.OriginalDefinition))
+                    return nt;
+                if (tt is NamedTypeSymbol)
+                    return generic.Construct(InferNewTypeArguments(generic, tt) ?? generic.TypeArguments);
+            }
+        }
+        return BindType(typeSyntax);
+    }
+
+    private ImmutableArray<TypeSymbol>? InferNewTypeArguments(NamedTypeSymbol generic, TypeSymbol target) => null;
+
+    internal BoundExpression BuildObjectCreation(TypeSymbol type, ImmutableArray<BoundExpression> args, SyntaxNode syntax, SyntaxNode? typeSyntax = null)
+    {
+        if (type is TypeParameterSymbol tp)
+        {
+            if (!tp.HasConstructorConstraint)
+            {
+                Report(Descriptors.NewRequiresConstraint, typeSyntax ?? syntax, tp.Name);
+                return Bad(syntax);
+            }
+            if (args.Length > 0) { Report(Descriptors.NewTypeParamNoArgs, syntax); return Bad(syntax); }
+            return new BoundObjectCreation(null, type, ImmutableArray<BoundExpression>.Empty, ImmutableArray<BoundMemberInit>.Empty) { Syntax = syntax };
+        }
+        if (type is not NamedTypeSymbol nt || nt.TypeKind is TypeKind.Interface or TypeKind.Enum or TypeKind.Array || nt.IsAbstract && nt.TypeKind == TypeKind.Class)
+        {
+            Report(Descriptors.CannotInstantiate, typeSyntax ?? syntax, type.ToDisplayString());
+            return Bad(syntax);
+        }
+        if (nt.IsStaticClass)
+        {
+            Report(Descriptors.CannotInstantiate, typeSyntax ?? syntax, type.ToDisplayString());
+            return Bad(syntax);
+        }
+        if (nt.TypeKind == TypeKind.Delegate)
+        {
+            if (args.Length == 1)
+                return ConvertImplicit(args[0], nt, syntax);
+            Report(Descriptors.CannotInstantiate, typeSyntax ?? syntax, type.ToDisplayString());
+            return Bad(syntax);
+        }
+        var ctors = LookupConstructors(nt);
+        if (ctors.Length == 0)
+        {
+            if (nt.TypeKind == TypeKind.Struct && args.Length == 0)
+                return new BoundObjectCreation(null, type, ImmutableArray<BoundExpression>.Empty, ImmutableArray<BoundMemberInit>.Empty) { Syntax = syntax };
+            Report(Descriptors.NoAccessibleConstructor, typeSyntax ?? syntax, type.ToDisplayString());
+            return Bad(syntax);
+        }
+        if (nt.TypeKind == TypeKind.Struct && args.Length == 0 && !ctors.Any(c => c.Parameters.Length == 0))
+            return new BoundObjectCreation(null, type, ImmutableArray<BoundExpression>.Empty, ImmutableArray<BoundMemberInit>.Empty) { Syntax = syntax };
+        var res = ResolveOverloads(ctors, args, ImmutableArray<TypeSymbol>.Empty, syntax, nt.Name, report: true);
+        if (res == null) return BadFrom(syntax, args.CastArray<BoundNode>());
+        return new BoundObjectCreation(res.Method, type, res.Arguments, ImmutableArray<BoundMemberInit>.Empty) { Syntax = syntax };
+    }
+
+    private BoundExpression BindArrayCreation(ArrayCreationExpressionSyntax ac)
+    {
+        var elem = BindType(ac.ElementType);
+        var size = BindValue(ac.Size);
+        if (elem.IsErrorType) return Bad(ac, size);
+        var len = ConvertIndex(size, ac.Size);
+        var at = _c.CreateArrayType(elem);
+        return new BoundArrayCreation(at, len, ImmutableArray<BoundExpression>.Empty) { Syntax = ac };
+    }
+
+    // ------------------------------------------------------------------ await
+
+    private BoundExpression BindAwait(AwaitExpressionSyntax aw)
+    {
+        var operand = BindValue(aw.Operand);
+        if (!_isAsyncContext)
+        {
+            Report(Descriptors.AwaitOutsideAsync, aw.GetFirstToken()!.Span);
+            return Bad(aw, operand);
+        }
+        if (operand is BoundBadExpression) return Bad(aw, operand);
+        if (operand.Type == null) { ReportNotAValue(operand, aw); return Bad(aw, operand); }
+        var info = GetAwaitInfo(operand.Type, aw);
+        if (info == null) return Bad(aw, operand);
+        var resultType = info.GetResult.ReturnType;
+        return new BoundAwait(operand, info, resultType) { Syntax = aw };
+    }
+
+    internal AwaitInfo? GetAwaitInfo(TypeSymbol type, SyntaxNode at)
+    {
+        if (type is NullableTypeSymbol n) type = n.Underlying;
+        var getAwaiter = LookupMembers(type, "GetAwaiter").OfType<MethodSymbol>().FirstOrDefault(m => m.Parameters.Length == 0 && !m.IsStatic);
+        if (getAwaiter == null)
+        {
+            var ext = LookupExtensionMethods("GetAwaiter");
+            getAwaiter = ext.FirstOrDefault(m => m.Parameters.Length == 1 && ClassifyImplicit(null, type, m.Parameters[0].Type).Exists);
+        }
+        if (getAwaiter == null)
+        {
+            Report(Descriptors.NotAwaitable, at, type.ToDisplayString());
+            return null;
+        }
+        var awaiterType = getAwaiter.ReturnType;
+        var isCompleted = LookupMembers(awaiterType, "IsCompleted").OfType<PropertySymbol>().FirstOrDefault();
+        var getResult = LookupMembers(awaiterType, "GetResult").OfType<MethodSymbol>().FirstOrDefault(m => m.Parameters.Length == 0);
+        if (isCompleted?.GetMethod == null || getResult == null)
+        {
+            Report(Descriptors.NotAwaitable, at, type.ToDisplayString());
+            return null;
+        }
+        return new AwaitInfo(getAwaiter, isCompleted, isCompleted.GetMethod, getResult, awaiterType);
+    }
+
+    // ------------------------------------------------------------------ string concatenation
+
+    internal BoundExpression BuildStringConcat(List<BoundExpression> parts, SyntaxNode syntax)
+    {
+        // fold adjacent constants
+        var folded = new List<BoundExpression>();
+        foreach (var p in parts)
+        {
+            if (folded.Count > 0 && folded[^1].ConstantValue is { Value: string a } && p.ConstantValue is { } cv && p.Type!.SpecialType is SpecialType.String)
+            {
+                folded[^1] = new BoundLiteral(new ConstantValue(a + (string?)cv.Value), StringType) { Syntax = syntax };
+            }
+            else if (folded.Count > 0 && folded[^1].ConstantValue is { Value: string a2 } && p.ConstantValue is { Value: { } v2 } && (p.Type!.SpecialType is SpecialType.Int32 or SpecialType.Boolean or SpecialType.Int64 or SpecialType.Char))
+            {
+                folded[^1] = new BoundLiteral(new ConstantValue(a2 + ConstantToString(v2)), StringType) { Syntax = syntax };
+            }
+            else folded.Add(p);
+        }
+        parts = folded;
+        var strType = StringType;
+        var strSym = Special(SpecialType.String);
+        var concat = strSym.GetMembers("Concat").OfType<MethodSymbol>().ToList();
+
+        if (parts.Count == 1)
+        {
+            var only = parts[0];
+            if (only.Type!.SpecialType == SpecialType.String) return only;
+            var m1 = concat.First(m => m.Parameters.Length == 1 && m.Parameters[0].Type.SpecialType == SpecialType.Object);
+            return new BoundCall(null, m1, [BoxToObject(only, syntax)]) { Syntax = syntax };
+        }
+        var allStrings = parts.All(p => p.Type!.SpecialType == SpecialType.String);
+        if (allStrings && parts.Count <= 4)
+        {
+            var m = concat.First(x => x.Parameters.Length == parts.Count && x.Parameters.All(pp => pp.Type.SpecialType == SpecialType.String && !pp.IsParams));
+            return new BoundCall(null, m, parts.ToImmutableArray()) { Syntax = syntax };
+        }
+        if (!allStrings && parts.Count <= 3)
+        {
+            var m = concat.First(x => x.Parameters.Length == parts.Count && x.Parameters.All(pp => pp.Type.SpecialType == SpecialType.Object && !pp.IsParams));
+            return new BoundCall(null, m, parts.Select(p => BoxToObject(p, syntax)).ToImmutableArray()) { Syntax = syntax };
+        }
+        if (allStrings)
+        {
+            var m = concat.First(x => x.Parameters.Length == 1 && x.Parameters[0].IsParams && x.Parameters[0].Type is ArrayTypeSymbol { ElementType.SpecialType: SpecialType.String });
+            var arr = new BoundArrayCreation((ArrayTypeSymbol)m.Parameters[0].Type, new BoundLiteral(new ConstantValue(parts.Count), IntType), parts.ToImmutableArray()) { Syntax = syntax };
+            return new BoundCall(null, m, [arr]) { Syntax = syntax };
+        }
+        else
+        {
+            var m = concat.First(x => x.Parameters.Length == 1 && x.Parameters[0].IsParams && x.Parameters[0].Type is ArrayTypeSymbol { ElementType.SpecialType: SpecialType.Object });
+            var arr = new BoundArrayCreation((ArrayTypeSymbol)m.Parameters[0].Type, new BoundLiteral(new ConstantValue(parts.Count), IntType), parts.Select(p => BoxToObject(p, syntax)).ToImmutableArray()) { Syntax = syntax };
+            return new BoundCall(null, m, [arr]) { Syntax = syntax };
+        }
+    }
+
+    private static string ConstantToString(object v) => v switch
+    {
+        bool b => b ? "True" : "False",
+        char c => c.ToString(),
+        IFormattable f => f.ToString(null, System.Globalization.CultureInfo.InvariantCulture),
+        _ => v.ToString() ?? "",
+    };
+
+    internal BoundExpression BoxToObject(BoundExpression e, SyntaxNode syntax)
+    {
+        var t = e.Type!;
+        if (t.SpecialType == SpecialType.Object && t is not NullableTypeSymbol) return e;
+        if (t.SpecialType == SpecialType.String) return new BoundConversion(e, ConversionKind.ImplicitReference, ObjectType) { Syntax = syntax };
+        if (t.IsValueType || t is TypeParameterSymbol) return new BoundConversion(e, ConversionKind.Boxing, ObjectType) { Syntax = syntax };
+        if (t is NullableTypeSymbol n)
+        {
+            if (n.Underlying.IsValueType) return new BoundConversion(e, ConversionKind.Boxing, ObjectType) { Syntax = syntax }; // boxes Nullable<T>
+            return new BoundConversion(e, ConversionKind.TypeOnly, ObjectType) { Syntax = syntax };
+        }
+        return new BoundConversion(e, ConversionKind.ImplicitReference, ObjectType) { Syntax = syntax };
+    }
+
+    // ------------------------------------------------------------------ method group -> delegate
+
+    internal BoundExpression ConvertMethodGroup(BoundMethodGroup mg, TypeSymbol target, SyntaxNode? syntax, bool report)
+    {
+        var d = target.StripNullable() as NamedTypeSymbol;
+        if (d is not { TypeKind: TypeKind.Delegate })
+        {
+            if (report && !target.IsErrorType) Report(Descriptors.MethodGroupNeedsDelegate, syntax, mg.Name, target.ToDisplayString());
+            return Bad(syntax, mg);
+        }
+        var method = ResolveMethodGroupForDelegate(mg, d);
+        if (method == null)
+        {
+            if (report) Report(Descriptors.MethodGroupNotConvertible, syntax, mg.Name, target.ToDisplayString());
+            return Bad(syntax, mg);
+        }
+        BoundExpression? receiver = null;
+        var isExt = method.IsExtensionMethod && mg.Receiver is { Type: not null } && !mg.Candidates.Contains(method) && !mg.Candidates.Any(c => ReferenceEquals(c.OriginalDefinition, method.OriginalDefinition));
+        if (isExt) receiver = mg.Receiver;
+        else if (!method.IsStatic) receiver = mg.Receiver ?? ImplicitThis(syntax ?? mg.Syntax!);
+        var created = new BoundDelegateCreation(receiver, method, d) { Syntax = syntax ?? mg.Syntax };
+        return target is NullableTypeSymbol ? new BoundConversion(created, ConversionKind.ToNullable, target) { Syntax = syntax } : created;
+    }
+}
+
+internal static class ImmutableArrayCasts
+{
+    public static ImmutableArray<BoundNode> CastArray<T>(this ImmutableArray<T> a) where T : BoundNode
+    {
+        var b = ImmutableArray.CreateBuilder<BoundNode>(a.Length);
+        foreach (var x in a) b.Add(x);
+        return b.MoveToImmutable();
+    }
+}
