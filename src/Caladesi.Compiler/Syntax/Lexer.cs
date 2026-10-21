@@ -1,0 +1,497 @@
+using System.Collections.Immutable;
+using System.Globalization;
+using System.Numerics;
+using System.Text;
+using Caladesi.Compiler.Diagnostics;
+using Caladesi.Compiler.Text;
+
+namespace Caladesi.Compiler.Syntax;
+
+/// <summary>
+/// Converts source text into a flat token list with full trivia. '>' is always emitted as a single
+/// token so nested generics parse; the parser recombines adjacent '>' tokens into shift/compare operators.
+/// </summary>
+public sealed class Lexer
+{
+    private readonly SourceText _source;
+    private readonly string _text;
+    private readonly string _path;
+    private readonly DiagnosticBag _diagnostics;
+    private int _pos;
+    private readonly List<int> _templateBraceDepths = new();
+
+    public Lexer(SourceText source, string path, DiagnosticBag diagnostics)
+    {
+        _source = source;
+        _text = source.Text;
+        _path = path;
+        _diagnostics = diagnostics;
+    }
+
+    public List<SyntaxToken> LexAll()
+    {
+        var tokens = new List<SyntaxToken>();
+        if (_text.StartsWith("#!", StringComparison.Ordinal))
+        {
+            // shebang line is treated as a comment
+        }
+        var leading = ReadLeadingTrivia(true);
+        while (true)
+        {
+            var fullStart = _pos - TriviaWidth(leading);
+            var (kind, text, value) = LexToken();
+            var trailing = ReadTrailingTrivia();
+            tokens.Add(new SyntaxToken(kind, text, fullStart, leading, trailing, value));
+            if (kind == SyntaxKind.EndOfFileToken) break;
+            leading = ReadLeadingTrivia(false);
+        }
+        return tokens;
+    }
+
+    private static int TriviaWidth(ImmutableArray<SyntaxTrivia> trivia)
+    {
+        var w = 0;
+        foreach (var t in trivia) w += t.Width;
+        return w;
+    }
+
+    private void Report(DiagnosticDescriptor d, int start, int length, params object?[] args) =>
+        _diagnostics.Add(Diagnostic.Create(d, _path, new TextSpan(start, length), args));
+
+    private char Peek(int offset = 0) => _pos + offset < _text.Length ? _text[_pos + offset] : '\0';
+
+    private static bool IsNewLine(char c) => c == '\n' || c == '\r' || c == '\u2028' || c == '\u2029';
+
+    private ImmutableArray<SyntaxTrivia> ReadLeadingTrivia(bool first)
+    {
+        var b = ImmutableArray.CreateBuilder<SyntaxTrivia>();
+        if (first && _text.StartsWith("#!", StringComparison.Ordinal))
+        {
+            var s = _pos;
+            while (_pos < _text.Length && !IsNewLine(_text[_pos])) _pos++;
+            b.Add(new SyntaxTrivia(SyntaxKind.SingleLineCommentTrivia, _text[s.._pos]));
+        }
+        while (_pos < _text.Length)
+        {
+            var c = _text[_pos];
+            if (IsNewLine(c)) b.Add(ReadNewLine());
+            else if (char.IsWhiteSpace(c)) b.Add(ReadWhitespace());
+            else if (c == '/' && Peek(1) == '/') b.Add(ReadSingleLineComment());
+            else if (c == '/' && Peek(1) == '*') b.Add(ReadMultiLineComment());
+            else break;
+        }
+        return b.ToImmutable();
+    }
+
+    private ImmutableArray<SyntaxTrivia> ReadTrailingTrivia()
+    {
+        var b = ImmutableArray.CreateBuilder<SyntaxTrivia>();
+        while (_pos < _text.Length)
+        {
+            var c = _text[_pos];
+            if (IsNewLine(c))
+            {
+                b.Add(ReadNewLine());
+                break;
+            }
+            if (char.IsWhiteSpace(c)) b.Add(ReadWhitespace());
+            else if (c == '/' && Peek(1) == '/') b.Add(ReadSingleLineComment());
+            else if (c == '/' && Peek(1) == '*')
+            {
+                // A multi-line comment containing a newline belongs to the next token's leading trivia.
+                var end = _text.IndexOf("*/", _pos + 2, StringComparison.Ordinal);
+                var hasNewline = false;
+                var limit = end < 0 ? _text.Length : end;
+                for (var i = _pos; i < limit; i++)
+                    if (IsNewLine(_text[i])) { hasNewline = true; break; }
+                if (hasNewline) break;
+                b.Add(ReadMultiLineComment());
+            }
+            else break;
+        }
+        return b.ToImmutable();
+    }
+
+    private SyntaxTrivia ReadNewLine()
+    {
+        var s = _pos;
+        if (_text[_pos] == '\r' && Peek(1) == '\n') _pos += 2;
+        else _pos++;
+        return new SyntaxTrivia(SyntaxKind.EndOfLineTrivia, _text[s.._pos]);
+    }
+
+    private SyntaxTrivia ReadWhitespace()
+    {
+        var s = _pos;
+        while (_pos < _text.Length && char.IsWhiteSpace(_text[_pos]) && !IsNewLine(_text[_pos])) _pos++;
+        return new SyntaxTrivia(SyntaxKind.WhitespaceTrivia, _text[s.._pos]);
+    }
+
+    private SyntaxTrivia ReadSingleLineComment()
+    {
+        var s = _pos;
+        while (_pos < _text.Length && !IsNewLine(_text[_pos])) _pos++;
+        return new SyntaxTrivia(SyntaxKind.SingleLineCommentTrivia, _text[s.._pos]);
+    }
+
+    private SyntaxTrivia ReadMultiLineComment()
+    {
+        var s = _pos;
+        var end = _text.IndexOf("*/", _pos + 2, StringComparison.Ordinal);
+        if (end < 0)
+        {
+            _pos = _text.Length;
+            Report(Descriptors.UnterminatedComment, s, 2);
+        }
+        else _pos = end + 2;
+        return new SyntaxTrivia(SyntaxKind.MultiLineCommentTrivia, _text[s.._pos]);
+    }
+
+    private (SyntaxKind, string, object?) LexToken()
+    {
+        if (_pos >= _text.Length) return (SyntaxKind.EndOfFileToken, "", null);
+        var start = _pos;
+        var c = _text[_pos];
+
+        if (IsIdentifierStart(c))
+        {
+            _pos++;
+            while (_pos < _text.Length && IsIdentifierPart(_text[_pos])) _pos++;
+            var text = _text[start.._pos];
+            return (SyntaxFacts.GetKeywordKind(text), text, null);
+        }
+        if (char.IsAsciiDigit(c) || (c == '.' && char.IsAsciiDigit(Peek(1)))) return LexNumber();
+        if (c == '"' || c == '\'') return LexString(c);
+        if (c == '`') return LexTemplate(start, isContinuation: false);
+
+        SyntaxKind Make(SyntaxKind k, int len)
+        {
+            _pos += len;
+            return k;
+        }
+
+        SyntaxKind kind;
+        switch (c)
+        {
+            case '{':
+                if (_templateBraceDepths.Count > 0) _templateBraceDepths[^1]++;
+                kind = Make(SyntaxKind.OpenBraceToken, 1);
+                break;
+            case '}':
+                if (_templateBraceDepths.Count > 0)
+                {
+                    if (_templateBraceDepths[^1] == 0)
+                    {
+                        _templateBraceDepths.RemoveAt(_templateBraceDepths.Count - 1);
+                        return LexTemplate(start, isContinuation: true);
+                    }
+                    _templateBraceDepths[^1]--;
+                }
+                kind = Make(SyntaxKind.CloseBraceToken, 1);
+                break;
+            case '(': kind = Make(SyntaxKind.OpenParenToken, 1); break;
+            case ')': kind = Make(SyntaxKind.CloseParenToken, 1); break;
+            case '[': kind = Make(SyntaxKind.OpenBracketToken, 1); break;
+            case ']': kind = Make(SyntaxKind.CloseBracketToken, 1); break;
+            case ';': kind = Make(SyntaxKind.SemicolonToken, 1); break;
+            case ',': kind = Make(SyntaxKind.CommaToken, 1); break;
+            case ':': kind = Make(SyntaxKind.ColonToken, 1); break;
+            case '~': kind = Make(SyntaxKind.TildeToken, 1); break;
+            case '@': kind = Make(SyntaxKind.AtToken, 1); break;
+            case '.':
+                kind = Peek(1) == '.' && Peek(2) == '.' ? Make(SyntaxKind.DotDotDotToken, 3) : Make(SyntaxKind.DotToken, 1);
+                break;
+            case '?':
+                if (Peek(1) == '?') kind = Peek(2) == '=' ? Make(SyntaxKind.QuestionQuestionEqualsToken, 3) : Make(SyntaxKind.QuestionQuestionToken, 2);
+                else if (Peek(1) == '.' && !char.IsAsciiDigit(Peek(2))) kind = Make(SyntaxKind.QuestionDotToken, 2);
+                else kind = Make(SyntaxKind.QuestionToken, 1);
+                break;
+            case '<':
+                if (Peek(1) == '<') kind = Peek(2) == '=' ? Make(SyntaxKind.LessThanLessThanEqualsToken, 3) : Make(SyntaxKind.LessThanLessThanToken, 2);
+                else if (Peek(1) == '=') kind = Make(SyntaxKind.LessThanEqualsToken, 2);
+                else kind = Make(SyntaxKind.LessThanToken, 1);
+                break;
+            case '>': kind = Make(SyntaxKind.GreaterThanToken, 1); break;
+            case '=':
+                if (Peek(1) == '=') kind = Peek(2) == '=' ? Make(SyntaxKind.EqualsEqualsEqualsToken, 3) : Make(SyntaxKind.EqualsEqualsToken, 2);
+                else if (Peek(1) == '>') kind = Make(SyntaxKind.EqualsGreaterThanToken, 2);
+                else kind = Make(SyntaxKind.EqualsToken, 1);
+                break;
+            case '!':
+                if (Peek(1) == '=') kind = Peek(2) == '=' ? Make(SyntaxKind.ExclamationEqualsEqualsToken, 3) : Make(SyntaxKind.ExclamationEqualsToken, 2);
+                else kind = Make(SyntaxKind.ExclamationToken, 1);
+                break;
+            case '+':
+                kind = Peek(1) == '+' ? Make(SyntaxKind.PlusPlusToken, 2) : Peek(1) == '=' ? Make(SyntaxKind.PlusEqualsToken, 2) : Make(SyntaxKind.PlusToken, 1);
+                break;
+            case '-':
+                kind = Peek(1) == '-' ? Make(SyntaxKind.MinusMinusToken, 2) : Peek(1) == '=' ? Make(SyntaxKind.MinusEqualsToken, 2) : Make(SyntaxKind.MinusToken, 1);
+                break;
+            case '*':
+                if (Peek(1) == '*') kind = Peek(2) == '=' ? Make(SyntaxKind.AsteriskAsteriskEqualsToken, 3) : Make(SyntaxKind.AsteriskAsteriskToken, 2);
+                else kind = Peek(1) == '=' ? Make(SyntaxKind.AsteriskEqualsToken, 2) : Make(SyntaxKind.AsteriskToken, 1);
+                break;
+            case '/': kind = Peek(1) == '=' ? Make(SyntaxKind.SlashEqualsToken, 2) : Make(SyntaxKind.SlashToken, 1); break;
+            case '%': kind = Peek(1) == '=' ? Make(SyntaxKind.PercentEqualsToken, 2) : Make(SyntaxKind.PercentToken, 1); break;
+            case '^': kind = Peek(1) == '=' ? Make(SyntaxKind.CaretEqualsToken, 2) : Make(SyntaxKind.CaretToken, 1); break;
+            case '&':
+                if (Peek(1) == '&') kind = Peek(2) == '=' ? Make(SyntaxKind.AmpersandAmpersandEqualsToken, 3) : Make(SyntaxKind.AmpersandAmpersandToken, 2);
+                else kind = Peek(1) == '=' ? Make(SyntaxKind.AmpersandEqualsToken, 2) : Make(SyntaxKind.AmpersandToken, 1);
+                break;
+            case '|':
+                if (Peek(1) == '|') kind = Peek(2) == '=' ? Make(SyntaxKind.BarBarEqualsToken, 3) : Make(SyntaxKind.BarBarToken, 2);
+                else kind = Peek(1) == '=' ? Make(SyntaxKind.BarEqualsToken, 2) : Make(SyntaxKind.BarToken, 1);
+                break;
+            default:
+                _pos++;
+                Report(Descriptors.UnexpectedCharacter, start, 1, c);
+                return (SyntaxKind.BadToken, _text[start.._pos], null);
+        }
+        return (kind, _text[start.._pos], null);
+    }
+
+    private static bool IsIdentifierStart(char c) => c == '_' || c == '$' || char.IsLetter(c);
+    private static bool IsIdentifierPart(char c) => c == '_' || c == '$' || char.IsLetterOrDigit(c);
+
+    private (SyntaxKind, string, object?) LexNumber()
+    {
+        var start = _pos;
+        var isHexOrBin = false;
+        var radix = 10;
+        var isReal = false;
+        if (Peek() == '0' && (Peek(1) == 'x' || Peek(1) == 'X')) { radix = 16; _pos += 2; isHexOrBin = true; }
+        else if (Peek() == '0' && (Peek(1) == 'b' || Peek(1) == 'B')) { radix = 2; _pos += 2; isHexOrBin = true; }
+
+        var digitsStart = _pos;
+        if (isHexOrBin)
+        {
+            while (Uri.IsHexDigit(Peek()) || Peek() == '_') _pos++;
+        }
+        else
+        {
+            while (char.IsAsciiDigit(Peek()) || Peek() == '_') _pos++;
+            if (Peek() == '.' && char.IsAsciiDigit(Peek(1)))
+            {
+                isReal = true;
+                _pos++;
+                while (char.IsAsciiDigit(Peek()) || Peek() == '_') _pos++;
+            }
+            if ((Peek() == 'e' || Peek() == 'E') &&
+                (char.IsAsciiDigit(Peek(1)) || ((Peek(1) == '+' || Peek(1) == '-') && char.IsAsciiDigit(Peek(2)))))
+            {
+                isReal = true;
+                _pos += 2;
+                while (char.IsAsciiDigit(Peek())) _pos++;
+            }
+        }
+        var digits = _text[digitsStart.._pos].Replace("_", "", StringComparison.Ordinal);
+
+        // suffix
+        var suffixStart = _pos;
+        var suffix = "";
+        if (!isHexOrBin || radix == 2)
+        {
+            // binary digits may be followed by suffix; hex digits already consumed any f/d letters
+        }
+        while (_pos < _text.Length && char.IsAsciiLetter(_text[_pos]) && _pos - suffixStart < 2) _pos++;
+        suffix = _text[suffixStart.._pos].ToLowerInvariant();
+        var tokenText = _text[start.._pos];
+
+        object? value = null;
+        var kind = SyntaxKind.NumericLiteralToken;
+        var ok = true;
+        string? error = null;
+
+        if (suffix is not ("" or "l" or "u" or "ul" or "lu" or "f" or "d" or "m" or "n"))
+        {
+            // not a valid suffix: leave the letters for the next token, but report
+            _pos = suffixStart;
+            suffix = "";
+            tokenText = _text[start.._pos];
+            Report(Descriptors.InvalidNumber, start, tokenText.Length, "invalid suffix");
+            ok = false;
+        }
+
+        if (ok)
+        {
+            try
+            {
+                if (isHexOrBin && digits.Length == 0) { error = "missing digits"; ok = false; }
+                else if (suffix == "n")
+                {
+                    kind = SyntaxKind.BigIntLiteralToken;
+                    value = isHexOrBin ? ParseBig(digits, radix) : BigInteger.Parse(digits, CultureInfo.InvariantCulture);
+                }
+                else if (suffix == "f")
+                    value = float.Parse(digits, NumberStyles.Float, CultureInfo.InvariantCulture);
+                else if (suffix == "d")
+                    value = double.Parse(digits, NumberStyles.Float, CultureInfo.InvariantCulture);
+                else if (suffix == "m")
+                    value = decimal.Parse(digits, NumberStyles.Float, CultureInfo.InvariantCulture);
+                else if (isReal)
+                    value = double.Parse(digits, NumberStyles.Float, CultureInfo.InvariantCulture);
+                else
+                {
+                    var big = isHexOrBin ? ParseBig(digits, radix) : BigInteger.Parse(digits, CultureInfo.InvariantCulture);
+                    value = FitInteger(big, suffix, isHexOrBin, ref error);
+                    if (value == null) ok = false;
+                }
+            }
+            catch (Exception e) when (e is FormatException or OverflowException)
+            {
+                error = "malformed or out of range";
+                ok = false;
+            }
+        }
+        if (!ok && error != null) Report(Descriptors.InvalidNumber, start, tokenText.Length, error);
+        if (!ok) value = 0;
+        return (kind, tokenText, value);
+    }
+
+    private static BigInteger ParseBig(string digits, int radix)
+    {
+        BigInteger r = BigInteger.Zero;
+        foreach (var ch in digits)
+            r = r * radix + Convert.ToInt32(ch.ToString(), 16);
+        return r;
+    }
+
+    private static object? FitInteger(BigInteger v, string suffix, bool hexOrBin, ref string? error)
+    {
+        switch (suffix)
+        {
+            case "l":
+                if (v <= long.MaxValue) return (long)v;
+                if (hexOrBin && v <= ulong.MaxValue) return (ulong)v;
+                break;
+            case "u":
+                if (v <= uint.MaxValue) return (uint)v;
+                if (v <= ulong.MaxValue) return (ulong)v;
+                break;
+            case "ul" or "lu":
+                if (v <= ulong.MaxValue) return (ulong)v;
+                break;
+            default:
+                if (v <= int.MaxValue) return (int)v;
+                if (hexOrBin && v <= uint.MaxValue) return (uint)v;
+                if (v <= long.MaxValue) return (long)v;
+                if (v <= ulong.MaxValue) return (ulong)v;
+                break;
+        }
+        error = "value is out of range";
+        return null;
+    }
+
+    private (SyntaxKind, string, object?) LexString(char quote)
+    {
+        var start = _pos;
+        _pos++;
+        var sb = new StringBuilder();
+        while (true)
+        {
+            if (_pos >= _text.Length || IsNewLine(_text[_pos]))
+            {
+                Report(Descriptors.UnterminatedString, start, _pos - start);
+                break;
+            }
+            var c = _text[_pos];
+            if (c == quote) { _pos++; break; }
+            if (c == '\\') ReadEscape(sb);
+            else { sb.Append(c); _pos++; }
+        }
+        return (SyntaxKind.StringLiteralToken, _text[start.._pos], sb.ToString());
+    }
+
+    private void ReadEscape(StringBuilder sb)
+    {
+        var escStart = _pos;
+        _pos++; // backslash
+        if (_pos >= _text.Length) return;
+        var c = _text[_pos++];
+        switch (c)
+        {
+            case 'n': sb.Append('\n'); break;
+            case 'r': sb.Append('\r'); break;
+            case 't': sb.Append('\t'); break;
+            case 'b': sb.Append('\b'); break;
+            case 'f': sb.Append('\f'); break;
+            case 'v': sb.Append('\v'); break;
+            case '0': sb.Append('\0'); break;
+            case '\\': sb.Append('\\'); break;
+            case '\'': sb.Append('\''); break;
+            case '"': sb.Append('"'); break;
+            case '`': sb.Append('`'); break;
+            case '$': sb.Append('$'); break;
+            case '\r': if (Peek() == '\n') _pos++; break; // line continuation
+            case '\n': break;
+            case 'x':
+                if (TryHex(2, out var x)) sb.Append((char)x);
+                else Report(Descriptors.InvalidEscape, escStart, _pos - escStart);
+                break;
+            case 'u':
+                if (Peek() == '{')
+                {
+                    var close = _text.IndexOf('}', _pos);
+                    if (close > 0 && int.TryParse(_text.AsSpan(_pos + 1, close - _pos - 1), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var cp)
+                        && cp <= 0x10FFFF)
+                    {
+                        sb.Append(char.ConvertFromUtf32(cp));
+                        _pos = close + 1;
+                    }
+                    else Report(Descriptors.InvalidEscape, escStart, _pos - escStart);
+                }
+                else if (TryHex(4, out var u)) sb.Append((char)u);
+                else Report(Descriptors.InvalidEscape, escStart, _pos - escStart);
+                break;
+            default:
+                Report(Descriptors.InvalidEscape, escStart, _pos - escStart);
+                sb.Append(c);
+                break;
+        }
+    }
+
+    private bool TryHex(int count, out int value)
+    {
+        value = 0;
+        if (_pos + count > _text.Length) return false;
+        if (!int.TryParse(_text.AsSpan(_pos, count), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out value)) return false;
+        _pos += count;
+        return true;
+    }
+
+    /// <summary>Lexes a template chunk. Starts at a backtick, or at a '}' that closes a substitution.</summary>
+    private (SyntaxKind, string, object?) LexTemplate(int start, bool isContinuation)
+    {
+        _pos++; // ` or }
+        var sb = new StringBuilder();
+        while (true)
+        {
+            if (_pos >= _text.Length)
+            {
+                Report(Descriptors.UnterminatedTemplate, start, _pos - start);
+                return (isContinuation ? SyntaxKind.TemplateTailToken : SyntaxKind.NoSubstitutionTemplateToken, _text[start.._pos], sb.ToString());
+            }
+            var c = _text[_pos];
+            if (c == '`')
+            {
+                _pos++;
+                return (isContinuation ? SyntaxKind.TemplateTailToken : SyntaxKind.NoSubstitutionTemplateToken, _text[start.._pos], sb.ToString());
+            }
+            if (c == '$' && Peek(1) == '{')
+            {
+                _pos += 2;
+                _templateBraceDepths.Add(0);
+                return (isContinuation ? SyntaxKind.TemplateMiddleToken : SyntaxKind.TemplateHeadToken, _text[start.._pos], sb.ToString());
+            }
+            if (c == '\\') ReadEscape(sb);
+            else if (c == '\r')
+            {
+                // normalize CRLF to LF in cooked value
+                _pos++;
+                if (Peek() == '\n') _pos++;
+                sb.Append('\n');
+            }
+            else { sb.Append(c); _pos++; }
+        }
+    }
+}

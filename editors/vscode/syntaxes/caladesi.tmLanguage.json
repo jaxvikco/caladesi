@@ -1,0 +1,836 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Caladesi",
+  "scopeName": "source.caladesi",
+  "fileTypes": [
+    "cala"
+  ],
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#string"
+    },
+    {
+      "include": "#template"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#decorator"
+    },
+    {
+      "include": "#class-decl"
+    },
+    {
+      "include": "#struct-decl"
+    },
+    {
+      "include": "#interface-decl"
+    },
+    {
+      "include": "#enum-decl"
+    },
+    {
+      "include": "#namespace-decl"
+    },
+    {
+      "include": "#type-alias"
+    },
+    {
+      "include": "#switch-label"
+    },
+    {
+      "include": "#default-label"
+    },
+    {
+      "include": "#new-expression"
+    },
+    {
+      "include": "#type-reference"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#constants"
+    },
+    {
+      "include": "#primitive-type"
+    },
+    {
+      "include": "#generic-call"
+    },
+    {
+      "include": "#call"
+    },
+    {
+      "include": "#member"
+    },
+    {
+      "include": "#constant-name"
+    },
+    {
+      "include": "#class-name"
+    },
+    {
+      "include": "#object-type-annotation"
+    },
+    {
+      "include": "#type-annotation"
+    },
+    {
+      "include": "#operators"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "include": "#doc-line-comment"
+        },
+        {
+          "include": "#block-doc-comment"
+        },
+        {
+          "include": "#block-comment"
+        },
+        {
+          "include": "#line-comment"
+        }
+      ]
+    },
+    "doc-line-comment": {
+      "name": "comment.line.documentation.caladesi",
+      "match": "///.*$"
+    },
+    "line-comment": {
+      "name": "comment.line.double-slash.caladesi",
+      "match": "//.*$"
+    },
+    "block-doc-comment": {
+      "name": "comment.block.documentation.caladesi",
+      "begin": "/\\*\\*(?!/)",
+      "end": "\\*/"
+    },
+    "block-comment": {
+      "name": "comment.block.caladesi",
+      "begin": "/\\*",
+      "end": "\\*/"
+    },
+    "string-escape": {
+      "name": "constant.character.escape.caladesi",
+      "match": "\\\\(?:x\\h{2}|u\\h{4}|u\\{\\h+\\}|[0-7]{1,3}|.)"
+    },
+    "string": {
+      "patterns": [
+        {
+          "include": "#string-single"
+        },
+        {
+          "include": "#string-double"
+        }
+      ]
+    },
+    "string-single": {
+      "name": "string.quoted.single.caladesi",
+      "begin": "'",
+      "end": "(')|((?:[^\\\\\\n])$)",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.begin.caladesi"
+        }
+      },
+      "endCaptures": {
+        "1": {
+          "name": "punctuation.definition.string.end.caladesi"
+        },
+        "2": {
+          "name": "invalid.illegal.newline.caladesi"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#string-escape"
+        }
+      ]
+    },
+    "string-double": {
+      "name": "string.quoted.double.caladesi",
+      "begin": "\"",
+      "end": "(\")|((?:[^\\\\\\n])$)",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.begin.caladesi"
+        }
+      },
+      "endCaptures": {
+        "1": {
+          "name": "punctuation.definition.string.end.caladesi"
+        },
+        "2": {
+          "name": "invalid.illegal.newline.caladesi"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#string-escape"
+        }
+      ]
+    },
+    "template": {
+      "name": "string.template.caladesi",
+      "begin": "`",
+      "end": "`",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.template.begin.caladesi"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.template.end.caladesi"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#string-escape"
+        },
+        {
+          "include": "#template-expression"
+        }
+      ]
+    },
+    "template-expression": {
+      "name": "meta.template.expression.caladesi",
+      "begin": "\\$\\{",
+      "end": "\\}",
+      "contentName": "meta.embedded.line.caladesi",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.template-expression.begin.caladesi"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.template-expression.end.caladesi"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#braces"
+        },
+        {
+          "include": "$self"
+        }
+      ]
+    },
+    "braces": {
+      "name": "meta.block.caladesi",
+      "begin": "\\{",
+      "end": "\\}",
+      "patterns": [
+        {
+          "include": "$self"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.caladesi",
+          "match": "(?<![\\w$])0[xX][\\da-fA-F](?:[\\da-fA-F_]*[\\da-fA-F])?(?:[uU][lL]?|[lL][uU]?|n)?(?![\\w$])"
+        },
+        {
+          "name": "constant.numeric.binary.caladesi",
+          "match": "(?<![\\w$])0[bB][01](?:[01_]*[01])?(?:[uU][lL]?|[lL][uU]?|n)?(?![\\w$])"
+        },
+        {
+          "name": "constant.numeric.decimal.caladesi",
+          "match": "(?<![\\w$.])(?:\\d[\\d_]*(?:\\.\\d[\\d_]*)?|\\.\\d[\\d_]*)(?:[eE][+-]?\\d[\\d_]*)?(?:[uU][lL]?|[lL][uU]?|[fFmMnNdD])?(?![\\w$])"
+        }
+      ]
+    },
+    "decorator": {
+      "name": "meta.decorator.caladesi",
+      "match": "(?<![\\w$])(@)\\s*([A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*)",
+      "captures": {
+        "1": {
+          "name": "punctuation.decorator.caladesi"
+        },
+        "2": {
+          "name": "entity.name.function.decorator.caladesi"
+        }
+      }
+    },
+    "class-decl": {
+      "name": "meta.class.caladesi",
+      "begin": "(?<![\\w$.])(class)\\s+([A-Za-z_$][\\w$]*)",
+      "end": "(?=\\{)|(?=;)",
+      "beginCaptures": {
+        "1": {
+          "name": "storage.type.class.caladesi"
+        },
+        "2": {
+          "name": "entity.name.type.class.caladesi"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "include": "#type-expression"
+        }
+      ]
+    },
+    "struct-decl": {
+      "name": "meta.struct.caladesi",
+      "begin": "(?<![\\w$.])(struct)\\s+([A-Za-z_$][\\w$]*)",
+      "end": "(?=\\{)|(?=;)",
+      "beginCaptures": {
+        "1": {
+          "name": "storage.type.struct.caladesi"
+        },
+        "2": {
+          "name": "entity.name.type.struct.caladesi"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "include": "#type-expression"
+        }
+      ]
+    },
+    "interface-decl": {
+      "name": "meta.interface.caladesi",
+      "begin": "(?<![\\w$.])(interface)\\s+([A-Za-z_$][\\w$]*)",
+      "end": "(?=\\{)|(?=;)",
+      "beginCaptures": {
+        "1": {
+          "name": "storage.type.interface.caladesi"
+        },
+        "2": {
+          "name": "entity.name.type.interface.caladesi"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "include": "#type-expression"
+        }
+      ]
+    },
+    "enum-decl": {
+      "name": "meta.enum.caladesi",
+      "begin": "(?<![\\w$.])(enum)\\s+([A-Za-z_$][\\w$]*)",
+      "end": "(?=\\{)|(?=;)",
+      "beginCaptures": {
+        "1": {
+          "name": "storage.type.enum.caladesi"
+        },
+        "2": {
+          "name": "entity.name.type.enum.caladesi"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "include": "#type-expression"
+        }
+      ]
+    },
+    "namespace-decl": {
+      "match": "(?<![\\w$.])(namespace)\\s+([A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*)",
+      "captures": {
+        "1": {
+          "name": "storage.type.namespace.caladesi"
+        },
+        "2": {
+          "name": "entity.name.namespace.caladesi"
+        }
+      }
+    },
+    "type-alias": {
+      "name": "meta.type.declaration.caladesi",
+      "begin": "(?<![\\w$.])(type)\\s+([A-Za-z_$][\\w$]*)(?=\\s*[<=])",
+      "end": ";|(?=^\\s*(?:export|declare|function|class|interface|enum|type|const|let|import|namespace|abstract|async)\\b)|(?<=\\})(?!\\s*[|&\\[])",
+      "beginCaptures": {
+        "1": {
+          "name": "storage.type.type.caladesi"
+        },
+        "2": {
+          "name": "entity.name.type.alias.caladesi"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.terminator.statement.caladesi"
+        }
+      },
+      "patterns": [
+        {
+          "name": "keyword.operator.assignment.caladesi",
+          "match": "=(?!>)"
+        },
+        {
+          "include": "#type-expression"
+        }
+      ]
+    },
+    "switch-label": {
+      "begin": "(?<![\\w$.])(case)(?![\\w$])",
+      "end": "(:)(?!:)",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.control.caladesi"
+        }
+      },
+      "endCaptures": {
+        "1": {
+          "name": "punctuation.separator.label.caladesi"
+        }
+      },
+      "patterns": [
+        {
+          "include": "$self"
+        }
+      ]
+    },
+    "default-label": {
+      "match": "(?<![\\w$.])(default)\\s*(:)(?!:)",
+      "captures": {
+        "1": {
+          "name": "keyword.control.caladesi"
+        },
+        "2": {
+          "name": "punctuation.separator.label.caladesi"
+        }
+      }
+    },
+    "type-annotation": {
+      "name": "meta.type.annotation.caladesi",
+      "begin": "(\\?)?\\s*(:)(?!:)",
+      "end": "(?<![|&]\\s)(?=\\{)|(?=[,;)\\]}]|=(?!>)|=>|$)",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.operator.optional.caladesi"
+        },
+        "2": {
+          "name": "keyword.operator.type.annotation.caladesi"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#type-expression"
+        }
+      ]
+    },
+    "object-type-annotation": {
+      "name": "meta.type.annotation.caladesi",
+      "begin": "(\\?)?\\s*(:)(?!:)\\s*(?=\\{)",
+      "end": "(?<=\\})(?!\\s*[|&\\[])|(?=[,;)\\]}]|=(?!>)|=>|$)",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.operator.optional.caladesi"
+        },
+        "2": {
+          "name": "keyword.operator.type.annotation.caladesi"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#type-expression"
+        }
+      ]
+    },
+    "type-expression": {
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "include": "#string"
+        },
+        {
+          "include": "#numbers"
+        },
+        {
+          "name": "constant.language.boolean.caladesi",
+          "match": "(?<![\\w$.])(?:true|false)(?![\\w$])"
+        },
+        {
+          "name": "constant.language.null.caladesi",
+          "match": "(?<![\\w$.])(?:null)(?![\\w$])"
+        },
+        {
+          "name": "keyword.operator.expression.caladesi",
+          "match": "(?<![\\w$.])(?:typeof|keyof|infer|is|asserts|unique|new)(?![\\w$])"
+        },
+        {
+          "name": "storage.modifier.caladesi",
+          "match": "(?<![\\w$.])(?:extends|implements|readonly|in)(?![\\w$])"
+        },
+        {
+          "name": "storage.modifier.caladesi",
+          "match": "(?<![\\w$.])out(?=\\s+[A-Za-z_$])"
+        },
+        {
+          "include": "#primitive-type"
+        },
+        {
+          "include": "#paren-type"
+        },
+        {
+          "include": "#object-type"
+        },
+        {
+          "include": "#type-args"
+        },
+        {
+          "name": "storage.type.function.arrow.caladesi",
+          "match": "=>"
+        },
+        {
+          "name": "keyword.operator.type.caladesi",
+          "match": "\\||&|\\?|\\.\\.\\."
+        },
+        {
+          "name": "punctuation.definition.array.caladesi",
+          "match": "\\[\\s*\\]"
+        },
+        {
+          "name": "meta.type.tuple.caladesi",
+          "begin": "\\[",
+          "end": "\\]",
+          "patterns": [
+            {
+              "include": "#type-expression"
+            }
+          ]
+        },
+        {
+          "name": "punctuation.separator.comma.caladesi",
+          "match": ","
+        },
+        {
+          "name": "entity.name.type.caladesi",
+          "match": "[A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*"
+        }
+      ]
+    },
+    "primitive-type": {
+      "name": "support.type.primitive.caladesi",
+      "match": "(?<![\\w$.])(?:number|string|boolean|void|object|unknown|never|bigint|int|long|short|byte|sbyte|uint|ulong|ushort|float|double|decimal|nint|nuint|char)(?![\\w$])"
+    },
+    "type-args": {
+      "name": "meta.type.parameters.caladesi",
+      "begin": "<",
+      "end": ">",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.typeparameters.begin.caladesi"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.typeparameters.end.caladesi"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#type-expression"
+        }
+      ]
+    },
+    "paren-type": {
+      "name": "meta.type.function.caladesi",
+      "begin": "\\(",
+      "end": "(\\))(?:\\s*(=>))?",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.parameters.begin.caladesi"
+        }
+      },
+      "endCaptures": {
+        "1": {
+          "name": "punctuation.definition.parameters.end.caladesi"
+        },
+        "2": {
+          "name": "storage.type.function.arrow.caladesi"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "name": "keyword.operator.spread.caladesi",
+          "match": "\\.\\.\\."
+        },
+        {
+          "name": "variable.parameter.caladesi",
+          "match": "[A-Za-z_$][\\w$]*(?=\\s*\\??\\s*:)"
+        },
+        {
+          "include": "#object-type-annotation"
+        },
+        {
+          "include": "#type-annotation"
+        },
+        {
+          "include": "#type-expression"
+        }
+      ]
+    },
+    "object-type": {
+      "name": "meta.object.type.caladesi",
+      "begin": "\\{",
+      "end": "\\}",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.definition.block.caladesi"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.block.caladesi"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "name": "meta.field.declaration.caladesi",
+          "begin": "(?:(readonly)\\s+)?([A-Za-z_$][\\w$]*|'[^']*'|\"[^\"]*\")(\\??)\\s*(:)",
+          "end": "(?=[;,}])|$",
+          "beginCaptures": {
+            "1": {
+              "name": "storage.modifier.caladesi"
+            },
+            "2": {
+              "name": "variable.other.property.caladesi"
+            },
+            "3": {
+              "name": "keyword.operator.optional.caladesi"
+            },
+            "4": {
+              "name": "keyword.operator.type.annotation.caladesi"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#type-expression"
+            }
+          ]
+        },
+        {
+          "include": "#call"
+        },
+        {
+          "include": "#type-annotation"
+        },
+        {
+          "name": "punctuation.separator.comma.caladesi",
+          "match": "[;,]"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.caladesi",
+          "match": "(?<![\\w$.])(?:if|else|for|while|do|switch|break|continue|return|throw|try|catch|finally|await|yield)(?![\\w$])"
+        },
+        {
+          "name": "keyword.control.module.caladesi",
+          "match": "(?<![\\w$.])(?:import|export)(?![\\w$])"
+        },
+        {
+          "name": "keyword.control.module.caladesi",
+          "match": "(?<![\\w$.])from(?=\\s*['\"])"
+        },
+        {
+          "name": "keyword.operator.expression.caladesi",
+          "match": "(?<![\\w$.])(?:as|satisfies|instanceof|typeof|is|in|of)(?![\\w$])"
+        },
+        {
+          "name": "keyword.operator.new.caladesi",
+          "match": "(?<![\\w$.])(?:new)(?![\\w$])"
+        },
+        {
+          "name": "storage.type.function.caladesi",
+          "match": "(?<![\\w$.])(?:function)(?![\\w$])"
+        },
+        {
+          "name": "storage.type.caladesi",
+          "match": "(?<![\\w$.])(?:let|const)(?![\\w$])"
+        },
+        {
+          "name": "storage.type.class.caladesi",
+          "match": "(?<![\\w$.])(?:class|struct|interface|enum)(?![\\w$])"
+        },
+        {
+          "name": "storage.type.type.caladesi",
+          "match": "(?<![\\w$.])type(?=\\s+[A-Za-z_$][\\w$]*)"
+        },
+        {
+          "name": "storage.modifier.caladesi",
+          "match": "(?<![\\w$.])(?:static|abstract|override|readonly|sealed|private|protected|internal|public|async|declare|extends|implements)(?![\\w$])"
+        },
+        {
+          "name": "storage.modifier.caladesi",
+          "match": "(?<![\\w$.])(?:get|set|using|out)(?=\\s+[A-Za-z_$(])"
+        },
+        {
+          "name": "variable.language.this.caladesi",
+          "match": "(?<![\\w$.])(?:this)(?![\\w$])"
+        },
+        {
+          "name": "variable.language.super.caladesi",
+          "match": "(?<![\\w$.])(?:super)(?![\\w$])"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.caladesi",
+          "match": "(?<![\\w$.])(?:true|false)(?![\\w$])"
+        },
+        {
+          "name": "constant.language.null.caladesi",
+          "match": "(?<![\\w$.])(?:null)(?![\\w$])"
+        }
+      ]
+    },
+    "new-expression": {
+      "begin": "(?<![\\w$.])(new)\\s+([A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*)",
+      "end": "(?=[^<\\s])|(?<=>)|$",
+      "beginCaptures": {
+        "1": {
+          "name": "keyword.operator.new.caladesi"
+        },
+        "2": {
+          "name": "entity.name.type.caladesi"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#type-args"
+        }
+      ]
+    },
+    "type-reference": {
+      "match": "(?<![\\w$.])(as|satisfies|instanceof|is)\\s+([A-Z][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*)",
+      "captures": {
+        "1": {
+          "name": "keyword.operator.expression.caladesi"
+        },
+        "2": {
+          "name": "entity.name.type.caladesi"
+        }
+      }
+    },
+    "generic-call": {
+      "begin": "([A-Za-z_$][\\w$]*)\\s*(<)(?=(?:[\\w$.\\s,|?\\[\\]]|&(?!&))*(?:<(?:[\\w$.\\s,|?\\[\\]]|&(?!&))*(?:<(?:[\\w$.\\s,|?\\[\\]]|&(?!&))*>(?:[\\w$.\\s,|?\\[\\]]|&(?!&))*)*>(?:[\\w$.\\s,|?\\[\\]]|&(?!&))*)*>\\s*\\()",
+      "end": ">",
+      "beginCaptures": {
+        "1": {
+          "name": "entity.name.function.caladesi"
+        },
+        "2": {
+          "name": "punctuation.definition.typeparameters.begin.caladesi"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.typeparameters.end.caladesi"
+        }
+      },
+      "patterns": [
+        {
+          "include": "#type-expression"
+        }
+      ]
+    },
+    "call": {
+      "name": "entity.name.function.caladesi",
+      "match": "[A-Za-z_$][\\w$]*(?=\\s*\\()"
+    },
+    "member": {
+      "name": "variable.other.property.caladesi",
+      "match": "(?<=[^.]\\.)[A-Za-z_$][\\w$]*(?![\\w$])"
+    },
+    "constant-name": {
+      "name": "variable.other.constant.caladesi",
+      "match": "(?<![\\w$.])[A-Z][A-Z0-9_]+(?![\\w$])"
+    },
+    "class-name": {
+      "name": "entity.name.type.caladesi",
+      "match": "(?<![\\w$.])[A-Z][\\w$]*(?![\\w$])"
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.spread.caladesi",
+          "match": "\\.\\.\\."
+        },
+        {
+          "name": "storage.type.function.arrow.caladesi",
+          "match": "=>"
+        },
+        {
+          "name": "keyword.operator.optional-chaining.caladesi",
+          "match": "\\?\\.(?!\\d)"
+        },
+        {
+          "name": "keyword.operator.assignment.caladesi",
+          "match": "\\?\\?=|&&=|\\|\\|=|>>>=|<<=|>>=|\\*\\*=|[-+*/%&|^]=|=(?![=>])"
+        },
+        {
+          "name": "keyword.operator.comparison.caladesi",
+          "match": "===|!==|==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.logical.caladesi",
+          "match": "&&|\\|\\||\\?\\?|!"
+        },
+        {
+          "name": "keyword.operator.bitwise.caladesi",
+          "match": ">>>|<<|>>|&|\\||\\^|~"
+        },
+        {
+          "name": "keyword.operator.arithmetic.caladesi",
+          "match": "\\*\\*|\\+\\+|--|[-+*/%]"
+        },
+        {
+          "name": "keyword.operator.ternary.caladesi",
+          "match": "\\?"
+        },
+        {
+          "name": "punctuation.terminator.statement.caladesi",
+          "match": ";"
+        },
+        {
+          "name": "punctuation.separator.comma.caladesi",
+          "match": ","
+        },
+        {
+          "name": "punctuation.accessor.caladesi",
+          "match": "\\."
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,116 @@
+{
+  "name": "caladesi",
+  "displayName": "Caladesi",
+  "description": "Language support for Caladesi, a statically typed .NET language with TypeScript-like syntax.",
+  "version": "0.1.0",
+  "publisher": "caladesi",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "caladesi",
+    "cala",
+    ".net"
+  ],
+  "activationEvents": [
+    "onLanguage:caladesi"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "caladesi",
+        "aliases": [
+          "Caladesi",
+          "caladesi"
+        ],
+        "extensions": [
+          ".cala"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "caladesi",
+        "scopeName": "source.caladesi",
+        "path": "./syntaxes/caladesi.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "caladesi.restartServer",
+        "title": "Caladesi: Restart Language Server"
+      }
+    ],
+    "configuration": {
+      "title": "Caladesi",
+      "properties": {
+        "caladesi.server.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "Path to the `cala-ls` language server executable. When empty, the extension looks for a bundled `server/cala-ls` and then for `cala-ls` on the `PATH`."
+        },
+        "caladesi.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces the communication between VS Code and the Caladesi language server."
+        }
+      }
+    },
+    "semanticTokenScopes": [
+      {
+        "language": "caladesi",
+        "scopes": {
+          "namespace": [
+            "entity.name.namespace.caladesi"
+          ],
+          "class": [
+            "entity.name.type.class.caladesi"
+          ],
+          "struct": [
+            "entity.name.type.struct.caladesi"
+          ],
+          "interface": [
+            "entity.name.type.interface.caladesi"
+          ],
+          "enum": [
+            "entity.name.type.enum.caladesi"
+          ],
+          "enumMember": [
+            "variable.other.enummember.caladesi"
+          ],
+          "typeParameter": [
+            "entity.name.type.parameter.caladesi"
+          ]
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile",
+    "package": "vsce package --allow-missing-repository"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.0.0",
+    "typescript": "^5.5.0"
+  }
+}
