@@ -1,0 +1,57 @@
+interface Comparable<T> { compareTo(other: T): int; }
+
+class Num implements Comparable<Num> {
+  constructor(public v: int) {}
+  compareTo(other: Num): int { return this.v - other.v; }
+}
+
+function maxOf<T extends Comparable<T>>(items: T[]): T {
+  let best = items[0];
+  for (const it of items) if (it.compareTo(best) > 0) best = it;
+  return best;
+}
+
+class Stack<T> {
+  private items = new List<T>();
+  push(x: T): void { this.items.Add(x); }
+  pop(): T {
+    const last = this.items[this.items.Count - 1];
+    this.items.RemoveAt(this.items.Count - 1);
+    return last;
+  }
+  get size(): int { return this.items.Count; }
+}
+
+class Factory<T extends object & new()> {
+  create(): T { return new T(); }
+}
+
+interface Producer<out T> { get(): T; }
+interface Consumer<in T> { accept(x: T): void; }
+
+class Cell<T> implements Producer<T>, Consumer<T> {
+  constructor(private value: T) {}
+  get(): T { return this.value; }
+  accept(x: T): void { this.value = x; }
+}
+
+type Pair<A, B> = { first: A; second: B };
+
+function swap<A, B>(p: Pair<A, B>): Pair<B, A> { return new Pair<B, A>(p.second, p.first); }
+function identity<T>(x: T): T { return x; }
+
+console_log: {
+  Console.WriteLine(maxOf([new Num(3), new Num(9), new Num(4)]).v);
+  const s = new Stack<string>();
+  s.push("a"); s.push("b");
+  Console.WriteLine(s.pop() + s.size);
+  const f = new Factory<List<int>>();
+  Console.WriteLine(f.create().Count);
+  const c = new Cell<string>("x");
+  const prod: Producer<object> = c;
+  Console.WriteLine(prod.get());
+  const sw = swap(new Pair<int, string>(1, "one"));
+  Console.WriteLine(sw);
+  Console.WriteLine(identity<double>(2.5));
+  Console.WriteLine(identity("str"));
+}

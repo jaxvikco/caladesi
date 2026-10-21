@@ -1,0 +1,46 @@
+function make(): () => int {
+  let n = 0;
+  return () => { n++; return n; };
+}
+function adder(k: int): (x: int) => int { return x => x + k; }
+function nested(): int {
+  let total = 0;
+  const add = (n: int) => { const inc = () => { total += n; }; inc(); };
+  add(2); add(3);
+  return total;
+}
+class Counter {
+  count = 0;
+  make(): () => int { return () => { this.count++; return this.count; }; }
+  makeWith(step: int): () => int { return () => { this.count += step; return this.count; }; }
+}
+function fact(n: int): int {
+  function go(k: int): int { return k <= 1 ? 1 : k * go(k - 1); }
+  return go(n);
+}
+function twice<T>(x: T, join: (a: T, b: T) => string): string { return join(x, x); }
+function mapAll<T, U>(xs: T[], f: (x: T) => U): U[] {
+  const res = new List<U>();
+  for (const x of xs) res.Add(f(x));
+  return res.ToArray();
+}
+const c = make();
+c(); c();
+Console.WriteLine(c());
+Console.WriteLine(adder(5)(10));
+Console.WriteLine(nested());
+const k = new Counter();
+const a = k.make();
+a();
+Console.WriteLine(a());
+Console.WriteLine(k.makeWith(10)());
+const fs = new List<() => int>();
+for (let i = 0; i < 3; i++) { const j = i * 10; fs.Add(() => j); }
+let sum = 0;
+for (const f of fs) sum += f();
+Console.WriteLine(sum);
+Console.WriteLine(fact(5));
+Console.WriteLine(twice<string>("ab", (a, b) => a + b));
+Console.WriteLine(mapAll([1, 2, 3], x => x * 2).Length);
+const xs = [1, 2, 3, 4];
+Console.WriteLine(xs.Where(x => x % 2 === 0).Select(x => x * 10).Sum());

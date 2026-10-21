@@ -1,0 +1,3 @@
+import { X } from "Nope.Nothing";
+type T = Missing;
+Console.WriteLine(1);

@@ -1,0 +1,25 @@
+import { AttributeUsage, AttributeTargets, Attribute } from "System";
+
+@AttributeUsage(AttributeTargets.All, { AllowMultiple: true })
+export class TagAttribute extends Attribute {
+  constructor(public name: string, public weight: int = 1) { super(); }
+  Note: string = "";
+}
+
+@Tag("cls", 5, { Note: "hello" })
+class Thing {
+  @Tag("prop") value = 1;
+  @Tag("method")
+  run(@Tag("param") x: int): void {}
+}
+
+const t = typeof(Thing);
+const attrs = t.GetCustomAttributes(typeof(TagAttribute), false);
+Console.WriteLine(attrs.Length);
+const a = attrs[0] as TagAttribute;
+Console.WriteLine(a.name + a.weight + a.Note);
+const m = t.GetMethod("run")!;
+Console.WriteLine((m.GetCustomAttributes(typeof(TagAttribute), false)[0] as TagAttribute).name);
+Console.WriteLine((m.GetParameters()[0].GetCustomAttributes(typeof(TagAttribute), false)[0] as TagAttribute).name);
+const p = t.GetProperty("value")!;
+Console.WriteLine((p.GetCustomAttributes(typeof(TagAttribute), false)[0] as TagAttribute).name);

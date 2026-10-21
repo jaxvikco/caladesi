@@ -1,0 +1,3 @@
+function len(s: string | null): int { return s.Length; }
+const n: string = null;
+Console.WriteLine(1);

@@ -40,6 +40,9 @@ internal sealed class DeclarationChecker(Compilation compilation)
                 }
             }
         }
+        // aliases are resolved lazily; resolve them all so their errors are reported
+        foreach (var file in compilation.SourceFiles)
+            foreach (var alias in file.Aliases) { _ = alias.TypeParameters; _ = alias.Target; }
         // decorators
         foreach (var type in compilation.AllSourceTypes.ToList())
         {

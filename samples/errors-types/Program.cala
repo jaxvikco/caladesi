@@ -1,0 +1,8 @@
+let x: int = "s";
+const s: string = null;
+function f(): int { }
+const y = 1;
+y = 2;
+class A { constructor() {} }
+const a = new A(1);
+Console.WriteLine(1);

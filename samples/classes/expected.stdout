@@ -1,0 +1,10 @@
+circle: 3.14
+rect: 6.00
+24
+rect#3 area=20
+3
+42
+False
+Point { x = 1, y = 5, label =  }
+Vec { x = 1.5, y = 2 }
+True
