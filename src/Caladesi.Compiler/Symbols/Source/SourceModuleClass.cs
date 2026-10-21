@@ -169,7 +169,11 @@ internal static class SourceModuleVariables
         var c = container.Compilation;
         var binder = c.CreateBinder(container.File, container, c.DeclarationDiagnostics);
         if (d.TypeAnnotation != null) return binder.BindType(d.TypeAnnotation.Type);
-        if (d.Initializer != null) return binder.InferVariableType(d.Initializer.Value);
+        if (d.Initializer != null)
+        {
+            binder.EnableTopLevelAwait();
+            return binder.InferVariableType(d.Initializer.Value);
+        }
         c.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.TypeAnnotationRequired, container.File.FilePath, d.Span));
         return ErrorTypeSymbol.Instance;
     }

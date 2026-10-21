@@ -256,7 +256,7 @@ internal sealed class EntryPointChecker(Compilation compilation)
             {
                 var ok = main.Parameters.Length == 0 || (main.Parameters.Length == 1 && main.Parameters[0].Type is ArrayTypeSymbol { ElementType.SpecialType: SpecialType.String });
                 var rt = main.ReturnType;
-                var rtOk = rt.IsVoid || rt.SpecialType == SpecialType.Int32 || rt.SpecialType == SpecialType.Task || (rt is NamedTypeSymbol { SpecialType: SpecialType.None } n && n.OriginalDefinition.SpecialType == SpecialType.TaskT && n.TypeArguments[0].SpecialType == SpecialType.Int32);
+                var rtOk = rt.IsVoid || rt.SpecialType == SpecialType.Int32 || rt.SpecialType == SpecialType.Task || (rt is NamedTypeSymbol n && n.OriginalDefinition.SpecialType == SpecialType.TaskT && n.TypeArguments[0].SpecialType == SpecialType.Int32);
                 if (!ok || !rtOk) diags.Add(Diagnostic.Create(Descriptors.InvalidMainSignature, candidates[0].File.FilePath, main.Locations.FirstOrDefault().Span));
             }
         }
