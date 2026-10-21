@@ -217,7 +217,7 @@ public sealed partial class Binder
                     break;
                 case CollectionKind.Span or CollectionKind.ReadOnlySpan:
                 {
-                    var conv = namedTarget!.GetMembers("op_Implicit").OfType<MethodSymbol>().FirstOrDefault(m => m.Parameters.Length == 1 && m.Parameters[0].Type.Equals(arrType));
+                    var conv = namedTarget!.GetMembers("op_Implicit").OfType<MethodSymbol>().FirstOrDefault(m => m.Parameters.Length == 1 && m.Parameters[0].Type.StripNullable().Equals(arrType));
                     if (conv == null) { Report(Descriptors.CollectionNotConvertible, syntax, target!.ToDisplayString()); return Bad(syntax); }
                     result = new BoundConversion(array, ConversionKind.UserDefined, namedTarget, conv) { Syntax = syntax };
                     break;
@@ -225,7 +225,7 @@ public sealed partial class Binder
                 case CollectionKind.Builder:
                 {
                     var spanT = builder!.Parameters[0].Type;
-                    var rosConv = ((NamedTypeSymbol)spanT).GetMembers("op_Implicit").OfType<MethodSymbol>().FirstOrDefault(m => m.Parameters.Length == 1 && m.Parameters[0].Type.Equals(arrType));
+                    var rosConv = ((NamedTypeSymbol)spanT).GetMembers("op_Implicit").OfType<MethodSymbol>().FirstOrDefault(m => m.Parameters.Length == 1 && m.Parameters[0].Type.StripNullable().Equals(arrType));
                     if (rosConv == null) { Report(Descriptors.CollectionNotConvertible, syntax, target!.ToDisplayString()); return Bad(syntax); }
                     var spanArg = new BoundConversion(array, ConversionKind.UserDefined, spanT, rosConv) { Syntax = syntax };
                     result = new BoundCall(null, builder, [spanArg]) { Syntax = syntax };

@@ -214,7 +214,7 @@ public sealed class SourceMethodSymbol : MethodSymbol
         if (_bodyBound) return _boundBody;
         _bodyBound = true;
         if (SyntheticBodyFactory != null) { _boundBody = SyntheticBodyFactory(this); return _boundBody; }
-        if (BodySyntax == null && !(_kind == MethodKind.Constructor && SynthesizedKind is SynthesizedBodyKind.DefaultConstructor or SynthesizedBodyKind.InheritedConstructor)) return null;
+        if (BodySyntax == null && !(_kind == MethodKind.Constructor && SynthesizedKind is SynthesizedBodyKind.DefaultConstructor or SynthesizedBodyKind.InheritedConstructor) && _kind != MethodKind.StaticConstructor) return null;
         var binder = _compilation.CreateBinder(_file, this, _compilation.BodyDiagnostics);
         _boundBody = binder.BindMethodBody(this);
         return _boundBody;
