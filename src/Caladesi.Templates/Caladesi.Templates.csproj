@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Caladesi.Templates</PackageId>
+    <Description>Project templates for the Caladesi language (calaconsole, calalib, calatest).</Description>
+    <PackageType>Template</PackageType>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <NoWarn>$(NoWarn);NU5128;NU5100;NU5105</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="templates/**/*" Exclude="templates/**/bin/**;templates/**/obj/**" Pack="true" PackagePath="content/%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

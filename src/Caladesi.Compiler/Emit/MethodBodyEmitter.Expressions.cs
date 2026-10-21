@@ -25,6 +25,10 @@ internal sealed partial class MethodBodyEmitter
             case BoundLiteral lit:
                 if (used) EmitConstant(lit.Value.Value, lit.Type!);
                 return;
+            case BoundAddressOf ao:
+                EmitAddress(ao.Operand);
+                if (!used) _il.Op(ILOpCode.Pop, -1);
+                break;
             case BoundLocal l:
                 if (used) _il.Ldloc(GetLocal(l.Local).Index);
                 return;

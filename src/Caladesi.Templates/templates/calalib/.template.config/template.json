@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json.schemastore.org/template",
+  "author": "Caladesi",
+  "classifications": [ "Common", "Library", "Caladesi" ],
+  "identity": "Caladesi.Templates.Library",
+  "name": "Caladesi Class Library",
+  "description": "A class library written in Caladesi.",
+  "shortName": "calalib",
+  "tags": { "language": "Caladesi", "type": "project" },
+  "sourceName": "CaladesiLibrary",
+  "preferNameDirectory": true
+}

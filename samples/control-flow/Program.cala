@@ -1,0 +1,33 @@
+function describe(n: int): string {
+  switch (n) {
+    case 1: return "one";
+    case 2: return "two";
+    default: return "many";
+  }
+}
+
+let sum = 0;
+for (let i = 0; i < 5; i++) {
+  if (i === 3) continue;
+  sum += i;
+}
+Console.WriteLine(sum);
+
+let n = 0;
+while (n < 3) n++;
+do { n--; } while (n > 0);
+Console.WriteLine(n);
+
+for (const s of ["a", "b"]) Console.WriteLine(s);
+
+Console.WriteLine(describe(1));
+Console.WriteLine(describe(2));
+Console.WriteLine(describe(9));
+
+try {
+  throw new Exception("boom");
+} catch (e: Exception) {
+  Console.WriteLine(e.Message);
+} finally {
+  Console.WriteLine("done");
+}

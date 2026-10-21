@@ -4,7 +4,15 @@ using Caladesi.Compiler.Diagnostics;
 using Caladesi.Compiler.Syntax;
 using Caladesi.Compiler.Text;
 
-return Run(args);
+try
+{
+    return Run(args);
+}
+catch (Exception ex) when (ex is not OutOfMemoryException)
+{
+    Console.Error.WriteLine($"calac : error CALC9999: internal compiler error: {ex.GetType().Name}: {ex.Message}");
+    return 2;
+}
 
 static int Run(string[] args)
 {

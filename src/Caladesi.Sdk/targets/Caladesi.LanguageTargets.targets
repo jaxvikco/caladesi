@@ -1,0 +1,88 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!--
+    Language targets for Caladesi (the equivalent of Microsoft.CSharp.targets). Imported through $(LanguageTargets)
+    from Microsoft.NET.Sdk's Sdk.targets, so everything below sees the common targets.
+  -->
+  <PropertyGroup>
+    <DefaultLanguageSourceExtension>.cala</DefaultLanguageSourceExtension>
+    <Language>Caladesi</Language>
+    <TargetRuntime>Managed</TargetRuntime>
+    <AlwaysUseNumericalSuffixInItemNames>true</AlwaysUseNumericalSuffixInItemNames>
+  </PropertyGroup>
+
+  <Import Project="$(MSBuildToolsPath)\Microsoft.Managed.Before.targets" />
+  <Import Project="$(MSBuildToolsPath)\Microsoft.Common.targets" />
+  <Import Project="$(MSBuildToolsPath)\Microsoft.Managed.After.targets" />
+
+  <UsingTask TaskName="Caladesi.Build.Tasks.CaladesiCompile" AssemblyFile="$(CaladesiTasksAssembly)" />
+
+  <!-- Resources are not supported yet; the common targets still expect this target to exist. -->
+  <Target Name="CreateManifestResourceNames" />
+
+  <PropertyGroup>
+    <CoreCompileDependsOn>$(CoreCompileDependsOn);_ComputeNonExistentFileProperty</CoreCompileDependsOn>
+  </PropertyGroup>
+
+  <Target Name="_CaladesiResolveCompilerHost">
+    <PropertyGroup>
+      <_CaladesiDotnetHost>$(DOTNET_HOST_PATH)</_CaladesiDotnetHost>
+      <_CaladesiDotnetHost Condition="'$(_CaladesiDotnetHost)' == '' and '$(NetCoreRoot)' != ''">$(NetCoreRoot)/dotnet</_CaladesiDotnetHost>
+      <_CaladesiDotnetHost Condition="'$(_CaladesiDotnetHost)' == ''">dotnet</_CaladesiDotnetHost>
+    </PropertyGroup>
+  </Target>
+
+  <Target Name="_CaladesiComputeCompileSettings" DependsOnTargets="_CaladesiResolveCompilerHost;GetAssemblyVersion">
+    <PropertyGroup>
+      <!-- Treat Nullable=disable as off; everything else (including unset) is the compiler default, on. -->
+      <_CaladesiNullable Condition="'$(Nullable)' == 'disable'">disable</_CaladesiNullable>
+      <_CaladesiNullable Condition="'$(Nullable)' != '' and '$(Nullable)' != 'disable'">enable</_CaladesiNullable>
+      <_CaladesiAssemblyVersion>$(AssemblyVersion)</_CaladesiAssemblyVersion>
+      <_CaladesiAssemblyVersion Condition="'$(_CaladesiAssemblyVersion)' == ''">$(Version)</_CaladesiAssemblyVersion>
+      <CaladesiGenerateTestEntryPoint Condition="'$(CaladesiGenerateTestEntryPoint)' == '' and '$(OutputType)' == 'Exe' and ('@(PackageReference->WithMetadataValue('Identity', 'MSTest.TestFramework'))' != '' or '@(PackageReference->WithMetadataValue('Identity', 'MSTest'))' != '' or '@(PackageReference->WithMetadataValue('Identity', 'MSTest.TestAdapter'))' != '')">true</CaladesiGenerateTestEntryPoint>
+      <CaladesiGenerateTestEntryPoint Condition="'$(CaladesiGenerateTestEntryPoint)' == ''">false</CaladesiGenerateTestEntryPoint>
+    </PropertyGroup>
+  </Target>
+
+  <Target Name="CoreCompile"
+          Inputs="$(MSBuildAllProjects);
+                  @(Compile);
+                  @(ReferencePathWithRefAssemblies);
+                  @(CaladesiGlobalImport);
+                  $(CaladesiCompilerPath);
+                  $(CaladesiTasksAssembly);
+                  @(CustomAdditionalCompileInputs)"
+          Outputs="@(IntermediateAssembly);
+                   @(_DebugSymbolsIntermediatePath);
+                   $(NonExistentFile);
+                   @(CustomAdditionalCompileOutputs)"
+          Returns=""
+          DependsOnTargets="$(CoreCompileDependsOn);_CaladesiComputeCompileSettings">
+
+    <CaladesiCompile CompilerPath="$(CaladesiCompilerPath)"
+                 DotnetHostPath="$(_CaladesiDotnetHost)"
+                 OutputAssembly="@(IntermediateAssembly->'%(FullPath)')"
+                 PdbFile="@(_DebugSymbolsIntermediatePath->'%(FullPath)')"
+                 OutputType="$(OutputType)"
+                 AssemblyName="$(AssemblyName)"
+                 RootNamespace="$(RootNamespace)"
+                 ProjectDirectory="$(MSBuildProjectDirectory)"
+                 References="@(ReferencePathWithRefAssemblies)"
+                 Sources="@(Compile)"
+                 GlobalImports="@(CaladesiGlobalImport)"
+                 DefineConstants="$(DefineConstants)"
+                 NullableContext="$(_CaladesiNullable)"
+                 TreatWarningsAsErrors="$(TreatWarningsAsErrors)"
+                 NoWarn="$(NoWarn)"
+                 Version="$(_CaladesiAssemblyVersion)"
+                 TargetFrameworkMoniker="$(TargetFrameworkMoniker)"
+                 TargetFrameworkDisplayName="$(TargetFrameworkMonikerDisplayName)"
+                 Optimize="$(Optimize)"
+                 GenerateTestEntryPoint="$(CaladesiGenerateTestEntryPoint)"
+                 YieldDuringToolExecution="true" />
+
+    <ItemGroup>
+      <FileWrites Include="@(IntermediateAssembly)" />
+      <FileWrites Include="@(_DebugSymbolsIntermediatePath)" />
+    </ItemGroup>
+  </Target>
+</Project>

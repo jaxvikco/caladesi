@@ -1,0 +1,9 @@
+export class Greeter {
+  static shout(name: string): string {
+    return name.ToUpper();
+  }
+
+  static triple(x: int): int {
+    return x * 3;
+  }
+}

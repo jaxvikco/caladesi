@@ -1,9 +1,12 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/Caladesi.Build.Tasks/Caladesi.Build.Tasks.csproj" />
     <Project Path="src/Caladesi.Cli/Caladesi.Cli.csproj" />
     <Project Path="src/Caladesi.Compiler/Caladesi.Compiler.csproj" />
     <Project Path="src/Caladesi.LanguageServer/Caladesi.LanguageServer.csproj" />
     <Project Path="src/Caladesi.Runtime/Caladesi.Runtime.csproj" />
+    <Project Path="src/Caladesi.Sdk/Caladesi.Sdk.csproj" />
+    <Project Path="src/Caladesi.Templates/Caladesi.Templates.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Caladesi.Compiler.Tests/Caladesi.Compiler.Tests.csproj" />

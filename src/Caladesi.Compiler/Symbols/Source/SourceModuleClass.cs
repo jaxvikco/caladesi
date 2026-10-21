@@ -12,7 +12,7 @@ public sealed class SourceModuleClassSymbol : SourceNamedType
     private SourceMethodSymbol? _userMain;
 
     public SourceModuleClassSymbol(Compilation compilation, SourceFile file, string className)
-        : base(compilation, file, null, className, null, Accessibility.Public)
+        : base(compilation, file, null, className, file.Namespace, Accessibility.Public)
     {
         _className = className;
     }

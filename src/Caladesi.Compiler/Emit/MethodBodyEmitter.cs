@@ -21,6 +21,7 @@ internal sealed partial class MethodBodyEmitter
     private readonly Dictionary<ParameterSymbol, int> _paramIndex = new();
     private readonly Dictionary<LabelSymbol, LabelHandle> _labels = new();
     private readonly Dictionary<LabelSymbol, int> _labelTry = new();
+    private readonly Dictionary<int, int> _tryParent = new();
     private readonly Dictionary<BoundConditionalReceiver, (LocalSlot slot, TypeSymbol receiverType, bool isNullableValue)> _condReceivers = new();
     private readonly Stack<int> _tryStack = new();
     private int _nextTryId = 1;
@@ -107,6 +108,11 @@ internal sealed partial class MethodBodyEmitter
             {
                 var ids = new TryIds(t.Finally != null ? _nextTryId++ : 0, _nextTryId++, t.Catches.Select(_ => _nextTryId++).ToArray(), t.Finally != null ? _nextTryId++ : 0);
                 _tryIds[t] = ids;
+                var bodyParent = ids.Outer != 0 ? ids.Outer : tryId;
+                if (ids.Outer != 0) _tryParent[ids.Outer] = tryId;
+                _tryParent[ids.Body] = bodyParent;
+                foreach (var cid in ids.Catches) _tryParent[cid] = bodyParent;
+                if (ids.Finally != 0) _tryParent[ids.Finally] = tryId;
                 PreScanLabels(t.Body, ids.Body);
                 for (var i = 0; i < t.Catches.Length; i++) PreScanLabels(t.Catches[i].Body, ids.Catches[i]);
                 if (t.Finally != null) PreScanLabels(t.Finally, ids.Finally);
@@ -177,7 +183,14 @@ internal sealed partial class MethodBodyEmitter
             case BoundFor f: EmitFor(f); break;
             case BoundGoto g: EmitGoto(g.Label); break;
             case BoundConditionalGoto cg:
-                EmitBranchIf(cg.Condition, GetLabel(cg.Label), cg.JumpIfTrue);
+                if (RequiresLeave(cg.Label))
+                {
+                    var skip = _il.NewLabel();
+                    EmitBranchIf(cg.Condition, skip, !cg.JumpIfTrue);
+                    _il.Branch(ILOpCode.Leave, GetLabel(cg.Label));
+                    _il.Mark(skip);
+                }
+                else EmitBranchIf(cg.Condition, GetLabel(cg.Label), cg.JumpIfTrue);
                 break;
             case BoundLabel l:
                 _il.Mark(GetLabel(l.Label));
@@ -210,9 +223,19 @@ internal sealed partial class MethodBodyEmitter
     private void EmitGoto(LabelSymbol label)
     {
         var target = GetLabel(label);
-        var labelTry = _labelTry.TryGetValue(label, out var t) ? t : 0;
-        var op = labelTry != CurrentTry ? ILOpCode.Leave : ILOpCode.Br;
+        var op = RequiresLeave(label) ? ILOpCode.Leave : ILOpCode.Br;
         _il.Branch(op, target);
+    }
+
+    /// <summary>Jumping out of a protected region needs <c>leave</c>; jumping to the same region or into the first instruction of a nested one is a plain branch.</summary>
+    private bool RequiresLeave(LabelSymbol label)
+    {
+        var target = _labelTry.TryGetValue(label, out var t) ? t : 0;
+        var current = CurrentTry;
+        if (target == current) return false;
+        for (var r = target; r != 0; r = _tryParent.GetValueOrDefault(r))
+            if (r == current) return false;
+        return current != 0;
     }
 
     private void EmitReturn(BoundReturn r)

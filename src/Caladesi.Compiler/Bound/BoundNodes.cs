@@ -244,6 +244,12 @@ public sealed class BoundSequence(ImmutableArray<LocalSymbol> locals, ImmutableA
     public BoundExpression Value { get; } = value;
 }
 
+/// <summary>Passes the managed address of an l-value (field, local, parameter, array element) to a <c>ref</c> parameter.</summary>
+public sealed class BoundAddressOf(BoundExpression operand) : BoundExpression(operand.Type)
+{
+    public BoundExpression Operand { get; } = operand;
+}
+
 public sealed class BoundTypeOf(TypeSymbol operand, TypeSymbol systemType) : BoundExpression(systemType)
 {
     public TypeSymbol Operand { get; } = operand;

@@ -1,0 +1,5 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Microsoft.NET.Sdk's targets import $(LanguageTargets), which Caladesi.props points at Caladesi.LanguageTargets.targets. -->
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+  <Import Project="$(MSBuildThisFileDirectory)..\targets\Caladesi.targets" />
+</Project>

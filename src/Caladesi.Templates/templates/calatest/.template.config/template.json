@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json.schemastore.org/template",
+  "author": "Caladesi",
+  "classifications": [ "Test", "MSTest", "Caladesi" ],
+  "identity": "Caladesi.Templates.Test",
+  "name": "Caladesi MSTest Project",
+  "description": "An MSTest (Microsoft.Testing.Platform) test project written in Caladesi.",
+  "shortName": "calatest",
+  "tags": { "language": "Caladesi", "type": "project" },
+  "sourceName": "CaladesiTests",
+  "preferNameDirectory": true
+}

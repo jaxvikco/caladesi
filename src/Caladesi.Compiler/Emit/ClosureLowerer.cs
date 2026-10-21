@@ -291,33 +291,7 @@ internal sealed class ClosureLowerer
     private void CreateEnv(Scope scope)
     {
         if (scope.Env != null) return;
-        var objectType = _c.GetSpecialType(SpecialType.Object);
-        var cls = new SynthesizedNamedType("<>c__DisplayClass" + _methodOrdinal + "_" + _scopeCounter++, _container, TypeKind.Class, Accessibility.Private, objectType);
-        var classTps = _container.TypeParameters;
-        var methodTps = _method.TypeParameters;
-        NamedTypeSymbol closed = cls;
-        if (classTps.Length + methodTps.Length > 0)
-        {
-            var map = new Dictionary<TypeParameterSymbol, int>();
-            var tps = ImmutableArray.CreateBuilder<TypeParameterSymbol>();
-            var args = ImmutableArray.CreateBuilder<TypeSymbol>();
-            foreach (var tp in classTps)
-            {
-                tps.Add(CopyTypeParameter(tp, tp.Ordinal, cls));
-                args.Add(tp);
-            }
-            foreach (var tp in methodTps)
-            {
-                var ordinal = classTps.Length + tp.Ordinal;
-                tps.Add(CopyTypeParameter(tp, ordinal, cls));
-                args.Add(tp);
-                map[tp] = ordinal;
-            }
-            cls.SetTypeParameters(tps.ToImmutable());
-            cls.OwnArityValue = methodTps.Length;
-            cls.MethodTypeParameterMap = map;
-            closed = cls.Construct(args.ToImmutable());
-        }
+        var cls = SynthesizedClassFactory.Create(_c, _container, _method, "<>c__DisplayClass" + _methodOrdinal + "_" + _scopeCounter++, null, out var closed);
         var env = new Env
         {
             Scope = scope,
@@ -328,10 +302,6 @@ internal sealed class ClosureLowerer
         scope.Env = env;
         _program.Types.Add(cls);
     }
-
-    private static TypeParameterSymbol CopyTypeParameter(TypeParameterSymbol tp, int ordinal, Symbol container) =>
-        new(tp.Name, ordinal, container, VarianceKind.None, _ => new TypeParameterConstraints(
-            tp.HasReferenceTypeConstraint, tp.HasValueTypeConstraint, tp.HasConstructorConstraint && !tp.HasValueTypeConstraint, tp.HasNotNullConstraint, tp.ConstraintTypes));
 
     private void CreateEnvMembers(Env env)
     {
