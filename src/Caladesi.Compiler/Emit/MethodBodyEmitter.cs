@@ -1,11 +1,10 @@
 using System.Collections.Immutable;
-using System.Numerics;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using Caladesi.Compiler.Bound;
 using Caladesi.Compiler.Symbols;
-using Caladesi.Compiler.Symbols.Source;
 using Caladesi.Compiler.Syntax;
+using Caladesi.Compiler.Text;
 
 namespace Caladesi.Compiler.Emit;
 
@@ -17,17 +16,16 @@ internal sealed partial class MethodBodyEmitter
     private readonly MethodSymbol _method;
     private readonly ILBuilder _il;
     private readonly SourceFile? _file;
-    private readonly Dictionary<LocalSymbol, LocalSlot> _locals = new();
-    private readonly Dictionary<ParameterSymbol, int> _paramIndex = new();
-    private readonly Dictionary<LabelSymbol, LabelHandle> _labels = new();
-    private readonly Dictionary<LabelSymbol, int> _labelTry = new();
-    private readonly Dictionary<int, int> _tryParent = new();
-    private readonly Dictionary<BoundConditionalReceiver, (LocalSlot slot, TypeSymbol receiverType, bool isNullableValue)> _condReceivers = new();
+    private readonly Dictionary<LocalSymbol, LocalSlot> _locals = [];
+    private readonly Dictionary<ParameterSymbol, int> _paramIndex = [];
+    private readonly Dictionary<LabelSymbol, LabelHandle> _labels = [];
+    private readonly Dictionary<LabelSymbol, int> _labelTry = [];
+    private readonly Dictionary<int, int> _tryParent = [];
+    private readonly Dictionary<BoundConditionalReceiver, (LocalSlot slot, TypeSymbol receiverType, bool isNullableValue)> _condReceivers = [];
     private readonly Stack<int> _tryStack = new();
     private int _nextTryId = 1;
     private readonly record struct TryIds(int Outer, int Body, int[] Catches, int Finally);
-    private readonly Dictionary<BoundTry, TryIds> _tryIds = new();
-    private int _inFinally;
+    private readonly Dictionary<BoundTry, TryIds> _tryIds = [];
     private LocalSlot? _returnSlot;
     private LabelHandle _returnLabel;
     private bool _returnLabelUsed;
@@ -45,8 +43,11 @@ internal sealed partial class MethodBodyEmitter
         _isStatic = method.IsStatic;
         _hasReturnValue = !method.ReturnType.IsVoid && method.MethodKind != MethodKind.Constructor && method.MethodKind != MethodKind.StaticConstructor;
         _thisIsByRef = method.ContainingType?.IsValueType == true;
-        var offset = _isStatic ? 0 : 1;
-        foreach (var p in method.Parameters) _paramIndex[p] = p.Ordinal + offset;
+        int offset = _isStatic ? 0 : 1;
+        foreach (ParameterSymbol p in method.Parameters)
+        {
+            _paramIndex[p] = p.Ordinal + offset;
+        }
     }
 
     // ------------------------------------------------------------------ entry
@@ -66,7 +67,11 @@ internal sealed partial class MethodBodyEmitter
         if (_returnLabelUsed)
         {
             _il.Mark(_returnLabel);
-            if (_returnSlot != null) _il.Ldloc(_returnSlot.Index);
+            if (_returnSlot != null)
+            {
+                _il.Ldloc(_returnSlot.Index);
+            }
+
             _il.Op(ILOpCode.Ret, _returnSlot != null ? -1 : 0);
         }
     }
@@ -81,14 +86,26 @@ internal sealed partial class MethodBodyEmitter
                 _labelTry[l.Label] = tryId;
                 break;
             case BoundBlock b:
-                foreach (var s in b.Statements) PreScanLabels(s, tryId);
+                foreach (BoundStatement s in b.Statements)
+                {
+                    PreScanLabels(s, tryId);
+                }
+
                 break;
             case BoundStatementList sl:
-                foreach (var s in sl.Statements) PreScanLabels(s, tryId);
+                foreach (BoundStatement s in sl.Statements)
+                {
+                    PreScanLabels(s, tryId);
+                }
+
                 break;
             case BoundIf i:
                 PreScanLabels(i.Consequence, tryId);
-                if (i.Alternative != null) PreScanLabels(i.Alternative, tryId);
+                if (i.Alternative != null)
+                {
+                    PreScanLabels(i.Alternative, tryId);
+                }
+
                 break;
             case BoundWhile w:
                 _labelTry[w.BreakLabel] = tryId; _labelTry[w.ContinueLabel] = tryId;
@@ -100,24 +117,52 @@ internal sealed partial class MethodBodyEmitter
                 break;
             case BoundFor f:
                 _labelTry[f.BreakLabel] = tryId; _labelTry[f.ContinueLabel] = tryId;
-                if (f.Initializer != null) PreScanLabels(f.Initializer, tryId);
-                if (f.Increment != null) PreScanLabels(f.Increment, tryId);
+                if (f.Initializer != null)
+                {
+                    PreScanLabels(f.Initializer, tryId);
+                }
+
+                if (f.Increment != null)
+                {
+                    PreScanLabels(f.Increment, tryId);
+                }
+
                 PreScanLabels(f.Body, tryId);
                 break;
             case BoundTry t:
-            {
-                var ids = new TryIds(t.Finally != null ? _nextTryId++ : 0, _nextTryId++, t.Catches.Select(_ => _nextTryId++).ToArray(), t.Finally != null ? _nextTryId++ : 0);
-                _tryIds[t] = ids;
-                var bodyParent = ids.Outer != 0 ? ids.Outer : tryId;
-                if (ids.Outer != 0) _tryParent[ids.Outer] = tryId;
-                _tryParent[ids.Body] = bodyParent;
-                foreach (var cid in ids.Catches) _tryParent[cid] = bodyParent;
-                if (ids.Finally != 0) _tryParent[ids.Finally] = tryId;
-                PreScanLabels(t.Body, ids.Body);
-                for (var i = 0; i < t.Catches.Length; i++) PreScanLabels(t.Catches[i].Body, ids.Catches[i]);
-                if (t.Finally != null) PreScanLabels(t.Finally, ids.Finally);
-                break;
-            }
+                {
+                    TryIds ids = new(t.Finally != null ? _nextTryId++ : 0, _nextTryId++, [.. t.Catches.Select(_ => _nextTryId++)], t.Finally != null ? _nextTryId++ : 0);
+                    _tryIds[t] = ids;
+                    int bodyParent = ids.Outer != 0 ? ids.Outer : tryId;
+                    if (ids.Outer != 0)
+                    {
+                        _tryParent[ids.Outer] = tryId;
+                    }
+
+                    _tryParent[ids.Body] = bodyParent;
+                    foreach (int cid in ids.Catches)
+                    {
+                        _tryParent[cid] = bodyParent;
+                    }
+
+                    if (ids.Finally != 0)
+                    {
+                        _tryParent[ids.Finally] = tryId;
+                    }
+
+                    PreScanLabels(t.Body, ids.Body);
+                    for (int i = 0; i < t.Catches.Length; i++)
+                    {
+                        PreScanLabels(t.Catches[i].Body, ids.Catches[i]);
+                    }
+
+                    if (t.Finally != null)
+                    {
+                        PreScanLabels(t.Finally, ids.Finally);
+                    }
+
+                    break;
+                }
             case BoundSequencePoint sp:
                 PreScanLabels(sp.Statement, tryId);
                 break;
@@ -126,7 +171,11 @@ internal sealed partial class MethodBodyEmitter
 
     private LabelHandle GetLabel(LabelSymbol l)
     {
-        if (!_labels.TryGetValue(l, out var h)) _labels[l] = h = _il.NewLabel();
+        if (!_labels.TryGetValue(l, out LabelHandle h))
+        {
+            _labels[l] = h = _il.NewLabel();
+        }
+
         return h;
     }
 
@@ -136,7 +185,7 @@ internal sealed partial class MethodBodyEmitter
 
     private LocalSlot GetLocal(LocalSymbol l)
     {
-        if (!_locals.TryGetValue(l, out var slot))
+        if (!_locals.TryGetValue(l, out LocalSlot? slot))
         {
             slot = _il.NewLocal(_m.ClrType(l.Type), l.IsSynthesized ? null : l.Name);
             _locals[l] = slot;
@@ -144,7 +193,10 @@ internal sealed partial class MethodBodyEmitter
         return slot;
     }
 
-    private LocalSlot TempLocal(TypeSymbol type) => _il.NewLocal(_m.ClrType(type));
+    private LocalSlot TempLocal(TypeSymbol type)
+    {
+        return _il.NewLocal(_m.ClrType(type));
+    }
 
     // ------------------------------------------------------------------ statements
 
@@ -153,11 +205,23 @@ internal sealed partial class MethodBodyEmitter
         switch (s)
         {
             case BoundBlock b:
-                foreach (var l in b.Locals) GetLocal(l);
-                foreach (var st in b.Statements) EmitStatement(st);
+                foreach (LocalSymbol l in b.Locals)
+                {
+                    _ = GetLocal(l);
+                }
+
+                foreach (BoundStatement st in b.Statements)
+                {
+                    EmitStatement(st);
+                }
+
                 break;
             case BoundStatementList sl:
-                foreach (var st in sl.Statements) EmitStatement(st);
+                foreach (BoundStatement st in sl.Statements)
+                {
+                    EmitStatement(st);
+                }
+
                 break;
             case BoundNoOp:
                 break;
@@ -185,12 +249,16 @@ internal sealed partial class MethodBodyEmitter
             case BoundConditionalGoto cg:
                 if (RequiresLeave(cg.Label))
                 {
-                    var skip = _il.NewLabel();
+                    LabelHandle skip = _il.NewLabel();
                     EmitBranchIf(cg.Condition, skip, !cg.JumpIfTrue);
                     _il.Branch(ILOpCode.Leave, GetLabel(cg.Label));
                     _il.Mark(skip);
                 }
-                else EmitBranchIf(cg.Condition, GetLabel(cg.Label), cg.JumpIfTrue);
+                else
+                {
+                    EmitBranchIf(cg.Condition, GetLabel(cg.Label), cg.JumpIfTrue);
+                }
+
                 break;
             case BoundLabel l:
                 _il.Mark(GetLabel(l.Label));
@@ -198,7 +266,10 @@ internal sealed partial class MethodBodyEmitter
             case BoundReturn r: EmitReturn(r); break;
             case BoundThrow t:
                 MarkSequencePoint(t.Syntax);
-                if (t.Expression == null) _il.Op(ILOpCode.Rethrow, 0);
+                if (t.Expression == null)
+                {
+                    _il.Op(ILOpCode.Rethrow, 0);
+                }
                 else { EmitExpression(t.Expression, true); _il.Op(ILOpCode.Throw, -1); }
                 break;
             case BoundTry t: EmitTry(t); break;
@@ -211,37 +282,59 @@ internal sealed partial class MethodBodyEmitter
 
     private void MarkSequencePoint(SyntaxNode? node)
     {
-        if (node == null || _file == null) return;
+        if (node == null || _file == null)
+        {
+            return;
+        }
+
         SyntaxNode n = node;
         // use the statement-like span (exclude trailing trivia)
-        var span = n.Span;
-        if (span.Length == 0) return;
-        var lp = _file.Tree.Text.GetLinePositionSpan(span);
+        TextSpan span = n.Span;
+        if (span.Length == 0)
+        {
+            return;
+        }
+
+        LinePositionSpan lp = _file.Tree.Text.GetLinePositionSpan(span);
         _il.MarkSequencePoint(lp.Start.Line + 1, lp.Start.Character + 1, lp.End.Line + 1, lp.End.Character + 1);
     }
 
     private void EmitGoto(LabelSymbol label)
     {
-        var target = GetLabel(label);
-        var op = RequiresLeave(label) ? ILOpCode.Leave : ILOpCode.Br;
+        LabelHandle target = GetLabel(label);
+        ILOpCode op = RequiresLeave(label) ? ILOpCode.Leave : ILOpCode.Br;
         _il.Branch(op, target);
     }
 
     /// <summary>Jumping out of a protected region needs <c>leave</c>; jumping to the same region or into the first instruction of a nested one is a plain branch.</summary>
     private bool RequiresLeave(LabelSymbol label)
     {
-        var target = _labelTry.TryGetValue(label, out var t) ? t : 0;
-        var current = CurrentTry;
-        if (target == current) return false;
-        for (var r = target; r != 0; r = _tryParent.GetValueOrDefault(r))
-            if (r == current) return false;
+        int target = _labelTry.TryGetValue(label, out int t) ? t : 0;
+        int current = CurrentTry;
+        if (target == current)
+        {
+            return false;
+        }
+
+        for (int r = target; r != 0; r = _tryParent.GetValueOrDefault(r))
+        {
+            if (r == current)
+            {
+                return false;
+            }
+        }
+
         return current != 0;
     }
 
     private void EmitReturn(BoundReturn r)
     {
         MarkSequencePoint(r.Syntax);
-        if (r.Expression != null) EmitExpression(r.Expression, true);
+        if (r.Expression != null)
+        {
+            EmitExpression(r.Expression, true);
+        }
+
         if (_tryStack.Count > 0)
         {
             if (r.Expression != null)
@@ -252,31 +345,37 @@ internal sealed partial class MethodBodyEmitter
             _returnLabelUsed = true;
             _il.Branch(ILOpCode.Leave, _returnLabel);
         }
-        else _il.Op(ILOpCode.Ret, r.Expression != null ? -1 : 0);
+        else
+        {
+            _il.Op(ILOpCode.Ret, r.Expression != null ? -1 : 0);
+        }
     }
 
     private void EmitIf(BoundIf i)
     {
         MarkSequencePoint(i.Condition.Syntax);
-        var elseLabel = _il.NewLabel();
+        LabelHandle elseLabel = _il.NewLabel();
         EmitBranchIf(i.Condition, elseLabel, jumpIfTrue: false);
         EmitStatement(i.Consequence);
         if (i.Alternative != null)
         {
-            var end = _il.NewLabel();
+            LabelHandle end = _il.NewLabel();
             _il.Branch(ILOpCode.Br, end);
             _il.Mark(elseLabel);
             EmitStatement(i.Alternative);
             _il.Mark(end);
         }
-        else _il.Mark(elseLabel);
+        else
+        {
+            _il.Mark(elseLabel);
+        }
     }
 
     private void EmitWhile(BoundWhile w)
     {
-        var body = _il.NewLabel();
-        var cont = GetLabel(w.ContinueLabel);
-        var brk = GetLabel(w.BreakLabel);
+        LabelHandle body = _il.NewLabel();
+        LabelHandle cont = GetLabel(w.ContinueLabel);
+        LabelHandle brk = GetLabel(w.BreakLabel);
         _il.Branch(ILOpCode.Br, cont);
         _il.Mark(body);
         EmitStatement(w.Body);
@@ -288,7 +387,7 @@ internal sealed partial class MethodBodyEmitter
 
     private void EmitDoWhile(BoundDoWhile w)
     {
-        var body = _il.NewLabel();
+        LabelHandle body = _il.NewLabel();
         _il.Mark(body);
         EmitStatement(w.Body);
         _il.Mark(GetLabel(w.ContinueLabel));
@@ -298,30 +397,49 @@ internal sealed partial class MethodBodyEmitter
 
     private void EmitFor(BoundFor f)
     {
-        foreach (var l in f.Locals) GetLocal(l);
-        if (f.Initializer != null) EmitStatement(f.Initializer);
-        var body = _il.NewLabel();
-        var cont = GetLabel(f.ContinueLabel);
-        var cond = _il.NewLabel();
+        foreach (LocalSymbol l in f.Locals)
+        {
+            _ = GetLocal(l);
+        }
+
+        if (f.Initializer != null)
+        {
+            EmitStatement(f.Initializer);
+        }
+
+        LabelHandle body = _il.NewLabel();
+        LabelHandle cont = GetLabel(f.ContinueLabel);
+        LabelHandle cond = _il.NewLabel();
         _il.Branch(ILOpCode.Br, cond);
         _il.Mark(body);
         EmitStatement(f.Body);
         _il.Mark(cont);
-        if (f.Increment != null) EmitStatement(f.Increment);
+        if (f.Increment != null)
+        {
+            EmitStatement(f.Increment);
+        }
+
         _il.Mark(cond);
-        if (f.Condition != null) EmitBranchIf(f.Condition, body, jumpIfTrue: true);
-        else _il.Branch(ILOpCode.Br, body);
+        if (f.Condition != null)
+        {
+            EmitBranchIf(f.Condition, body, jumpIfTrue: true);
+        }
+        else
+        {
+            _il.Branch(ILOpCode.Br, body);
+        }
+
         _il.Mark(GetLabel(f.BreakLabel));
     }
 
     private void EmitTry(BoundTry t)
     {
-        var ids = _tryIds[t];
-        var cfb = _il.ControlFlow;
-        var tryStart = _il.NewLabel();
-        var tryEnd = _il.NewLabel();
-        var end = _il.NewLabel();
-        var hasFinally = t.Finally != null;
+        TryIds ids = _tryIds[t];
+        ControlFlowBuilder cfb = _il.ControlFlow;
+        LabelHandle tryStart = _il.NewLabel();
+        LabelHandle tryEnd = _il.NewLabel();
+        LabelHandle end = _il.NewLabel();
+        bool hasFinally = t.Finally != null;
 
         LabelHandle outerStart = default, outerEnd = default;
         if (hasFinally)
@@ -336,22 +454,29 @@ internal sealed partial class MethodBodyEmitter
         _tryStack.Push(ids.Body);
         EmitStatement(t.Body);
         _il.Branch(ILOpCode.Leave, end);
-        _tryStack.Pop();
+        _ = _tryStack.Pop();
         _il.Mark(tryEnd);
 
-        for (var i = 0; i < t.Catches.Length; i++)
+        for (int i = 0; i < t.Catches.Length; i++)
         {
-            var c = t.Catches[i];
-            var hs = _il.NewLabel();
-            var he = _il.NewLabel();
+            BoundCatch c = t.Catches[i];
+            LabelHandle hs = _il.NewLabel();
+            LabelHandle he = _il.NewLabel();
             _il.Mark(hs);
             _tryStack.Push(ids.Catches[i]);
             _il.ResetDepth(1);
-            if (c.Local != null) _il.Stloc(GetLocal(c.Local).Index);
-            else _il.Op(ILOpCode.Pop, -1);
+            if (c.Local != null)
+            {
+                _il.Stloc(GetLocal(c.Local).Index);
+            }
+            else
+            {
+                _il.Op(ILOpCode.Pop, -1);
+            }
+
             EmitStatement(c.Body);
             _il.Branch(ILOpCode.Leave, end);
-            _tryStack.Pop();
+            _ = _tryStack.Pop();
             _il.Mark(he);
             cfb.AddCatchRegion(tryStart, tryEnd, hs, he, _m.GetTypeEntity(c.ExceptionType));
         }
@@ -360,24 +485,26 @@ internal sealed partial class MethodBodyEmitter
         {
             _il.Mark(end);
             _il.Branch(ILOpCode.Leave, outerEnd);
-            _tryStack.Pop(); // outer
-            var protectedEnd = _il.NewLabel();
-            var fs = _il.NewLabel();
-            var fe = _il.NewLabel();
+            _ = _tryStack.Pop(); // outer
+            LabelHandle protectedEnd = _il.NewLabel();
+            LabelHandle fs = _il.NewLabel();
+            LabelHandle fe = _il.NewLabel();
             _il.Mark(protectedEnd);
             _il.Mark(fs);
             _tryStack.Push(ids.Finally);
-            _inFinally++;
             _il.ResetDepth(0);
             EmitStatement(t.Finally!);
             _il.Op(ILOpCode.Endfinally, 0);
-            _inFinally--;
-            _tryStack.Pop();
+            _ = _tryStack.Pop();
             _il.Mark(fe);
             cfb.AddFinallyRegion(outerStart, protectedEnd, fs, fe);
             _il.Mark(outerEnd);
         }
-        else _il.Mark(end);
+        else
+        {
+            _il.Mark(end);
+        }
+
         _il.ResetDepth(0);
     }
 }

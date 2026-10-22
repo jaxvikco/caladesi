@@ -23,14 +23,17 @@ public sealed class SyntaxTree
 
     public static SyntaxTree ParseText(string text, string filePath = "")
     {
-        var source = SourceText.From(text);
-        var bag = new DiagnosticBag();
-        var lexer = new Lexer(source, filePath, bag);
-        var tokens = lexer.LexAll();
-        var parser = new Parser(source, filePath, tokens, bag);
-        var root = parser.ParseCompilationUnit();
+        SourceText source = SourceText.From(text);
+        DiagnosticBag bag = new();
+        Lexer lexer = new(source, filePath, bag);
+        List<SyntaxToken> tokens = lexer.LexAll();
+        Parser parser = new(filePath, tokens, bag);
+        CompilationUnitSyntax root = parser.ParseCompilationUnit();
         return new SyntaxTree(source, filePath, root, bag.ToImmutable());
     }
 
-    public SyntaxTree WithText(string newText) => ParseText(newText, FilePath);
+    public SyntaxTree WithText(string newText)
+    {
+        return ParseText(newText, FilePath);
+    }
 }

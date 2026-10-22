@@ -14,26 +14,53 @@ internal static class ImportReferences
 {
     public static IReadOnlyList<SymbolReference> Find(SemanticModel model, Symbol symbol, bool includeDeclaration)
     {
-        var references = model.FindReferences(symbol, includeDeclaration).ToList();
-        var original = symbol.OriginalDefinition;
-        if (original.ContainingSymbol is not (SourceModuleClassSymbol or NamespaceSymbol)) return references;
-        if (model.GetDefinition(symbol) is not { } definition) return references;
-
-        var declaringPath = Normalize(definition.Tree.FilePath);
-        var name = original.Name;
-        foreach (var tree in model.Compilation.SyntaxTrees)
+        List<SymbolReference> references = [.. model.FindReferences(symbol, includeDeclaration)];
+        Symbol original = symbol.OriginalDefinition;
+        if (original.ContainingSymbol is not (SourceModuleClassSymbol or NamespaceSymbol))
         {
-            foreach (var import in tree.Root.Statements.OfType<ImportDeclarationSyntax>())
+            return references;
+        }
+
+        if (model.GetDefinition(symbol) is not { } definition)
+        {
+            return references;
+        }
+
+        string declaringPath = Normalize(definition.Tree.FilePath);
+        string name = original.Name;
+        foreach (SyntaxTree tree in model.Compilation.SyntaxTrees)
+        {
+            foreach (ImportDeclarationSyntax import in tree.Root.Statements.OfType<ImportDeclarationSyntax>())
             {
-                if (import.Clause is not NamedImportsSyntax named) continue;
-                var module = import.ModuleName;
-                if (!module.StartsWith('.')) continue;
-                if (!string.Equals(Resolve(tree.FilePath, module, model.Compilation), declaringPath, StringComparison.Ordinal)) continue;
-                foreach (var specifier in named.Specifiers)
+                if (import.Clause is not NamedImportsSyntax named)
                 {
-                    var token = specifier.NameToken;
-                    if (token.IsMissing || token.Text != name) continue;
-                    if (references.Any(r => r.Tree == tree && r.Span == token.Span)) continue;
+                    continue;
+                }
+
+                string module = import.ModuleName;
+                if (!module.StartsWith('.'))
+                {
+                    continue;
+                }
+
+                if (!string.Equals(Resolve(tree.FilePath, module, model.Compilation), declaringPath, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                foreach (ImportSpecifierSyntax specifier in named.Specifiers)
+                {
+                    SyntaxToken token = specifier.NameToken;
+                    if (token.IsMissing || token.Text != name)
+                    {
+                        continue;
+                    }
+
+                    if (references.Any(r => r.Tree == tree && r.Span == token.Span))
+                    {
+                        continue;
+                    }
+
                     references.Add(new SymbolReference(tree, token.Span, false));
                 }
             }
@@ -47,9 +74,15 @@ internal static class ImportReferences
         string combined;
         try { combined = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(Normalize(fromFile)) ?? "", module)); }
         catch (ArgumentException) { return null; }
-        var known = compilation.SyntaxTrees.Select(t => Normalize(t.FilePath)).ToHashSet(StringComparer.Ordinal);
-        foreach (var candidate in new[] { combined, combined + ".cala", Path.Combine(combined, "index.cala") })
-            if (known.Contains(candidate)) return candidate;
+        HashSet<string> known = compilation.SyntaxTrees.Select(t => Normalize(t.FilePath)).ToHashSet(StringComparer.Ordinal);
+        foreach (string? candidate in new[] { combined, combined + ".cala", Path.Combine(combined, "index.cala") })
+        {
+            if (known.Contains(candidate))
+            {
+                return candidate;
+            }
+        }
+
         return null;
     }
 

@@ -1,12 +1,10 @@
-using System.Collections.Immutable;
 using Caladesi.Compiler.Diagnostics;
-using Caladesi.Compiler.Text;
 
 namespace Caladesi.Compiler.Syntax;
 
 public sealed partial class Parser
 {
-    private StatementSyntax ParseStatement(bool topLevel = false)
+    private StatementSyntax ParseStatement(bool _1 = false)
     {
         switch (Kind)
         {
@@ -22,28 +20,31 @@ public sealed partial class Parser
             case SyntaxKind.ThrowKeyword: return ParseThrow();
             case SyntaxKind.TryKeyword: return ParseTry();
             case SyntaxKind.SwitchKeyword: return ParseSwitch();
-            case SyntaxKind.ImportKeyword when PeekKind(1) != SyntaxKind.OpenParenToken && PeekKind(1) != SyntaxKind.DotToken:
+            case SyntaxKind.ImportKeyword when PeekKind(1) is not SyntaxKind.OpenParenToken and not SyntaxKind.DotToken:
                 return ParseImport();
             case SyntaxKind.AtToken:
                 return ParseDeclarationWithModifiers();
         }
 
-        if (IsStartOfDeclaration()) return ParseDeclarationWithModifiers();
+        if (IsStartOfDeclaration())
+        {
+            return ParseDeclarationWithModifiers();
+        }
 
         if (SyntaxFacts.IsIdentifierLike(Kind) && PeekKind(1) == SyntaxKind.ColonToken)
         {
-            var label = Eat();
-            var colon = Eat();
+            SyntaxToken label = Eat();
+            SyntaxToken colon = Eat();
             return new LabeledStatementSyntax(label, colon, ParseStatement());
         }
 
         return ParseExpressionStatement();
     }
 
-    private StatementSyntax ParseExpressionStatement()
+    private ExpressionStatementSyntax ParseExpressionStatement()
     {
-        var before = _i;
-        var e = ParseExpression();
+        int before = _i;
+        ExpressionSyntax e = ParseExpression();
         if (_i == before && e is MissingExpressionSyntax)
         {
             // Nothing could be parsed: skip a token to guarantee progress.
@@ -55,25 +56,28 @@ public sealed partial class Parser
 
     public BlockSyntax ParseBlock()
     {
-        var open = Expect(SyntaxKind.OpenBraceToken);
-        var statements = new List<SyntaxElement>();
-        while (Kind != SyntaxKind.CloseBraceToken && Kind != SyntaxKind.EndOfFileToken)
+        SyntaxToken open = Expect(SyntaxKind.OpenBraceToken);
+        List<SyntaxElement> statements = [];
+        while (Kind is not SyntaxKind.CloseBraceToken and not SyntaxKind.EndOfFileToken)
         {
-            var before = _i;
+            int before = _i;
             statements.Add(ParseStatement());
-            if (_i == before) SkipCurrent();
+            if (_i == before)
+            {
+                SkipCurrent();
+            }
         }
-        var close = Expect(SyntaxKind.CloseBraceToken);
+        SyntaxToken close = Expect(SyntaxKind.CloseBraceToken);
         return new BlockSyntax(open, MakeList(statements), close);
     }
 
-    private StatementSyntax ParseIf()
+    private IfStatementSyntax ParseIf()
     {
-        var kw = Eat();
-        var open = Expect(SyntaxKind.OpenParenToken);
-        var cond = ParseExpression();
-        var close = Expect(SyntaxKind.CloseParenToken);
-        var then = ParseStatement();
+        SyntaxToken kw = Eat();
+        SyntaxToken open = Expect(SyntaxKind.OpenParenToken);
+        ExpressionSyntax cond = ParseExpression();
+        SyntaxToken close = Expect(SyntaxKind.CloseParenToken);
+        StatementSyntax then = ParseStatement();
         SyntaxToken? elseKw = null;
         StatementSyntax? els = null;
         if (Kind == SyntaxKind.ElseKeyword)
@@ -84,62 +88,64 @@ public sealed partial class Parser
         return new IfStatementSyntax(kw, open, cond, close, then, elseKw, els);
     }
 
-    private StatementSyntax ParseWhile()
+    private WhileStatementSyntax ParseWhile()
     {
-        var kw = Eat();
-        var open = Expect(SyntaxKind.OpenParenToken);
-        var cond = ParseExpression();
-        var close = Expect(SyntaxKind.CloseParenToken);
+        SyntaxToken kw = Eat();
+        SyntaxToken open = Expect(SyntaxKind.OpenParenToken);
+        ExpressionSyntax cond = ParseExpression();
+        SyntaxToken close = Expect(SyntaxKind.CloseParenToken);
         return new WhileStatementSyntax(kw, open, cond, close, ParseStatement());
     }
 
-    private StatementSyntax ParseDo()
+    private DoStatementSyntax ParseDo()
     {
-        var kw = Eat();
-        var body = ParseStatement();
-        var whileKw = Expect(SyntaxKind.WhileKeyword);
-        var open = Expect(SyntaxKind.OpenParenToken);
-        var cond = ParseExpression();
-        var close = Expect(SyntaxKind.CloseParenToken);
-        var semi = TryEat(SyntaxKind.SemicolonToken);
+        SyntaxToken kw = Eat();
+        StatementSyntax body = ParseStatement();
+        SyntaxToken whileKw = Expect(SyntaxKind.WhileKeyword);
+        SyntaxToken open = Expect(SyntaxKind.OpenParenToken);
+        ExpressionSyntax cond = ParseExpression();
+        SyntaxToken close = Expect(SyntaxKind.CloseParenToken);
+        SyntaxToken? semi = TryEat(SyntaxKind.SemicolonToken);
         return new DoStatementSyntax(kw, body, whileKw, open, cond, close, semi);
     }
 
     private StatementSyntax ParseFor()
     {
-        var kw = Eat();
-        var awaitKw = TryEat(SyntaxKind.AwaitKeyword);
-        var open = Expect(SyntaxKind.OpenParenToken);
+        SyntaxToken kw = Eat();
+        SyntaxToken? awaitKw = TryEat(SyntaxKind.AwaitKeyword);
+        SyntaxToken open = Expect(SyntaxKind.OpenParenToken);
 
         SyntaxNode? init = null;
         if (Kind == SyntaxKind.SemicolonToken)
         {
             // empty initializer
         }
-        else if (Kind is SyntaxKind.LetKeyword or SyntaxKind.ConstKeyword
-                 || (Kind == SyntaxKind.UsingKeyword && SyntaxFacts.IsIdentifierLike(PeekKind(1))))
-        {
-            init = ParseVariableDeclarationList(forHeader: true);
-        }
         else
         {
-            init = ParseExpression();
+            init = Kind is SyntaxKind.LetKeyword or SyntaxKind.ConstKeyword
+                 || (Kind == SyntaxKind.UsingKeyword && SyntaxFacts.IsIdentifierLike(PeekKind(1)))
+                ? ParseVariableDeclarationList(forHeader: true)
+                : ParseExpression();
         }
 
         if (Kind == SyntaxKind.OfKeyword && init != null)
         {
-            var of = Eat();
-            var expr = ParseAssignmentExpression();
-            var close = Expect(SyntaxKind.CloseParenToken);
+            SyntaxToken of = Eat();
+            ExpressionSyntax expr = ParseAssignmentExpression();
+            SyntaxToken close = Expect(SyntaxKind.CloseParenToken);
             return new ForOfStatementSyntax(kw, awaitKw, open, init, of, expr, close, ParseStatement());
         }
         if (Kind == SyntaxKind.InKeyword && init != null)
         {
             Report(Descriptors.ForInNotSupported, Current.Span);
-            if (awaitKw != null) open = Absorb(awaitKw, open);
-            var inKw = Eat();
-            var expr = ParseExpression();
-            var close = Expect(SyntaxKind.CloseParenToken);
+            if (awaitKw != null)
+            {
+                open = Absorb(awaitKw, open);
+            }
+
+            SyntaxToken inKw = Eat();
+            ExpressionSyntax expr = ParseExpression();
+            SyntaxToken close = Expect(SyntaxKind.CloseParenToken);
             return new ForInStatementSyntax(kw, open, init, inKw, expr, close, ParseStatement());
         }
 
@@ -148,56 +154,70 @@ public sealed partial class Parser
             Report(Descriptors.ExpectedToken, awaitKw.Span, "of");
             open = Absorb(awaitKw, open);
         }
-        var semi1 = Expect(SyntaxKind.SemicolonToken);
-        ExpressionSyntax? cond = Kind != SyntaxKind.SemicolonToken && Kind != SyntaxKind.CloseParenToken ? ParseExpression() : null;
-        var semi2 = Expect(SyntaxKind.SemicolonToken);
+        SyntaxToken semi1 = Expect(SyntaxKind.SemicolonToken);
+        ExpressionSyntax? cond = Kind is not SyntaxKind.SemicolonToken and not SyntaxKind.CloseParenToken ? ParseExpression() : null;
+        SyntaxToken semi2 = Expect(SyntaxKind.SemicolonToken);
         ExpressionSyntax? incr = Kind != SyntaxKind.CloseParenToken ? ParseExpression() : null;
-        var closeParen = Expect(SyntaxKind.CloseParenToken);
+        SyntaxToken closeParen = Expect(SyntaxKind.CloseParenToken);
         return new ForStatementSyntax(kw, open, init, semi1, cond, semi2, incr, closeParen, ParseStatement());
     }
 
-    private StatementSyntax ParseReturn()
+    private ReturnStatementSyntax ParseReturn()
     {
-        var kw = Eat();
+        SyntaxToken kw = Eat();
         ExpressionSyntax? e = null;
         if (!NewlineBeforeCurrent && Kind is not (SyntaxKind.SemicolonToken or SyntaxKind.CloseBraceToken or SyntaxKind.EndOfFileToken))
+        {
             e = ParseExpression();
+        }
+
         return new ReturnStatementSyntax(kw, e, ParseSemicolon());
     }
 
-    private StatementSyntax ParseBreak()
+    private BreakStatementSyntax ParseBreak()
     {
-        var kw = Eat();
+        SyntaxToken kw = Eat();
         SyntaxToken? label = null;
-        if (!NewlineBeforeCurrent && SyntaxFacts.IsIdentifierLike(Kind)) label = Eat();
+        if (!NewlineBeforeCurrent && SyntaxFacts.IsIdentifierLike(Kind))
+        {
+            label = Eat();
+        }
+
         return new BreakStatementSyntax(kw, label, ParseSemicolon());
     }
 
-    private StatementSyntax ParseContinue()
+    private ContinueStatementSyntax ParseContinue()
     {
-        var kw = Eat();
+        SyntaxToken kw = Eat();
         SyntaxToken? label = null;
-        if (!NewlineBeforeCurrent && SyntaxFacts.IsIdentifierLike(Kind)) label = Eat();
+        if (!NewlineBeforeCurrent && SyntaxFacts.IsIdentifierLike(Kind))
+        {
+            label = Eat();
+        }
+
         return new ContinueStatementSyntax(kw, label, ParseSemicolon());
     }
 
-    private StatementSyntax ParseThrow()
+    private ThrowStatementSyntax ParseThrow()
     {
-        var kw = Eat();
+        SyntaxToken kw = Eat();
         ExpressionSyntax? e = null;
         if (!NewlineBeforeCurrent && Kind is not (SyntaxKind.SemicolonToken or SyntaxKind.CloseBraceToken or SyntaxKind.EndOfFileToken))
+        {
             e = ParseExpression();
+        }
+
         return new ThrowStatementSyntax(kw, e, ParseSemicolon());
     }
 
-    private StatementSyntax ParseTry()
+    private TryStatementSyntax ParseTry()
     {
-        var kw = Eat();
-        var block = ParseBlock();
-        var catches = new List<SyntaxElement>();
+        SyntaxToken kw = Eat();
+        BlockSyntax block = ParseBlock();
+        List<SyntaxElement> catches = [];
         while (Kind == SyntaxKind.CatchKeyword)
         {
-            var catchKw = Eat();
+            SyntaxToken catchKw = Eat();
             SyntaxToken? open = null, id = null, close = null;
             TypeAnnotationSyntax? type = null;
             if (Kind == SyntaxKind.OpenParenToken)
@@ -212,56 +232,63 @@ public sealed partial class Parser
         FinallyClauseSyntax? fin = null;
         if (Kind == SyntaxKind.FinallyKeyword)
         {
-            var fkw = Eat();
+            SyntaxToken fkw = Eat();
             fin = new FinallyClauseSyntax(fkw, ParseBlock());
         }
-        if (catches.Count == 0 && fin == null) ReportExpected("catch' or 'finally");
+        if (catches.Count == 0 && fin == null)
+        {
+            ReportExpected("catch' or 'finally");
+        }
+
         return new TryStatementSyntax(kw, block, MakeList(catches), fin);
     }
 
-    private StatementSyntax ParseSwitch()
+    private SwitchStatementSyntax ParseSwitch()
     {
-        var kw = Eat();
-        var open = Expect(SyntaxKind.OpenParenToken);
-        var expr = ParseExpression();
-        var close = Expect(SyntaxKind.CloseParenToken);
-        var openBrace = Expect(SyntaxKind.OpenBraceToken);
-        var sections = new List<SyntaxElement>();
+        SyntaxToken kw = Eat();
+        SyntaxToken open = Expect(SyntaxKind.OpenParenToken);
+        ExpressionSyntax expr = ParseExpression();
+        SyntaxToken close = Expect(SyntaxKind.CloseParenToken);
+        SyntaxToken openBrace = Expect(SyntaxKind.OpenBraceToken);
+        List<SyntaxElement> sections = [];
         while (Kind is SyntaxKind.CaseKeyword or SyntaxKind.DefaultKeyword)
         {
-            var labels = new List<SyntaxElement>();
+            List<SyntaxElement> labels = [];
             while (Kind is SyntaxKind.CaseKeyword or SyntaxKind.DefaultKeyword)
             {
                 if (Kind == SyntaxKind.CaseKeyword)
                 {
-                    var ck = Eat();
-                    var v = ParseExpression();
-                    var colon = Expect(SyntaxKind.ColonToken);
+                    SyntaxToken ck = Eat();
+                    ExpressionSyntax v = ParseExpression();
+                    SyntaxToken colon = Expect(SyntaxKind.ColonToken);
                     labels.Add(new SwitchLabelSyntax(SyntaxKind.CaseSwitchLabel, ck, v, colon));
                 }
                 else
                 {
-                    var dk = Eat();
-                    var colon = Expect(SyntaxKind.ColonToken);
+                    SyntaxToken dk = Eat();
+                    SyntaxToken colon = Expect(SyntaxKind.ColonToken);
                     labels.Add(new SwitchLabelSyntax(SyntaxKind.DefaultSwitchLabel, dk, null, colon));
                 }
             }
-            var stmts = new List<SyntaxElement>();
+            List<SyntaxElement> stmts = [];
             while (Kind is not (SyntaxKind.CaseKeyword or SyntaxKind.DefaultKeyword or SyntaxKind.CloseBraceToken or SyntaxKind.EndOfFileToken))
             {
-                var before = _i;
+                int before = _i;
                 stmts.Add(ParseStatement());
-                if (_i == before) SkipCurrent();
+                if (_i == before)
+                {
+                    SkipCurrent();
+                }
             }
             sections.Add(new SwitchSectionSyntax(MakeList(labels), MakeList(stmts)));
         }
         // Stray tokens inside the switch body
-        while (Kind != SyntaxKind.CloseBraceToken && Kind != SyntaxKind.EndOfFileToken)
+        while (Kind is not SyntaxKind.CloseBraceToken and not SyntaxKind.EndOfFileToken)
         {
             ReportAtCurrent(Descriptors.UnexpectedToken, Current.Text);
             SkipCurrent();
         }
-        var closeBrace = Expect(SyntaxKind.CloseBraceToken);
+        SyntaxToken closeBrace = Expect(SyntaxKind.CloseBraceToken);
         return new SwitchStatementSyntax(kw, open, expr, close, openBrace, MakeList(sections), closeBrace);
     }
 
@@ -270,9 +297,13 @@ public sealed partial class Parser
     private VariableDeclarationListSyntax ParseVariableDeclarationList(bool forHeader = false)
     {
         SyntaxToken? awaitKw = null;
-        if (Kind == SyntaxKind.AwaitKeyword && PeekKind(1) == SyntaxKind.UsingKeyword) awaitKw = Eat();
-        var kw = Eat(); // let / const / using
-        var items = new List<SyntaxElement>();
+        if (Kind == SyntaxKind.AwaitKeyword && PeekKind(1) == SyntaxKind.UsingKeyword)
+        {
+            awaitKw = Eat();
+        }
+
+        SyntaxToken kw = Eat(); // let / const / using
+        List<SyntaxElement> items = [];
         while (true)
         {
             items.Add(ParseVariableDeclarator(forHeader));
@@ -282,17 +313,24 @@ public sealed partial class Parser
         return new VariableDeclarationListSyntax(awaitKw, kw, MakeSepList(items));
     }
 
-    private VariableDeclaratorSyntax ParseVariableDeclarator(bool forHeader)
+    private VariableDeclaratorSyntax ParseVariableDeclarator(bool _1)
     {
         SyntaxToken? id = null;
         BindingPatternSyntax? pattern = null;
-        if (Kind == SyntaxKind.OpenBraceToken || Kind == SyntaxKind.OpenBracketToken) pattern = ParseBindingPattern();
-        else id = ParseIdentifierToken();
-        var type = ParseOptionalTypeAnnotation();
+        if (Kind is SyntaxKind.OpenBraceToken or SyntaxKind.OpenBracketToken)
+        {
+            pattern = ParseBindingPattern();
+        }
+        else
+        {
+            id = ParseIdentifierToken();
+        }
+
+        TypeAnnotationSyntax? type = ParseOptionalTypeAnnotation();
         EqualsValueClauseSyntax? init = null;
         if (Kind == SyntaxKind.EqualsToken)
         {
-            var eq = Eat();
+            SyntaxToken eq = Eat();
             init = new EqualsValueClauseSyntax(eq, ParseAssignmentExpression());
         }
         return new VariableDeclaratorSyntax(id, pattern, type, init);
@@ -302,16 +340,16 @@ public sealed partial class Parser
     {
         if (Kind == SyntaxKind.OpenBraceToken)
         {
-            var open = Eat();
-            var elems = ParseSeparatedList(() => ParseBindingElement(true), () => Kind == SyntaxKind.CloseBraceToken);
-            var close = Expect(SyntaxKind.CloseBraceToken);
+            SyntaxToken open = Eat();
+            SyntaxNode elems = ParseSeparatedList(() => ParseBindingElement(true), () => Kind == SyntaxKind.CloseBraceToken);
+            SyntaxToken close = Expect(SyntaxKind.CloseBraceToken);
             return new ObjectBindingPatternSyntax(open, elems, close);
         }
         else
         {
-            var open = Eat();
-            var elems = ParseSeparatedList(() => ParseBindingElement(false), () => Kind == SyntaxKind.CloseBracketToken, null);
-            var close = Expect(SyntaxKind.CloseBracketToken);
+            SyntaxToken open = Eat();
+            SyntaxNode elems = ParseSeparatedList(() => ParseBindingElement(false), () => Kind == SyntaxKind.CloseBracketToken, null);
+            SyntaxToken close = Expect(SyntaxKind.CloseBracketToken);
             return new ArrayBindingPatternSyntax(open, elems, close);
         }
     }
@@ -319,8 +357,11 @@ public sealed partial class Parser
     private BindingElementSyntax ParseBindingElement(bool isObject)
     {
         if (!isObject && Kind == SyntaxKind.CommaToken)
+        {
             return new BindingElementSyntax(null, null, null, null, null, null); // omitted
-        var dots = TryEat(SyntaxKind.DotDotDotToken);
+        }
+
+        SyntaxToken? dots = TryEat(SyntaxKind.DotDotDotToken);
         SyntaxToken? propName = null, colon = null, id = null;
         BindingPatternSyntax? nested = null;
         if (isObject && dots == null)
@@ -329,20 +370,35 @@ public sealed partial class Parser
             {
                 propName = Eat();
                 colon = Eat();
-                if (Kind is SyntaxKind.OpenBraceToken or SyntaxKind.OpenBracketToken) nested = ParseBindingPattern();
-                else id = ParseIdentifierToken();
+                if (Kind is SyntaxKind.OpenBraceToken or SyntaxKind.OpenBracketToken)
+                {
+                    nested = ParseBindingPattern();
+                }
+                else
+                {
+                    id = ParseIdentifierToken();
+                }
             }
-            else id = ParseIdentifierToken();
+            else
+            {
+                id = ParseIdentifierToken();
+            }
         }
         else
         {
-            if (Kind is SyntaxKind.OpenBraceToken or SyntaxKind.OpenBracketToken) nested = ParseBindingPattern();
-            else id = ParseIdentifierToken();
+            if (Kind is SyntaxKind.OpenBraceToken or SyntaxKind.OpenBracketToken)
+            {
+                nested = ParseBindingPattern();
+            }
+            else
+            {
+                id = ParseIdentifierToken();
+            }
         }
         EqualsValueClauseSyntax? init = null;
         if (Kind == SyntaxKind.EqualsToken)
         {
-            var eq = Eat();
+            SyntaxToken eq = Eat();
             init = new EqualsValueClauseSyntax(eq, ParseAssignmentExpression());
         }
         return new BindingElementSyntax(dots, propName, colon, id, nested, init);
@@ -350,34 +406,41 @@ public sealed partial class Parser
 
     private TypeAnnotationSyntax? ParseOptionalTypeAnnotation()
     {
-        if (Kind != SyntaxKind.ColonToken) return null;
-        var colon = Eat();
+        if (Kind != SyntaxKind.ColonToken)
+        {
+            return null;
+        }
+
+        SyntaxToken colon = Eat();
         return new TypeAnnotationSyntax(colon, ParseType());
     }
 
     // ------------------------------------------------------------------ imports
 
-    private StatementSyntax ParseImport()
+    private ImportDeclarationSyntax ParseImport()
     {
-        var kw = Eat();
+        SyntaxToken kw = Eat();
         SyntaxToken? typeKw = null;
         SyntaxNode? clause = null;
         SyntaxToken? fromKw = null;
         if (Kind == SyntaxKind.TypeKeyword && (PeekKind(1) == SyntaxKind.OpenBraceToken || PeekKind(1) == SyntaxKind.AsteriskToken))
+        {
             typeKw = Eat();
+        }
+
         if (Kind == SyntaxKind.OpenBraceToken)
         {
-            var open = Eat();
-            var specs = ParseSeparatedList(ParseImportSpecifier, () => Kind == SyntaxKind.CloseBraceToken);
-            var close = Expect(SyntaxKind.CloseBraceToken);
+            SyntaxToken open = Eat();
+            SyntaxNode specs = ParseSeparatedList(ParseImportSpecifier, () => Kind == SyntaxKind.CloseBraceToken);
+            SyntaxToken close = Expect(SyntaxKind.CloseBraceToken);
             clause = new NamedImportsSyntax(open, specs, close);
             fromKw = Expect(SyntaxKind.FromKeyword);
         }
         else if (Kind == SyntaxKind.AsteriskToken)
         {
-            var star = Eat();
-            var asKw = Expect(SyntaxKind.AsKeyword);
-            var alias = ParseIdentifierToken();
+            SyntaxToken star = Eat();
+            SyntaxToken asKw = Expect(SyntaxKind.AsKeyword);
+            SyntaxToken alias = ParseIdentifierToken();
             clause = new NamespaceImportSyntax(star, asKw, alias);
             fromKw = Expect(SyntaxKind.FromKeyword);
         }
@@ -388,7 +451,10 @@ public sealed partial class Parser
             fromKw = Expect(SyntaxKind.FromKeyword);
         }
         SyntaxToken spec;
-        if (Kind == SyntaxKind.StringLiteralToken) spec = Eat();
+        if (Kind == SyntaxKind.StringLiteralToken)
+        {
+            spec = Eat();
+        }
         else
         {
             ReportExpected("module specifier string");
@@ -401,8 +467,11 @@ public sealed partial class Parser
     {
         SyntaxToken? typeKw = null;
         if (Kind == SyntaxKind.TypeKeyword && SyntaxFacts.IsIdentifierLike(PeekKind(1)) && PeekKind(1) != SyntaxKind.AsKeyword)
+        {
             typeKw = Eat();
-        var name = ParseIdentifierToken();
+        }
+
+        SyntaxToken name = ParseIdentifierToken();
         SyntaxToken? asKw = null, alias = null;
         if (Kind == SyntaxKind.AsKeyword)
         {

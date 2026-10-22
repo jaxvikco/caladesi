@@ -4,7 +4,9 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <RootNamespace>Caladesi_Compiler_Tests</RootNamespace>
+    <RootNamespace>Caladesi.Compiler.Tests</RootNamespace>
+    <!-- MSTest requires public test classes (CA1515); Subject_Scenario method names are the established test naming style (CA1707). -->
+    <NoWarn>$(NoWarn);CA1515;CA1707</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Caladesi.Compiler\Caladesi.Compiler.csproj" />

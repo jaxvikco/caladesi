@@ -6,6 +6,8 @@
     <IncludeBuildOutput>false</IncludeBuildOutput>
     <EnableDefaultItems>false</EnableDefaultItems>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <!-- Packaging-only project: no assembly is produced, so there is nothing to version. -->
+    <NoWarn>$(NoWarn);CA1016</NoWarn>
     <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
     <NoWarn>$(NoWarn);NU5128;NU5100;NU5105</NoWarn>
   </PropertyGroup>

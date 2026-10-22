@@ -9,28 +9,31 @@ public static class SymbolDisplay
 {
     public static string Describe(Symbol symbol)
     {
-        switch (symbol.OriginalDefinition)
+        ArgumentNullException.ThrowIfNull(symbol);
+        return symbol.OriginalDefinition switch
         {
-            case NamespaceSymbol ns: return "namespace " + ns.ToDisplayString();
-            case NamedTypeSymbol t: return DescribeType(t);
-            case MethodSymbol m: return DescribeMethod(m);
-            case PropertySymbol p: return $"(property) {Owner(p)}{p.Name}: {p.Type.ToDisplayString()}" + (p.SetMethod == null ? " (readonly)" : "");
-            case FieldSymbol f:
-                return (f.IsConst ? "(constant) " : "(field) ") + $"{Owner(f)}{f.Name}: {f.Type.ToDisplayString()}";
-            case ParameterSymbol p: return $"(parameter) {p.Name}: {p.Type.ToDisplayString()}";
-            case LocalSymbol l: return (l.IsConst ? "(constant) " : "(variable) ") + $"{l.Name}: {l.Type.ToDisplayString()}";
-            case TypeParameterSymbol tp: return "(type parameter) " + tp.Name;
-            case TypeAliasSymbol a: return $"type {a.Name} = {a.Target.ToDisplayString()}";
-            case FileModuleSymbol fm: return "module " + fm.Name;
-        }
-        return symbol.Kind + " " + symbol.Name;
+            NamespaceSymbol ns => "namespace " + ns.ToDisplayString(),
+            NamedTypeSymbol t => DescribeType(t),
+            MethodSymbol m => DescribeMethod(m),
+            PropertySymbol p => $"(property) {Owner(p)}{p.Name}: {p.Type.ToDisplayString()}" + (p.SetMethod == null ? " (readonly)" : ""),
+            FieldSymbol f => (f.IsConst ? "(constant) " : "(field) ") + $"{Owner(f)}{f.Name}: {f.Type.ToDisplayString()}",
+            ParameterSymbol p => $"(parameter) {p.Name}: {p.Type.ToDisplayString()}",
+            LocalSymbol l => (l.IsConst ? "(constant) " : "(variable) ") + $"{l.Name}: {l.Type.ToDisplayString()}",
+            TypeParameterSymbol tp => "(type parameter) " + tp.Name,
+            TypeAliasSymbol a => $"type {a.Name} = {a.Target.ToDisplayString()}",
+            FileModuleSymbol fm => "module " + fm.Name,
+            _ => symbol.Kind + " " + symbol.Name,
+        };
     }
 
-    private static string Owner(Symbol s) => s.ContainingSymbol is NamedTypeSymbol { IsStaticClass: false } t && s.ContainingSymbol is not SourceModuleClassSymbol ? t.Name + "." : "";
+    private static string Owner(Symbol s)
+    {
+        return s.ContainingSymbol is NamedTypeSymbol { IsStaticClass: false } t and not SourceModuleClassSymbol ? t.Name + "." : "";
+    }
 
     private static string DescribeType(NamedTypeSymbol t)
     {
-        var kind = t.TypeKind switch
+        string kind = t.TypeKind switch
         {
             TypeKind.Interface => "interface",
             TypeKind.Enum => "enum",
@@ -38,42 +41,59 @@ public static class SymbolDisplay
             TypeKind.Delegate => "delegate",
             _ => t.IsRecord ? "type" : t.IsAbstract && !t.IsStatic ? "abstract class" : "class",
         };
-        var sb = new StringBuilder();
-        sb.Append(kind).Append(' ').Append(t.ToDisplayString());
+        StringBuilder sb = new();
+        _ = sb.Append(kind).Append(' ').Append(t.ToDisplayString());
         if (t.TypeKind == TypeKind.Class && t.BaseType is { } b && b.SpecialType != SpecialType.Object)
-            sb.Append(" extends ").Append(b.ToDisplayString());
-        if (t.IsUnionType) sb.Append(" = ").Append(string.Join(" | ", t.UnionCases.Select(c => c.ToDisplayString())));
+        {
+            _ = sb.Append(" extends ").Append(b.ToDisplayString());
+        }
+
+        if (t.IsUnionType)
+        {
+            _ = sb.Append(" = ").Append(string.Join(" | ", t.UnionCases.Select(c => c.ToDisplayString())));
+        }
+
         return sb.ToString();
     }
 
     public static string DescribeMethod(MethodSymbol m)
     {
-        var sb = new StringBuilder();
+        ArgumentNullException.ThrowIfNull(m);
+        StringBuilder sb = new();
         switch (m.MethodKind)
         {
             case MethodKind.Constructor:
-                sb.Append("constructor ").Append(m.ContainingType?.Name);
+                _ = sb.Append("constructor ").Append(m.ContainingType?.Name);
                 break;
             case MethodKind.PropertyGet or MethodKind.PropertySet:
-                sb.Append("(accessor) ").Append(m.Name);
+                _ = sb.Append("(accessor) ").Append(m.Name);
                 break;
             default:
-                sb.Append(m.ContainingSymbol is SourceModuleClassSymbol || m.ContainingType == null ? "function " : "(method) " + (m.ContainingType.Name + "."));
-                sb.Append(m.Name);
+                _ = sb.Append(m.ContainingSymbol is SourceModuleClassSymbol || m.ContainingType == null ? "function " : "(method) " + m.ContainingType.Name + ".");
+                _ = sb.Append(m.Name);
                 break;
         }
-        if (m.TypeParameters.Length > 0) sb.Append('<').Append(string.Join(", ", m.TypeParameters.Select(t => t.Name))).Append('>');
-        sb.Append('(').Append(string.Join(", ", Parameters(m))).Append(')');
-        if (m.MethodKind != MethodKind.Constructor) sb.Append(": ").Append(m.ReturnType.ToDisplayString());
+        if (m.TypeParameters.Length > 0)
+        {
+            _ = sb.Append('<').Append(string.Join(", ", m.TypeParameters.Select(t => t.Name))).Append('>');
+        }
+
+        _ = sb.Append('(').Append(string.Join(", ", Parameters(m))).Append(')');
+        if (m.MethodKind != MethodKind.Constructor)
+        {
+            _ = sb.Append(": ").Append(m.ReturnType.ToDisplayString());
+        }
+
         return sb.ToString();
     }
 
     public static IReadOnlyList<string> Parameters(MethodSymbol m)
     {
-        var list = new List<string>();
-        foreach (var p in m.Parameters)
+        ArgumentNullException.ThrowIfNull(m);
+        List<string> list = [];
+        foreach (ParameterSymbol p in m.Parameters)
         {
-            var s = (p.IsParams ? "..." : "") + p.Name + (p.IsOptional && !p.IsParams ? "?" : "") + ": " + (p.IsParams && p.Type is ArrayTypeSymbol a ? a.ElementType.ToDisplayString() + "[]" : p.Type.ToDisplayString());
+            string s = (p.IsParams ? "..." : "") + p.Name + (p.IsOptional && !p.IsParams ? "?" : "") + ": " + (p.IsParams && p.Type is ArrayTypeSymbol a ? a.ElementType.ToDisplayString() + "[]" : p.Type.ToDisplayString());
             list.Add(s);
         }
         return list;
@@ -81,8 +101,9 @@ public static class SymbolDisplay
 
     public static string Signature(MethodSymbol m)
     {
-        var name = m.MethodKind == MethodKind.Constructor ? "new " + m.ContainingType?.Name : m.Name;
-        var ret = m.MethodKind == MethodKind.Constructor ? "" : ": " + m.ReturnType.ToDisplayString();
+        ArgumentNullException.ThrowIfNull(m);
+        string name = m.MethodKind == MethodKind.Constructor ? "new " + m.ContainingType?.Name : m.Name;
+        string ret = m.MethodKind == MethodKind.Constructor ? "" : ": " + m.ReturnType.ToDisplayString();
         return name + "(" + string.Join(", ", Parameters(m)) + ")" + ret;
     }
 }

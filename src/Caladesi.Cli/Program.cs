@@ -1,6 +1,8 @@
 using Caladesi.Cli;
 using Caladesi.Compiler;
 using Caladesi.Compiler.Diagnostics;
+using Caladesi.Compiler.Emit;
+using Caladesi.Compiler.Symbols.Metadata;
 using Caladesi.Compiler.Syntax;
 using Caladesi.Compiler.Text;
 
@@ -16,14 +18,22 @@ catch (Exception ex) when (ex is not OutOfMemoryException)
 
 static int Run(string[] args)
 {
-    var options = CliOptions.Parse(args);
+    CliOptions options = CliOptions.Parse(args);
     if (options.ShowVersion)
     {
         Console.WriteLine($"calac {CompilerInfo.Version}");
         return 0;
     }
-    foreach (var e in options.Errors) Console.Error.WriteLine($"calac : error CALC0001: {e}");
-    if (options.Errors.Count > 0) return 1;
+    foreach (string e in options.Errors)
+    {
+        Console.Error.WriteLine($"calac : error CALC0001: {e}");
+    }
+
+    if (options.Errors.Count > 0)
+    {
+        return 1;
+    }
+
     if (options.Sources.Count == 0)
     {
         Console.Error.WriteLine("calac : error CALC0002: no source files");
@@ -36,9 +46,9 @@ static int Run(string[] args)
         return 1;
     }
 
-    var texts = new Dictionary<string, SourceText>();
-    var trees = new List<SyntaxTree>();
-    foreach (var source in options.Sources)
+    Dictionary<string, SourceText> texts = [];
+    List<SyntaxTree> trees = [];
+    foreach (string source in options.Sources)
     {
         string text;
         try { text = File.ReadAllText(source); }
@@ -47,43 +57,63 @@ static int Run(string[] args)
             Console.Error.WriteLine($"{source} : error CALC0004: cannot read file: {ex.Message}");
             return 1;
         }
-        var tree = SyntaxTree.ParseText(text, Path.GetFullPath(source));
+        SyntaxTree tree = SyntaxTree.ParseText(text, Path.GetFullPath(source));
         texts[tree.FilePath] = tree.Text;
         trees.Add(tree);
     }
 
     if (options.GenerateTestEntryPoint)
     {
-        var entry = TestEntryPoint.Create(options.ToCompilationOptions(), options.TestHooks);
+        SyntaxTree entry = TestEntryPoint.Create(options.ToCompilationOptions(), options.TestHooks);
         texts[entry.FilePath] = entry.Text;
         trees.Add(entry);
     }
 
-    var refDiags = new DiagnosticBag();
-    var references = Caladesi.Compiler.Symbols.Metadata.ReferenceSet.Create(options.References, refDiags);
-    var compilation = Compilation.Create(options.ToCompilationOptions(), trees, references);
+    DiagnosticBag refDiags = new();
+    ReferenceSet references = Caladesi.Compiler.Symbols.Metadata.ReferenceSet.Create(options.References, refDiags);
+    Compilation compilation = Compilation.Create(options.ToCompilationOptions(), trees, references);
 
-    using var pe = new MemoryStream();
-    using var pdb = new MemoryStream();
-    var pdbName = options.PdbOutput != null ? Path.GetFileName(options.PdbOutput) : null;
-    var result = compilation.Emit(pe, options.PdbOutput != null ? pdb : null, pdbName);
+    using MemoryStream pe = new();
+    using MemoryStream pdb = new();
+    string? pdbName = options.PdbOutput != null ? Path.GetFileName(options.PdbOutput) : null;
+    EmitResult result = compilation.Emit(pe, options.PdbOutput != null ? pdb : null, pdbName);
 
-    foreach (var d in refDiags.Items.Concat(result.Diagnostics).Distinct())
+    foreach (Diagnostic? d in refDiags.Items.Concat(result.Diagnostics).Distinct())
     {
-        if (d.EffectiveSeverity == DiagnosticSeverity.Hidden) continue;
-        texts.TryGetValue(d.FilePath ?? "", out var text);
-        var line = d.Format(text);
-        if (d.EffectiveSeverity == DiagnosticSeverity.Error) Console.Error.WriteLine(line);
-        else Console.WriteLine(line);
+        if (d.EffectiveSeverity == DiagnosticSeverity.Hidden)
+        {
+            continue;
+        }
+
+        _ = texts.TryGetValue(d.FilePath ?? "", out SourceText? text);
+        string line = d.Format(text);
+        if (d.EffectiveSeverity == DiagnosticSeverity.Error)
+        {
+            Console.Error.WriteLine(line);
+        }
+        else
+        {
+            Console.WriteLine(line);
+        }
     }
-    if (!result.Success) return 1;
+    if (!result.Success)
+    {
+        return 1;
+    }
 
     try
     {
-        var dir = Path.GetDirectoryName(Path.GetFullPath(options.Output));
-        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+        string? dir = Path.GetDirectoryName(Path.GetFullPath(options.Output));
+        if (!string.IsNullOrEmpty(dir))
+        {
+            _ = Directory.CreateDirectory(dir);
+        }
+
         File.WriteAllBytes(options.Output, pe.ToArray());
-        if (options.PdbOutput != null) File.WriteAllBytes(options.PdbOutput, pdb.ToArray());
+        if (options.PdbOutput != null)
+        {
+            File.WriteAllBytes(options.PdbOutput, pdb.ToArray());
+        }
     }
     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
     {

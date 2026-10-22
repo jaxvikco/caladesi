@@ -10,20 +10,20 @@ public sealed class MetadataNamedType : NamedTypeSymbol
 
     private static Dictionary<string, SpecialType> BuildSpecial()
     {
-        var d = new Dictionary<string, SpecialType>(StringComparer.Ordinal);
-        foreach (var t in Enum.GetValues<SpecialType>())
+        Dictionary<string, SpecialType> d = new(StringComparer.Ordinal);
+        foreach (SpecialType t in Enum.GetValues<SpecialType>())
         {
-            var n = t.MetadataName();
-            if (n != null) d[n] = t;
+            string? n = t.MetadataName();
+            if (n != null)
+            {
+                d[n] = t;
+            }
         }
         return d;
     }
 
-    private readonly MetadataAssemblySymbol _assembly;
-    private readonly TypeDefinitionHandle _handle;
     private readonly TypeDefinition _def;
     private readonly string _name;
-    private readonly string _namespace;
     private readonly int _ownArity;
     private readonly SpecialType _special;
     private ImmutableArray<TypeParameterSymbol> _typeParams;
@@ -41,13 +41,13 @@ public sealed class MetadataNamedType : NamedTypeSymbol
 
     internal MetadataNamedType(MetadataAssemblySymbol assembly, TypeDefinitionHandle handle)
     {
-        _assembly = assembly;
-        _handle = handle;
-        var r = assembly.Reader;
+        Assembly = assembly;
+        Handle = handle;
+        MetadataReader r = assembly.Reader;
         _def = r.GetTypeDefinition(handle);
-        var raw = r.GetString(_def.Name);
-        _namespace = r.GetString(_def.Namespace);
-        var tick = raw.IndexOf('`');
+        string raw = r.GetString(_def.Name);
+        Namespace = r.GetString(_def.Namespace);
+        int tick = raw.IndexOf('`');
         if (tick >= 0)
         {
             _name = raw[..tick];
@@ -58,31 +58,33 @@ public sealed class MetadataNamedType : NamedTypeSymbol
             _name = raw;
             _ownArity = 0;
         }
-        var declaring = _def.GetDeclaringType();
-        var full = _namespace.Length == 0 ? raw : _namespace + "." + raw;
-        if (declaring.IsNil && s_special.TryGetValue(full, out var st)) _special = st;
+        TypeDefinitionHandle declaring = _def.GetDeclaringType();
+        string full = Namespace.Length == 0 ? raw : Namespace + "." + raw;
+        if (declaring.IsNil && s_special.TryGetValue(full, out SpecialType st))
+        {
+            _special = st;
+        }
     }
 
-    internal MetadataAssemblySymbol Assembly => _assembly;
-    internal TypeDefinitionHandle Handle => _handle;
-    internal MetadataReader Reader => _assembly.Reader;
+    internal MetadataAssemblySymbol Assembly { get; }
+    internal TypeDefinitionHandle Handle { get; }
+    internal MetadataReader Reader => Assembly.Reader;
 
     internal bool IsByRefLike => TypeKind == TypeKind.Struct
         && MetadataHelpers.FindAttribute(Reader, _def.GetCustomAttributes(), "System.Runtime.CompilerServices", "IsByRefLikeAttribute") != null;
 
     public override string Name => _name;
     public override int OwnArity => _ownArity;
-    public string Namespace => _namespace;
-    public override AssemblySymbol? ContainingAssembly => _assembly;
+    public string Namespace { get; }
+    public override AssemblySymbol? ContainingAssembly => Assembly;
     public override SpecialType SpecialType => _special;
 
     public override Symbol? ContainingSymbol
     {
         get
         {
-            var d = _def.GetDeclaringType();
-            if (!d.IsNil) return _assembly.GetTypeDefinition(d);
-            return _assembly.ReferenceSet.GlobalNamespace.FindNamespace(_namespace);
+            TypeDefinitionHandle d = _def.GetDeclaringType();
+            return !d.IsNil ? Assembly.GetTypeDefinition(d) : Assembly.ReferenceSet.GlobalNamespace.FindNamespace(Namespace);
         }
     }
 
@@ -107,21 +109,21 @@ public sealed class MetadataNamedType : NamedTypeSymbol
         {
             if (_typeParams.IsDefault)
             {
-                var gps = _def.GetGenericParameters();
-                if (gps.Count == 0) { _typeParams = ImmutableArray<TypeParameterSymbol>.Empty; return _typeParams; }
-                var b = ImmutableArray.CreateBuilder<TypeParameterSymbol>(gps.Count);
-                foreach (var gh in gps)
+                GenericParameterHandleCollection gps = _def.GetGenericParameters();
+                if (gps.Count == 0) { _typeParams = []; return _typeParams; }
+                ImmutableArray<TypeParameterSymbol>.Builder b = ImmutableArray.CreateBuilder<TypeParameterSymbol>(gps.Count);
+                foreach (GenericParameterHandle gh in gps)
                 {
-                    var gp = Reader.GetGenericParameter(gh);
-                    var attrs = gp.Attributes;
-                    var variance = (attrs & GenericParameterAttributes.VarianceMask) switch
+                    GenericParameter gp = Reader.GetGenericParameter(gh);
+                    GenericParameterAttributes attrs = gp.Attributes;
+                    VarianceKind variance = (attrs & GenericParameterAttributes.VarianceMask) switch
                     {
                         GenericParameterAttributes.Covariant => VarianceKind.Out,
                         GenericParameterAttributes.Contravariant => VarianceKind.In,
                         _ => VarianceKind.None,
                     };
-                    var handle = gh;
-                    b.Add(new TypeParameterSymbol(Reader.GetString(gp.Name), gp.Index, this, variance, tp => DecodeConstraints(handle, new GenericContext(_typeParams, ImmutableArray<TypeParameterSymbol>.Empty))));
+                    GenericParameterHandle handle = gh;
+                    b.Add(new TypeParameterSymbol(Reader.GetString(gp.Name), gp.Index, this, variance, tp => DecodeConstraints(handle, new GenericContext(_typeParams, []))));
                 }
                 _typeParams = b.MoveToImmutable();
             }
@@ -131,14 +133,18 @@ public sealed class MetadataNamedType : NamedTypeSymbol
 
     internal TypeParameterConstraints DecodeConstraints(GenericParameterHandle handle, GenericContext ctx)
     {
-        var gp = Reader.GetGenericParameter(handle);
-        var attrs = gp.Attributes;
-        var types = ImmutableArray.CreateBuilder<TypeSymbol>();
-        foreach (var ch in gp.GetConstraints())
+        GenericParameter gp = Reader.GetGenericParameter(handle);
+        GenericParameterAttributes attrs = gp.Attributes;
+        ImmutableArray<TypeSymbol>.Builder types = ImmutableArray.CreateBuilder<TypeSymbol>();
+        foreach (GenericParameterConstraintHandle ch in gp.GetConstraints())
         {
-            var c = Reader.GetGenericParameterConstraint(ch);
-            var t = DecodeTypeHandle(c.Type, ctx);
-            if (t.SpecialType == SpecialType.ValueType) continue; // implied by the struct constraint
+            GenericParameterConstraint c = Reader.GetGenericParameterConstraint(ch);
+            TypeSymbol t = DecodeTypeHandle(c.Type, ctx);
+            if (t.SpecialType == SpecialType.ValueType)
+            {
+                continue; // implied by the struct constraint
+            }
+
             types.Add(t);
         }
         return new TypeParameterConstraints(
@@ -149,15 +155,18 @@ public sealed class MetadataNamedType : NamedTypeSymbol
             types.ToImmutable());
     }
 
-    internal TypeSymbol DecodeTypeHandle(EntityHandle h, GenericContext ctx) => h.Kind switch
+    internal TypeSymbol DecodeTypeHandle(EntityHandle h, GenericContext ctx)
     {
-        HandleKind.TypeDefinition => _assembly.GetTypeDefinition((TypeDefinitionHandle)h),
-        HandleKind.TypeReference => _assembly.ResolveTypeReference((TypeReferenceHandle)h),
-        HandleKind.TypeSpecification => Reader.GetTypeSpecification((TypeSpecificationHandle)h).DecodeSignature(_assembly.Provider, ctx),
-        _ => new ErrorTypeSymbol("?"),
-    };
+        return h.Kind switch
+        {
+            HandleKind.TypeDefinition => Assembly.GetTypeDefinition((TypeDefinitionHandle)h),
+            HandleKind.TypeReference => Assembly.ResolveTypeReference((TypeReferenceHandle)h),
+            HandleKind.TypeSpecification => Reader.GetTypeSpecification((TypeSpecificationHandle)h).DecodeSignature(Assembly.Provider, ctx),
+            _ => new ErrorTypeSymbol("?"),
+        };
+    }
 
-    internal GenericContext Context => new(TypeParameters, ImmutableArray<TypeParameterSymbol>.Empty);
+    internal GenericContext Context => new(TypeParameters, []);
 
     public override ImmutableArray<TypeSymbol> TypeArguments => TypeParameters.CastArray<TypeSymbol>();
 
@@ -165,12 +174,19 @@ public sealed class MetadataNamedType : NamedTypeSymbol
     {
         get
         {
-            if (_kind.HasValue) return _kind.Value;
+            if (_kind.HasValue)
+            {
+                return _kind.Value;
+            }
+
             TypeKind k;
-            if ((_def.Attributes & TypeAttributes.ClassSemanticsMask) == TypeAttributes.Interface) k = TypeKind.Interface;
+            if ((_def.Attributes & TypeAttributes.ClassSemanticsMask) == TypeAttributes.Interface)
+            {
+                k = TypeKind.Interface;
+            }
             else
             {
-                var b = BaseTypeNoCycle();
+                NamedTypeSymbol? b = BaseTypeNoCycle();
                 k = b?.SpecialType switch
                 {
                     SpecialType.Enum => TypeKind.Enum,
@@ -178,15 +194,25 @@ public sealed class MetadataNamedType : NamedTypeSymbol
                     SpecialType.MulticastDelegate => TypeKind.Delegate,
                     _ => TypeKind.Class,
                 };
-                if (_special is SpecialType.Enum or SpecialType.ValueType) k = TypeKind.Class;
-                if (_special == SpecialType.Void) k = TypeKind.Struct;
+                if (_special is SpecialType.Enum or SpecialType.ValueType)
+                {
+                    k = TypeKind.Class;
+                }
+
+                if (_special == SpecialType.Void)
+                {
+                    k = TypeKind.Struct;
+                }
             }
             _kind = k;
             return k;
         }
     }
 
-    private NamedTypeSymbol? BaseTypeNoCycle() => BaseType;
+    private NamedTypeSymbol? BaseTypeNoCycle()
+    {
+        return BaseType;
+    }
 
     public override NamedTypeSymbol? BaseType
     {
@@ -195,9 +221,11 @@ public sealed class MetadataNamedType : NamedTypeSymbol
             if (!_baseDone)
             {
                 _baseDone = true;
-                var bh = _def.BaseType;
+                EntityHandle bh = _def.BaseType;
                 if (!bh.IsNil && (_def.Attributes & TypeAttributes.ClassSemanticsMask) != TypeAttributes.Interface)
+                {
                     _base = DecodeTypeHandle(bh, Context) as NamedTypeSymbol;
+                }
             }
             return _base;
         }
@@ -209,11 +237,14 @@ public sealed class MetadataNamedType : NamedTypeSymbol
         {
             if (_interfaces.IsDefault)
             {
-                var b = ImmutableArray.CreateBuilder<NamedTypeSymbol>();
-                foreach (var ih in _def.GetInterfaceImplementations())
+                ImmutableArray<NamedTypeSymbol>.Builder b = ImmutableArray.CreateBuilder<NamedTypeSymbol>();
+                foreach (InterfaceImplementationHandle ih in _def.GetInterfaceImplementations())
                 {
-                    var ii = Reader.GetInterfaceImplementation(ih);
-                    if (DecodeTypeHandle(ii.Interface, Context) is NamedTypeSymbol n && n is not ErrorTypeSymbol) b.Add(n);
+                    InterfaceImplementation ii = Reader.GetInterfaceImplementation(ih);
+                    if (DecodeTypeHandle(ii.Interface, Context) is NamedTypeSymbol n && n is not ErrorTypeSymbol)
+                    {
+                        b.Add(n);
+                    }
                 }
                 _interfaces = b.ToImmutable();
             }
@@ -225,16 +256,20 @@ public sealed class MetadataNamedType : NamedTypeSymbol
     {
         get
         {
-            if (TypeKind != TypeKind.Enum) return null;
+            if (TypeKind != TypeKind.Enum)
+            {
+                return null;
+            }
+
             if (!_enumDone)
             {
                 _enumDone = true;
-                foreach (var fh in _def.GetFields())
+                foreach (FieldDefinitionHandle fh in _def.GetFields())
                 {
-                    var f = Reader.GetFieldDefinition(fh);
+                    FieldDefinition f = Reader.GetFieldDefinition(fh);
                     if ((f.Attributes & FieldAttributes.Static) == 0)
                     {
-                        _enumUnderlying = f.DecodeSignature(_assembly.Provider, Context) as NamedTypeSymbol;
+                        _enumUnderlying = f.DecodeSignature(Assembly.Provider, Context) as NamedTypeSymbol;
                         break;
                     }
                 }
@@ -248,37 +283,60 @@ public sealed class MetadataNamedType : NamedTypeSymbol
 
     public override bool IsReadOnlyStruct => TypeKind == TypeKind.Struct && HasAttributeFast("System.Runtime.CompilerServices", "IsReadOnlyAttribute");
     public override bool IsUnionType => HasAttributeFast("Caladesi.Runtime", "CaladesiUnionAttribute");
-    public override bool IsAnonymousUnion => IsUnionType && _namespace == "Caladesi.Runtime" && _name == "Union";
+    public override bool IsAnonymousUnion => IsUnionType && Namespace == "Caladesi.Runtime" && _name == "Union";
     public override bool IsRecord => TypeKind is TypeKind.Class or TypeKind.Struct && GetMembers("<Clone>$").Length > 0;
 
     public override ImmutableArray<TypeSymbol> UnionCases
     {
         get
         {
-            if (!IsUnionType) return ImmutableArray<TypeSymbol>.Empty;
+            if (!IsUnionType)
+            {
+                return [];
+            }
+
             if (_unionCases.IsDefault)
             {
-                var b = ImmutableArray.CreateBuilder<TypeSymbol>();
-                foreach (var c in InstanceConstructors)
-                    if (c.DeclaredAccessibility == Accessibility.Public && c.Parameters.Length == 1) b.Add(c.Parameters[0].Type);
+                ImmutableArray<TypeSymbol>.Builder b = ImmutableArray.CreateBuilder<TypeSymbol>();
+                foreach (MethodSymbol c in InstanceConstructors)
+                {
+                    if (c.DeclaredAccessibility == Accessibility.Public && c.Parameters.Length == 1)
+                    {
+                        b.Add(c.Parameters[0].Type);
+                    }
+                }
+
                 _unionCases = b.ToImmutable();
             }
             return _unionCases;
         }
     }
 
-    internal bool HasAttributeFast(string ns, string name) =>
-        MetadataHelpers.FindAttribute(Reader, _def.GetCustomAttributes(), ns, name) != null;
+    internal bool HasAttributeFast(string ns, string name)
+    {
+        return MetadataHelpers.FindAttribute(Reader, _def.GetCustomAttributes(), ns, name) != null;
+    }
 
     internal byte NullableContext
     {
         get
         {
-            if (_nullableContext.HasValue) return _nullableContext.Value;
+            if (_nullableContext.HasValue)
+            {
+                return _nullableContext.Value;
+            }
+
             byte v = 0;
-            var ca = MetadataHelpers.FindAttribute(Reader, _def.GetCustomAttributes(), "System.Runtime.CompilerServices", "NullableContextAttribute");
-            if (ca != null) v = MetadataHelpers.ReadByteArg(Reader, ca.Value.Value);
-            else if (_def.GetDeclaringType() is { IsNil: false } d) v = _assembly.GetTypeDefinition(d).NullableContext;
+            CustomAttribute? ca = MetadataHelpers.FindAttribute(Reader, _def.GetCustomAttributes(), "System.Runtime.CompilerServices", "NullableContextAttribute");
+            if (ca != null)
+            {
+                v = MetadataHelpers.ReadByteArg(Reader, ca.Value.Value);
+            }
+            else if (_def.GetDeclaringType() is { IsNil: false } d)
+            {
+                v = Assembly.GetTypeDefinition(d).NullableContext;
+            }
+
             _nullableContext = v;
             return v;
         }
@@ -286,63 +344,111 @@ public sealed class MetadataNamedType : NamedTypeSymbol
 
     public override ImmutableArray<AttributeData> GetAttributes()
     {
-        if (_attributes.IsDefault) _attributes = MetadataHelpers.DecodeAttributes(_assembly, _def.GetCustomAttributes());
+        if (_attributes.IsDefault)
+        {
+            _attributes = MetadataHelpers.DecodeAttributes(Assembly, _def.GetCustomAttributes());
+        }
+
         return _attributes;
     }
 
     public override ImmutableArray<Symbol> GetMembers()
     {
-        if (!_members.IsDefault) return _members;
-        var b = ImmutableArray.CreateBuilder<Symbol>();
-        var r = Reader;
+        if (!_members.IsDefault)
+        {
+            return _members;
+        }
 
-        foreach (var nh in _def.GetNestedTypes())
+        ImmutableArray<Symbol>.Builder b = ImmutableArray.CreateBuilder<Symbol>();
+        MetadataReader r = Reader;
+
+        foreach (TypeDefinitionHandle nh in _def.GetNestedTypes())
         {
-            var n = _assembly.GetTypeDefinition(nh);
+            MetadataNamedType n = Assembly.GetTypeDefinition(nh);
             if (n.DeclaredAccessibility is Accessibility.Public or Accessibility.Protected or Accessibility.ProtectedOrInternal)
+            {
                 b.Add(n);
+            }
         }
-        foreach (var fh in _def.GetFields())
+        foreach (FieldDefinitionHandle fh in _def.GetFields())
         {
-            var f = r.GetFieldDefinition(fh);
-            if (!IsVisible(f.Attributes & FieldAttributes.FieldAccessMask)) continue;
-            if ((f.Attributes & FieldAttributes.RTSpecialName) != 0) continue;
-            var fs = new MetadataFieldSymbol(this, fh);
-            if (!fs.IsUnsupported) b.Add(fs);
+            FieldDefinition f = r.GetFieldDefinition(fh);
+            if (!IsVisible(f.Attributes & FieldAttributes.FieldAccessMask))
+            {
+                continue;
+            }
+
+            if ((f.Attributes & FieldAttributes.RTSpecialName) != 0)
+            {
+                continue;
+            }
+
+            MetadataFieldSymbol fs = new(this, fh);
+            if (!fs.IsUnsupported)
+            {
+                b.Add(fs);
+            }
         }
-        var methodMap = new Dictionary<MethodDefinitionHandle, MetadataMethodSymbol>();
-        foreach (var mh in _def.GetMethods())
+        Dictionary<MethodDefinitionHandle, MetadataMethodSymbol> methodMap = [];
+        foreach (MethodDefinitionHandle mh in _def.GetMethods())
         {
-            var m = r.GetMethodDefinition(mh);
-            var acc = m.Attributes & MethodAttributes.MemberAccessMask;
-            if (!IsVisibleMethod(acc)) continue;
-            var ms = new MetadataMethodSymbol(this, mh);
-            if (ms.IsUnsupported) continue;
+            MethodDefinition m = r.GetMethodDefinition(mh);
+            MethodAttributes acc = m.Attributes & MethodAttributes.MemberAccessMask;
+            if (!IsVisibleMethod(acc))
+            {
+                continue;
+            }
+
+            MetadataMethodSymbol ms = new(this, mh);
+            if (ms.IsUnsupported)
+            {
+                continue;
+            }
+
             methodMap[mh] = ms;
             b.Add(ms);
         }
-        foreach (var ph in _def.GetProperties())
+        foreach (PropertyDefinitionHandle ph in _def.GetProperties())
         {
-            var ps = new MetadataPropertySymbol(this, ph, methodMap);
-            if (ps.GetMethod == null && ps.SetMethod == null) continue;
-            if (ps.IsUnsupported) continue;
+            MetadataPropertySymbol ps = new(this, ph, methodMap);
+            if (ps.GetMethod == null && ps.SetMethod == null)
+            {
+                continue;
+            }
+
+            if (ps.IsUnsupported)
+            {
+                continue;
+            }
+
             b.Add(ps);
         }
         _members = b.ToImmutable();
         return _members;
     }
 
-    private bool IsVisible(FieldAttributes a) => a is FieldAttributes.Public or FieldAttributes.Family or FieldAttributes.FamORAssem;
-    private bool IsVisibleMethod(MethodAttributes a) => a is MethodAttributes.Public or MethodAttributes.Family or MethodAttributes.FamORAssem;
+    private static bool IsVisible(FieldAttributes a)
+    {
+        return a is FieldAttributes.Public or FieldAttributes.Family or FieldAttributes.FamORAssem;
+    }
+
+    private static bool IsVisibleMethod(MethodAttributes a)
+    {
+        return a is MethodAttributes.Public or MethodAttributes.Family or MethodAttributes.FamORAssem;
+    }
 
     public override ImmutableArray<Symbol> GetMembers(string name)
     {
         if (_byName == null)
         {
-            var d = new Dictionary<string, ImmutableArray<Symbol>>(StringComparer.Ordinal);
-            foreach (var g in GetMembers().GroupBy(m => m.Name)) d[g.Key] = g.ToImmutableArray();
+            Dictionary<string, ImmutableArray<Symbol>> d = new(StringComparer.Ordinal);
+            foreach (IGrouping<string, Symbol> g in GetMembers().GroupBy(m => m.Name))
+            {
+                d[g.Key] = [.. g];
+            }
+
             _byName = d;
         }
-        return _byName.TryGetValue(name, out var r) ? r : ImmutableArray<Symbol>.Empty;
+        return _byName.TryGetValue(name, out ImmutableArray<Symbol> r) ? r : [];
     }
 }

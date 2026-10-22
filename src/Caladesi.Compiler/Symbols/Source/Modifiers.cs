@@ -3,18 +3,27 @@ using Caladesi.Compiler.Syntax;
 namespace Caladesi.Compiler.Symbols.Source;
 
 /// <summary>Decoded declaration modifiers.</summary>
+#pragma warning disable CA1815 // modifier sets are never compared for equality
 public readonly struct ModifierSet
+#pragma warning restore CA1815
 {
     private readonly HashSet<SyntaxKind>? _kinds;
 
     public ModifierSet(SyntaxList<SyntaxToken> tokens)
     {
         if (tokens.Count == 0) { _kinds = null; return; }
-        _kinds = new HashSet<SyntaxKind>();
-        foreach (var t in tokens) _kinds.Add(t.Kind);
+        _kinds = [];
+        foreach (SyntaxToken t in tokens)
+        {
+            _ = _kinds.Add(t.Kind);
+        }
     }
 
-    private bool Has(SyntaxKind k) => _kinds != null && _kinds.Contains(k);
+    private bool Has(SyntaxKind k)
+    {
+        return _kinds != null && _kinds.Contains(k);
+    }
+
     public bool IsExport => Has(SyntaxKind.ExportKeyword);
     public bool IsStatic => Has(SyntaxKind.StaticKeyword);
     public bool IsAbstract => Has(SyntaxKind.AbstractKeyword);
@@ -32,15 +41,9 @@ public readonly struct ModifierSet
     public Accessibility TypeAccessibility => IsExport || IsPublic ? Accessibility.Public : Accessibility.Internal;
 
     /// <summary>Accessibility for a class member (public by default).</summary>
-    public Accessibility MemberAccessibility
-    {
-        get
-        {
-            if (IsPrivate) return Accessibility.Private;
-            if (IsProtected && IsInternal) return Accessibility.ProtectedOrInternal;
-            if (IsProtected) return Accessibility.Protected;
-            if (IsInternal) return Accessibility.Internal;
-            return Accessibility.Public;
-        }
-    }
+    public Accessibility MemberAccessibility => IsPrivate
+        ? Accessibility.Private
+        : IsProtected && IsInternal
+        ? Accessibility.ProtectedOrInternal
+        : IsProtected ? Accessibility.Protected : IsInternal ? Accessibility.Internal : Accessibility.Public;
 }

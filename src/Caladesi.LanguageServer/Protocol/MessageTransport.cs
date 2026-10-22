@@ -1,44 +1,59 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Text;
 
 namespace Caladesi.LanguageServer.Protocol;
 
 /// <summary>Reads <c>Content-Length</c> framed messages. Malformed header blocks are logged and skipped, never fatal.</summary>
-internal sealed class MessageReader
+[SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable", Justification = "The BufferedStream holds no unmanaged resources and the wrapped stream is owned (and disposed) by the caller.")]
+internal sealed class MessageReader(Stream stream)
 {
     private const int MaxMessageBytes = 256 * 1024 * 1024;
     private const int MaxHeaderLine = 16 * 1024;
-    private readonly Stream _stream;
-
-    public MessageReader(Stream stream) => _stream = new BufferedStream(stream, 64 * 1024);
+    private readonly BufferedStream _stream = new(stream, 64 * 1024);
 
     /// <summary>The next message body, or null at end of stream.</summary>
     public byte[]? ReadMessage()
     {
         while (true)
         {
-            var contentLength = -1;
-            var sawHeader = false;
+            int contentLength = -1;
+            bool sawHeader = false;
             while (true)
             {
-                var line = ReadLine();
-                if (line == null) return null;
+                string? line = ReadLine();
+                if (line == null)
+                {
+                    return null;
+                }
+
                 if (line.Length == 0)
                 {
-                    if (!sawHeader) continue;
+                    if (!sawHeader)
+                    {
+                        continue;
+                    }
+
                     break;
                 }
                 sawHeader = true;
-                var colon = line.IndexOf(':');
+                int colon = line.IndexOf(':');
                 if (colon < 0)
                 {
                     Log.Write("ignoring malformed header line");
                     continue;
                 }
-                var name = line.AsSpan(0, colon).Trim();
-                var value = line.AsSpan(colon + 1).Trim();
-                if (!name.Equals("Content-Length", StringComparison.OrdinalIgnoreCase)) continue;
-                if (int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var n)) contentLength = n;
+                ReadOnlySpan<char> name = line.AsSpan(0, colon).Trim();
+                ReadOnlySpan<char> value = line.AsSpan(colon + 1).Trim();
+                if (!name.Equals("Content-Length", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out int n))
+                {
+                    contentLength = n;
+                }
                 else
                 {
                     Log.Write("invalid Content-Length header");
@@ -54,15 +69,23 @@ internal sealed class MessageReader
             if (contentLength > MaxMessageBytes)
             {
                 Log.Write($"message of {contentLength} bytes is too large, skipping");
-                if (!Skip(contentLength)) return null;
+                if (!Skip(contentLength))
+                {
+                    return null;
+                }
+
                 continue;
             }
-            var body = new byte[contentLength];
-            var read = 0;
+            byte[] body = new byte[contentLength];
+            int read = 0;
             while (read < contentLength)
             {
-                var n = _stream.Read(body, read, contentLength - read);
-                if (n <= 0) return null;
+                int n = _stream.Read(body, read, contentLength - read);
+                if (n <= 0)
+                {
+                    return null;
+                }
+
                 read += n;
             }
             return body;
@@ -71,11 +94,15 @@ internal sealed class MessageReader
 
     private bool Skip(long count)
     {
-        var buffer = new byte[8192];
+        byte[] buffer = new byte[8192];
         while (count > 0)
         {
-            var n = _stream.Read(buffer, 0, (int)Math.Min(buffer.Length, count));
-            if (n <= 0) return false;
+            int n = _stream.Read(buffer, 0, (int)Math.Min(buffer.Length, count));
+            if (n <= 0)
+            {
+                return false;
+            }
+
             count -= n;
         }
         return true;
@@ -83,38 +110,54 @@ internal sealed class MessageReader
 
     private string? ReadLine()
     {
-        var sb = new StringBuilder();
+        StringBuilder sb = new();
         while (true)
         {
-            var b = _stream.ReadByte();
-            if (b < 0) return sb.Length == 0 ? null : sb.ToString();
-            if (b == '\n') break;
-            if (b == '\r') continue;
-            if (sb.Length < MaxHeaderLine) sb.Append((char)b);
+            int b = _stream.ReadByte();
+            if (b < 0)
+            {
+                return sb.Length == 0 ? null : sb.ToString();
+            }
+
+            if (b == '\n')
+            {
+                break;
+            }
+
+            if (b == '\r')
+            {
+                continue;
+            }
+
+            if (sb.Length < MaxHeaderLine)
+            {
+                _ = sb.Append((char)b);
+            }
         }
         return sb.ToString();
     }
 }
 
-internal sealed class MessageWriter
+internal sealed class MessageWriter(Stream stream)
 {
-    private readonly Stream _stream;
-    private readonly object _gate = new();
+    private readonly Lock _gate = new();
     private bool _broken;
-
-    public MessageWriter(Stream stream) => _stream = stream;
 
     public void Write(byte[] payload)
     {
         lock (_gate)
         {
-            if (_broken) return;
+            if (_broken)
+            {
+                return;
+            }
+
             try
             {
-                var header = Encoding.ASCII.GetBytes("Content-Length: " + payload.Length.ToString(CultureInfo.InvariantCulture) + "\r\n\r\n");
-                _stream.Write(header, 0, header.Length);
-                _stream.Write(payload, 0, payload.Length);
-                _stream.Flush();
+                byte[] header = Encoding.ASCII.GetBytes("Content-Length: " + payload.Length.ToString(CultureInfo.InvariantCulture) + "\r\n\r\n");
+                stream.Write(header, 0, header.Length);
+                stream.Write(payload, 0, payload.Length);
+                stream.Flush();
             }
             catch (Exception ex) when (ex is IOException or ObjectDisposedException or InvalidOperationException)
             {
@@ -127,7 +170,7 @@ internal sealed class MessageWriter
 
 internal static class Log
 {
-    private static readonly object Gate = new();
+    private static readonly Lock Gate = new();
 
     public static void Write(string message)
     {

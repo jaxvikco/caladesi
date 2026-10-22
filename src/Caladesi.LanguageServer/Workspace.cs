@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Caladesi.Compiler;
 using Caladesi.Compiler.Diagnostics;
 using Caladesi.Compiler.Symbols.Metadata;
@@ -7,28 +8,18 @@ using Caladesi.LanguageServer.Protocol;
 
 namespace Caladesi.LanguageServer;
 
-internal sealed class OpenDocument
+internal sealed class OpenDocument(string uri, string path, string text, int version)
 {
-    public OpenDocument(string uri, string path, string text, int version)
-    {
-        Uri = uri;
-        Path = path;
-        Text = text;
-        Version = version;
-    }
-
-    public string Uri { get; }
-    public string Path { get; }
-    public string Text { get; set; }
-    public int Version { get; set; }
+    public string Uri { get; } = uri;
+    public string Path { get; } = path;
+    public string Text { get; set; } = text;
+    public int Version { get; set; } = version;
 }
 
 /// <summary>Open documents, project discovery and the compilation units. Only touched from the worker thread.</summary>
-internal sealed class Workspace
+internal sealed class Workspace(ServerOptions options, Action<string> showMessage)
 {
-    private readonly ServerOptions _options;
-    private readonly ProjectLoader _loader;
-    private readonly Action<string> _showMessage;
+    private readonly ProjectLoader _loader = new(options);
     private readonly Dictionary<string, OpenDocument> _documents = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string?> _diskCache = new(StringComparer.Ordinal);
     private readonly Dictionary<string, CompilationUnit> _projects = new(StringComparer.Ordinal);
@@ -39,13 +30,6 @@ internal sealed class Workspace
     private readonly Dictionary<string, CompilationUnit> _publishedOwner = new(StringComparer.Ordinal);
     private ReferenceSet? _standaloneReferences;
 
-    public Workspace(ServerOptions options, Action<string> showMessage)
-    {
-        _options = options;
-        _loader = new ProjectLoader(options);
-        _showMessage = showMessage;
-    }
-
     public List<string> Roots { get; } = [];
     public HashSet<CompilationUnit> Dirty { get; } = [];
 
@@ -55,34 +39,55 @@ internal sealed class Workspace
 
     public static string UriToPath(string uri)
     {
-        if (!uri.StartsWith("file:", StringComparison.OrdinalIgnoreCase)) return uri;
+        if (!uri.StartsWith("file:", StringComparison.OrdinalIgnoreCase))
+        {
+            return uri;
+        }
+
         try { return Path.GetFullPath(new Uri(uri).LocalPath); }
         catch (Exception ex) when (ex is UriFormatException or ArgumentException or PathTooLongException) { return uri; }
     }
 
     public string PathToUri(string path)
     {
-        if (_documents.TryGetValue(path, out var doc)) return doc.Uri;
-        return RawPathToUri(path);
+        return _documents.TryGetValue(path, out OpenDocument? doc) ? doc.Uri : RawPathToUri(path);
     }
 
     public static string RawPathToUri(string path)
     {
-        if (!Path.IsPathRooted(path)) return path;
+        if (!Path.IsPathRooted(path))
+        {
+            return path;
+        }
+
         try { return new Uri(path).AbsoluteUri; }
         catch (UriFormatException) { return path; }
     }
 
     // ------------------------------------------------------------------ documents
 
-    public bool IsWorkspaceFile(string path) => _documents.ContainsKey(path) || File.Exists(path);
+    public bool IsWorkspaceFile(string path)
+    {
+        return _documents.ContainsKey(path) || File.Exists(path);
+    }
 
-    public OpenDocument? GetDocument(string uri) => _documents.GetValueOrDefault(UriToPath(uri));
+    public OpenDocument? GetDocument(string uri)
+    {
+        return _documents.GetValueOrDefault(UriToPath(uri));
+    }
 
     public string? GetText(string path)
     {
-        if (_documents.TryGetValue(path, out var doc)) return doc.Text;
-        if (_diskCache.TryGetValue(path, out var cached)) return cached;
+        if (_documents.TryGetValue(path, out OpenDocument? doc))
+        {
+            return doc.Text;
+        }
+
+        if (_diskCache.TryGetValue(path, out string? cached))
+        {
+            return cached;
+        }
+
         string? text;
         try { text = File.ReadAllText(path); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { text = null; }
@@ -92,7 +97,7 @@ internal sealed class Workspace
 
     public void Open(string uri, string text, int version)
     {
-        var path = UriToPath(uri);
+        string path = UriToPath(uri);
         _documents[path] = new OpenDocument(uri, path, text, version);
         Assign(path);
     }
@@ -101,56 +106,81 @@ internal sealed class Workspace
     {
         document.Text = text;
         document.Version = version;
-        if (_unitByDocument.TryGetValue(document.Path, out var unit)) Dirty.Add(unit);
+        if (_unitByDocument.TryGetValue(document.Path, out CompilationUnit? unit))
+        {
+            _ = Dirty.Add(unit);
+        }
     }
 
     public void Close(string uri)
     {
-        var path = UriToPath(uri);
-        if (!_documents.ContainsKey(path)) return;
-        if (_unitByDocument.Remove(path, out var unit))
+        string path = UriToPath(uri);
+        if (!_documents.ContainsKey(path))
         {
-            unit.OpenFiles.Remove(path);
+            return;
+        }
+
+        if (_unitByDocument.Remove(path, out CompilationUnit? unit))
+        {
+            _ = unit.OpenFiles.Remove(path);
             unit.MarkChanged();
             if (!unit.IsProject)
             {
-                _standalone.Remove(path);
-                Dirty.Remove(unit);
+                _ = _standalone.Remove(path);
+                _ = Dirty.Remove(unit);
                 RetireDiagnostics(unit);
             }
-            else Dirty.Add(unit);
+            else
+            {
+                _ = Dirty.Add(unit);
+            }
         }
-        _documents.Remove(path);
-        _diskCache.Remove(path);
+        _ = _documents.Remove(path);
+        _ = _diskCache.Remove(path);
     }
 
     // ------------------------------------------------------------------ units
 
-    public CompilationUnit? GetUnit(string uri) => _unitByDocument.GetValueOrDefault(UriToPath(uri));
+    public CompilationUnit? GetUnit(string uri)
+    {
+        return _unitByDocument.GetValueOrDefault(UriToPath(uri));
+    }
 
     private void Assign(string path)
     {
-        if (_unitByDocument.Remove(path, out var old)) old.OpenFiles.Remove(path);
-        var unit = ResolveUnit(path);
-        unit.OpenFiles.Add(path);
+        if (_unitByDocument.Remove(path, out CompilationUnit? old))
+        {
+            _ = old.OpenFiles.Remove(path);
+        }
+
+        CompilationUnit unit = ResolveUnit(path);
+        _ = unit.OpenFiles.Add(path);
         unit.MarkChanged();
         _unitByDocument[path] = unit;
-        Dirty.Add(unit);
+        _ = Dirty.Add(unit);
     }
 
     private CompilationUnit ResolveUnit(string path)
     {
         if (FindProjectFile(path) is { } projectPath && !_failedProjects.ContainsKey(projectPath))
         {
-            if (_projects.TryGetValue(projectPath, out var existing)) return existing;
-            var loaded = LoadProject(projectPath);
+            if (_projects.TryGetValue(projectPath, out CompilationUnit? existing))
+            {
+                return existing;
+            }
+
+            CompilationUnit? loaded = LoadProject(projectPath);
             if (loaded != null)
             {
                 _projects[projectPath] = loaded;
                 return loaded;
             }
         }
-        if (_standalone.TryGetValue(path, out var unit)) return unit;
+        if (_standalone.TryGetValue(path, out CompilationUnit? unit))
+        {
+            return unit;
+        }
+
         unit = CreateStandalone(path);
         _standalone[path] = unit;
         return unit;
@@ -160,35 +190,40 @@ internal sealed class Workspace
     {
         if (_standaloneReferences == null)
         {
-            var paths = StandaloneReferences.Find(_options, out var warning);
-            if (warning != null) _showMessage(warning);
+            List<string> paths = StandaloneReferences.Find(options, out string? warning);
+            if (warning != null)
+            {
+                showMessage(warning);
+            }
+
             _standaloneReferences = ReferenceSet.Create(paths);
         }
-        var directory = Path.IsPathRooted(path) ? Path.GetDirectoryName(path) : null;
-        var options = new CompilationOptions
+        string? directory = Path.IsPathRooted(path) ? Path.GetDirectoryName(path) : null;
+        CompilationOptions standaloneOptions = new()
         {
             AssemblyName = Path.GetFileNameWithoutExtension(path) is { Length: > 0 } n ? n : "Caladesi",
             RootNamespace = "",
             ProjectDirectory = directory,
             RecordSemanticInfo = true,
         };
-        return new CompilationUnit(path, null, options, _standaloneReferences, []);
+        return new CompilationUnit(path, null, standaloneOptions, _standaloneReferences, []);
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A project that fails to load must be reported to the user, not crash the server.")]
     private CompilationUnit? LoadProject(string projectPath)
     {
-        var result = _loader.Load(projectPath);
+        ProjectLoadResult result = _loader.Load(projectPath);
         if (result.Data == null)
         {
-            var message = "Caladesi: could not load " + Path.GetFileName(projectPath) + ", using standalone mode. " + result.Error;
+            string message = "Caladesi: could not load " + Path.GetFileName(projectPath) + ", using standalone mode. " + result.Error;
             Log.Write(message);
             _failedProjects[projectPath] = result.Error ?? "";
-            _showMessage(message);
+            showMessage(message);
             return null;
         }
-        var data = result.Data;
-        var options = data.ToCompilationOptions(projectPath);
-        var references = ReferenceSet.Create(data.References);
+        MsBuildProjectData data = result.Data;
+        CompilationOptions options = data.ToCompilationOptions(projectPath);
+        ReferenceSet references = ReferenceSet.Create(data.References);
         SyntaxTree? generated = null;
         if (data.Property("CaladesiGenerateTestEntryPoint").Equals("true", StringComparison.OrdinalIgnoreCase))
         {
@@ -200,25 +235,41 @@ internal sealed class Workspace
 
     public string? FindProjectFile(string path)
     {
-        if (!Path.IsPathRooted(path)) return null;
-        var directory = Path.GetDirectoryName(path);
-        var root = Roots.Where(r => IsUnder(path, r)).OrderByDescending(r => r.Length).FirstOrDefault();
-        var visited = new List<string>();
+        if (!Path.IsPathRooted(path))
+        {
+            return null;
+        }
+
+        string? directory = Path.GetDirectoryName(path);
+        string? root = Roots.Where(r => IsUnder(path, r)).OrderByDescending(r => r.Length).FirstOrDefault();
+        List<string> visited = [];
         string? found = null;
         while (directory != null)
         {
-            if (_projectByDirectory.TryGetValue(directory, out var cached))
+            if (_projectByDirectory.TryGetValue(directory, out string? cached))
             {
                 found = cached;
                 break;
             }
             visited.Add(directory);
             found = FirstProjectIn(directory);
-            if (found != null) break;
-            if (root == null || string.Equals(directory, root, StringComparison.Ordinal)) break;
+            if (found != null)
+            {
+                break;
+            }
+
+            if (root == null || string.Equals(directory, root, StringComparison.Ordinal))
+            {
+                break;
+            }
+
             directory = Path.GetDirectoryName(directory);
         }
-        foreach (var d in visited) _projectByDirectory[d] = found;
+        foreach (string d in visited)
+        {
+            _projectByDirectory[d] = found;
+        }
+
         return found;
     }
 
@@ -233,7 +284,7 @@ internal sealed class Workspace
 
     private static bool IsUnder(string path, string root)
     {
-        var r = root.TrimEnd(Path.DirectorySeparatorChar);
+        string r = root.TrimEnd(Path.DirectorySeparatorChar);
         return path.StartsWith(r + Path.DirectorySeparatorChar, StringComparison.Ordinal) || string.Equals(path, r, StringComparison.Ordinal);
     }
 
@@ -242,11 +293,11 @@ internal sealed class Workspace
     /// <summary>Applies <c>workspace/didChangeWatchedFiles</c>; returns true when anything relevant changed.</summary>
     public bool FilesChanged(IEnumerable<(string Path, int Type)> changes)
     {
-        var reloadProjects = false;
-        var any = false;
-        foreach (var (path, type) in changes)
+        bool reloadProjects = false;
+        bool any = false;
+        foreach ((string? path, int type) in changes)
         {
-            var extension = Path.GetExtension(path);
+            string extension = Path.GetExtension(path);
             if (extension.Equals(".calaproj", StringComparison.OrdinalIgnoreCase) || path.EndsWith("project.assets.json", StringComparison.Ordinal))
             {
                 reloadProjects = true;
@@ -255,59 +306,96 @@ internal sealed class Workspace
             else if (extension.Equals(".cala", StringComparison.OrdinalIgnoreCase))
             {
                 any = true;
-                _diskCache.Remove(path);
-                if (type != 2) reloadProjects = true;
-                foreach (var unit in _unitByDocument.Values.Distinct()) if (unit.IsMember(path)) unit.MarkChanged();
-                foreach (var unit in _projects.Values) if (unit.IsMember(path)) { unit.MarkChanged(); Dirty.Add(unit); }
+                _ = _diskCache.Remove(path);
+                if (type != 2)
+                {
+                    reloadProjects = true;
+                }
+
+                foreach (CompilationUnit? unit in _unitByDocument.Values.Distinct())
+                {
+                    if (unit.IsMember(path))
+                    {
+                        unit.MarkChanged();
+                    }
+                }
+
+                foreach (CompilationUnit unit in _projects.Values)
+                {
+                    if (unit.IsMember(path)) { unit.MarkChanged(); _ = Dirty.Add(unit); }
+                }
             }
         }
-        if (reloadProjects) ReloadAll();
-        foreach (var unit in _unitByDocument.Values.Distinct()) Dirty.Add(unit);
+        if (reloadProjects)
+        {
+            ReloadAll();
+        }
+
+        foreach (CompilationUnit? unit in _unitByDocument.Values.Distinct())
+        {
+            _ = Dirty.Add(unit);
+        }
+
         return any;
     }
 
     private void ReloadAll()
     {
-        var oldUnits = _projects.Values.Concat(_standalone.Values).Distinct().ToList();
+        List<CompilationUnit> oldUnits = [.. _projects.Values.Concat(_standalone.Values).Distinct()];
         _projects.Clear();
         _failedProjects.Clear();
         _projectByDirectory.Clear();
         _standalone.Clear();
-        foreach (var unit in oldUnits)
+        foreach (CompilationUnit? unit in oldUnits)
         {
-            Dirty.Remove(unit);
+            _ = Dirty.Remove(unit);
             RetireDiagnostics(unit);
         }
-        var open = _documents.Keys.ToList();
+        List<string> open = [.. _documents.Keys];
         _unitByDocument.Clear();
-        foreach (var path in open) Assign(path);
+        foreach (string path in open)
+        {
+            Assign(path);
+        }
     }
 
     // ------------------------------------------------------------------ diagnostics bookkeeping
 
-    public readonly record struct PublishPlan(string Uri, IReadOnlyList<Diagnostic> Diagnostics);
+    internal readonly record struct PublishPlan(string Uri, IReadOnlyList<Diagnostic> Diagnostics);
 
     /// <summary>Groups diagnostics by file and lists files that must be cleared because they no longer have any.</summary>
     public List<PublishPlan> PlanPublish(CompilationUnit unit, IEnumerable<Diagnostic> diagnostics)
     {
-        var plans = new List<PublishPlan>();
-        var members = new HashSet<string>(unit.AllPaths(), StringComparer.Ordinal);
-        var byFile = new Dictionary<string, List<Diagnostic>>(StringComparer.Ordinal);
-        foreach (var d in diagnostics)
+        List<PublishPlan> plans = [];
+        HashSet<string> members = new(unit.AllPaths(), StringComparer.Ordinal);
+        Dictionary<string, List<Diagnostic>> byFile = new(StringComparer.Ordinal);
+        foreach (Diagnostic d in diagnostics)
         {
-            if (d.FilePath == null || !members.Contains(d.FilePath)) continue;
-            if (d.EffectiveSeverity == DiagnosticSeverity.Hidden) continue;
-            if (!byFile.TryGetValue(d.FilePath, out var list)) byFile[d.FilePath] = list = [];
+            if (d.FilePath == null || !members.Contains(d.FilePath))
+            {
+                continue;
+            }
+
+            if (d.EffectiveSeverity == DiagnosticSeverity.Hidden)
+            {
+                continue;
+            }
+
+            if (!byFile.TryGetValue(d.FilePath, out List<Diagnostic>? list))
+            {
+                byFile[d.FilePath] = list = [];
+            }
+
             list.Add(d);
         }
-        foreach (var (path, list) in byFile)
+        foreach ((string? path, List<Diagnostic>? list) in byFile)
         {
             _publishedOwner[path] = unit;
             plans.Add(new PublishPlan(PathToUri(path), list));
         }
-        foreach (var path in _publishedOwner.Where(kv => kv.Value == unit && !byFile.ContainsKey(kv.Key)).Select(kv => kv.Key).ToList())
+        foreach (string? path in _publishedOwner.Where(kv => kv.Value == unit && !byFile.ContainsKey(kv.Key)).Select(kv => kv.Key).ToList())
         {
-            _publishedOwner.Remove(path);
+            _ = _publishedOwner.Remove(path);
             plans.Add(new PublishPlan(PathToUri(path), []));
         }
         return plans;
@@ -317,9 +405,9 @@ internal sealed class Workspace
 
     private void RetireDiagnostics(CompilationUnit unit)
     {
-        foreach (var path in _publishedOwner.Where(kv => kv.Value == unit).Select(kv => kv.Key).ToList())
+        foreach (string? path in _publishedOwner.Where(kv => kv.Value == unit).Select(kv => kv.Key).ToList())
         {
-            _publishedOwner.Remove(path);
+            _ = _publishedOwner.Remove(path);
             _retired.Add(new PublishPlan(PathToUri(path), []));
         }
     }
@@ -328,7 +416,7 @@ internal sealed class Workspace
 
     public List<PublishPlan> TakeRetired()
     {
-        var result = _retired.ToList();
+        List<PublishPlan> result = [.. _retired];
         _retired.Clear();
         return result;
     }

@@ -1,30 +1,37 @@
-using System.Text.Json;
+using System.Collections.Immutable;
+using System.Diagnostics.CodeAnalysis;
+using Caladesi.Compiler;
 using Caladesi.Compiler.Diagnostics;
 using Caladesi.Compiler.Syntax;
+using Caladesi.LanguageServer.Projects;
 using Caladesi.LanguageServer.Protocol;
 
 namespace Caladesi.LanguageServer;
 
-public sealed partial class LanguageServer
+internal sealed partial class LanguageServer
 {
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A compiler failure in one unit must not stop diagnostics for the others or crash the server.")]
     private void RunDiagnostics()
     {
-        foreach (var retired in _workspace.TakeRetired()) Publish(retired.Uri, null, [], null);
+        foreach (Workspace.PublishPlan retired in _workspace.TakeRetired())
+        {
+            Publish(retired.Uri, null, [], null);
+        }
 
-        var units = _workspace.Dirty.ToList();
+        List<CompilationUnit> units = [.. _workspace.Dirty];
         _workspace.Dirty.Clear();
-        foreach (var unit in units)
+        foreach (CompilationUnit? unit in units)
         {
             try
             {
-                var compilation = unit.GetCompilation(_workspace);
-                var diagnostics = compilation.GetDiagnostics();
-                var trees = compilation.SyntaxTrees.ToDictionary(t => t.FilePath, StringComparer.Ordinal);
-                foreach (var plan in _workspace.PlanPublish(unit, diagnostics))
+                Compilation compilation = unit.GetCompilation(_workspace);
+                ImmutableArray<Diagnostic> diagnostics = compilation.GetDiagnostics();
+                Dictionary<string, SyntaxTree> trees = compilation.SyntaxTrees.ToDictionary(t => t.FilePath, StringComparer.Ordinal);
+                foreach (Workspace.PublishPlan plan in _workspace.PlanPublish(unit, diagnostics))
                 {
-                    var path = Workspace.UriToPath(plan.Uri);
-                    var version = _workspace.GetDocument(plan.Uri)?.Version;
-                    trees.TryGetValue(path, out var tree);
+                    string path = Workspace.UriToPath(plan.Uri);
+                    int? version = _workspace.GetDocument(plan.Uri)?.Version;
+                    _ = trees.TryGetValue(path, out SyntaxTree? tree);
                     Publish(plan.Uri, version, plan.Diagnostics, tree);
                 }
             }
@@ -41,12 +48,20 @@ public sealed partial class LanguageServer
         {
             w.WriteStartObject();
             w.WriteString("uri", uri);
-            if (version != null) w.WriteNumber("version", version.Value);
+            if (version != null)
+            {
+                w.WriteNumber("version", version.Value);
+            }
+
             w.WritePropertyName("diagnostics");
             w.WriteStartArray();
-            foreach (var d in diagnostics)
+            foreach (Diagnostic d in diagnostics)
             {
-                if (tree == null) break;
+                if (tree == null)
+                {
+                    break;
+                }
+
                 w.WriteStartObject();
                 w.WriteRange("range", tree.Text.GetLinePositionSpan(d.Span));
                 w.WriteNumber("severity", d.EffectiveSeverity switch
@@ -54,6 +69,7 @@ public sealed partial class LanguageServer
                     DiagnosticSeverity.Error => 1,
                     DiagnosticSeverity.Warning => 2,
                     DiagnosticSeverity.Info => 3,
+                    DiagnosticSeverity.Hidden => 4,
                     _ => 4,
                 });
                 w.WriteString("code", d.Id);

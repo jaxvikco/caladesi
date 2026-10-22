@@ -11,11 +11,10 @@ public abstract class BoundNode
 
 // =============================================================================== expressions
 
-public abstract class BoundExpression : BoundNode
+public abstract class BoundExpression(TypeSymbol? type) : BoundNode
 {
-    protected BoundExpression(TypeSymbol? type) => Type = type;
     /// <summary>Static type; null for expressions that need a target type (lambdas, object literals).</summary>
-    public TypeSymbol? Type { get; }
+    public TypeSymbol? Type { get; } = type;
     public virtual ConstantValue? ConstantValue => null;
     public bool HasErrors => Type?.IsErrorType == true || this is BoundBadExpression;
 }
