@@ -1,0 +1,8 @@
+import { JsonConvert } from "Newtonsoft.Json";
+
+type Person = { name: string; age: int };
+
+const json = JsonConvert.SerializeObject(new Person("Ada", 36));
+Console.WriteLine(json);
+const back = JsonConvert.DeserializeObject<Person>(json)!;
+Console.WriteLine(back.name + " " + back.age);
