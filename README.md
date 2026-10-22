@@ -66,11 +66,12 @@ The language is described in [SPEC.md](SPEC.md); design decisions are in [DECISI
 The SDK version is pinned in `global.json`; everything targets `net10.0`.
 
 ```sh
-eng/build.sh                       # dotnet build Caladesi.slnx
-dotnet test --solution Caladesi.slnx   # unit tests + language server tests + end-to-end tests (packs the SDK, builds and runs samples)
-eng/aot-check.sh                   # publishes compiler, runtime, CLI and language server with PublishAot and fails on trim/AOT warnings
-eng/pack.sh                        # packs Caladesi.Sdk, Caladesi.Runtime and Caladesi.Templates into artifacts/packages
-eng/cala-run.sh file.cala            # compile and run a single file with the locally built compiler
+eng/build.sh                          # dotnet build Caladesi.slnx
+dotnet test --solution Caladesi.slnx  # unit tests + language server tests + end-to-end tests (packs the SDK, builds and runs samples)
+eng/aot-check.sh                      # publishes compiler, runtime, CLI and language server with PublishAot and fails on trim/AOT warnings
+eng/pack.sh                           # packs Caladesi.Sdk, Caladesi.Runtime and Caladesi.Templates into artifacts/packages
+eng/cala-run.sh file.cala             # compile and run a single file with the locally built compiler
+dotnet run --project playground       # run playground/Program.cala, built with the compiler and SDK from this repo
 ```
 
 The end-to-end suite lives in `tests/Caladesi.E2E` (see its README): it packs the SDK into a throwaway feed, copies each folder in `samples/`
