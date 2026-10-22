@@ -92,7 +92,7 @@ internal sealed partial class EmitModule
 
     private static byte[] ConcatBlobs(IEnumerable<Blob> blobs)
     {
-        MemoryStream ms = new();
+        using MemoryStream ms = new();
         foreach (Blob b in blobs)
         {
             ArraySegment<byte> seg = b.GetBytes();

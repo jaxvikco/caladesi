@@ -362,7 +362,6 @@ public sealed partial class Binder
             ReportBadOperands(syntax, kind, lt, rt);
             return Bad(syntax, left, right);
         }
-        if (promoted is SpecialType.Decimal or SpecialType.IntPtr or SpecialType.UIntPtr) { }
         TypeSymbol resultType = isComparison ? BoolType : opType;
         return MakeBinary(syntax, kind, lc, rc, resultType, opType);
     }

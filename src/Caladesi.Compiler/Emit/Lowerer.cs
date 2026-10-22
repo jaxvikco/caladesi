@@ -72,7 +72,7 @@ internal static class Lowerer
             StateMachineLowerer.Lower(compilation, program, method, type, ordinal, body);
         }
 
-        return program.Bodies.TryGetValue(method, out BoundBlock? stub) && method.IsAsync | method.IsIterator ? stub : body;
+        return program.Bodies.TryGetValue(method, out BoundBlock? stub) && (method.IsAsync || method.IsIterator) ? stub : body;
     }
 
     /// <summary>The CLR cannot start an async entry point: <c>static void Main(args) =&gt; entry(args).GetAwaiter().GetResult()</c>.</summary>
