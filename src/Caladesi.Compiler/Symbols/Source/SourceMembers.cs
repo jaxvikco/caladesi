@@ -299,6 +299,12 @@ public static class OverrideResolver
             return null;
         }
 
+        if (m.AssociatedSymbol is SourcePropertySymbol { } sp && m.MethodKind is MethodKind.PropertyGet or MethodKind.PropertySet)
+        {
+            PropertySymbol? bp = DeclarationChecker.FindOverriddenProperty(c, sp);
+            return m.MethodKind == MethodKind.PropertyGet ? bp?.GetMethod : bp?.SetMethod;
+        }
+
         for (NamedTypeSymbol? b = c.BaseType; b != null; b = b.BaseType)
         {
             foreach (Symbol cand in LookupNames(b, m.Name))

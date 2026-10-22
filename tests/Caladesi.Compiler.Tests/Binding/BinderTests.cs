@@ -166,4 +166,58 @@ public class BinderTests
             class P { pos: Vector2 = new Vector2(0, 0); m(): void { this.pos.X += 1; } }
             """, Descriptors.ModifyValueTypeTemporary);
     }
+
+    [TestMethod]
+    public void Item13_OverrideWithDifferentReturnType_IsReported()
+    {
+        AssertError("""
+            class B { f(): int { return 1; } }
+            class D extends B { override f(): string { return "x"; } }
+            """, Descriptors.OverrideTypeMismatch);
+    }
+
+    [TestMethod]
+    public void Item13_OverridePropertyWithDifferentType_IsReported()
+    {
+        AssertError("""
+            class B { get v(): int { return 1; } }
+            class D extends B { override get v(): string { return "x"; } }
+            """, Descriptors.OverrideTypeMismatch);
+    }
+
+    [TestMethod]
+    public void Item14_InterfacePropertyWithWrongType_IsNotAnImplementation()
+    {
+        AssertError("""
+            interface I { x: string }
+            class C implements I { x: int = 1; }
+            """, Descriptors.InterfaceMemberNotImplemented);
+    }
+
+    [TestMethod]
+    public void Item15_ExtendingBclCollection_IsClean()
+    {
+        AssertClean("class MyList extends List<int> {}", OutputKind.DynamicallyLinkedLibrary);
+    }
+
+    [TestMethod]
+    public void Item16_CamelCasePropertyOverrideOfPascalCaseAbstractProperty_IsClean()
+    {
+        AssertClean("""
+            import { Stream, SeekOrigin } from "System.IO";
+            class S extends Stream {
+              override get canRead(): bool { return true; }
+              override get canSeek(): bool { return false; }
+              override get canWrite(): bool { return false; }
+              override get length(): long { return 0; }
+              override get position(): long { return 0; }
+              override set position(v: long) {}
+              override flush(): void {}
+              override read(buffer: byte[], offset: int, count: int): int { return 0; }
+              override seek(offset: long, origin: SeekOrigin): long { return 0; }
+              override setLength(value: long): void {}
+              override write(buffer: byte[], offset: int, count: int): void {}
+            }
+            """, OutputKind.DynamicallyLinkedLibrary);
+    }
 }

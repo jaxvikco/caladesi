@@ -179,4 +179,35 @@ public class ReviewRegressionTests
         Console.WriteLine(isNone(1, 2L));
         """, "True\nTrue\nFalse\nTrue\n");
     }
+
+    [TestMethod]
+    public void Item15_ExtendedBclCollectionRuns()
+    {
+        Check("""
+        class MyList extends List<int> {}
+        const m = new MyList(); m.Add(1); Console.WriteLine(m.Count);
+        """, "1\n");
+    }
+
+    [TestMethod]
+    public void Item16_CamelCasePropertyOverrideRuns()
+    {
+        Check("""
+        import { Stream, SeekOrigin } from "System.IO";
+        class S extends Stream {
+          override get canRead(): bool { return true; }
+          override get canSeek(): bool { return false; }
+          override get canWrite(): bool { return false; }
+          override get length(): long { return 0; }
+          override get position(): long { return 0; }
+          override set position(v: long) {}
+          override flush(): void {}
+          override read(buffer: byte[], offset: int, count: int): int { return 0; }
+          override seek(offset: long, origin: SeekOrigin): long { return 0; }
+          override setLength(value: long): void {}
+          override write(buffer: byte[], offset: int, count: int): void {}
+        }
+        Console.WriteLine(new S().CanRead);
+        """, "True\n");
+    }
 }
