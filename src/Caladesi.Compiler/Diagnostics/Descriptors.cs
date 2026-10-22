@@ -190,5 +190,6 @@ public static class Descriptors
     public static readonly DiagnosticDescriptor PropertyWriteOnly = E(324, "Property '{0}' has no getter and cannot be read.");
     public static readonly DiagnosticDescriptor YieldNotAllowedHere = E(318, "'yield' is only allowed in a generator function.");
     public static readonly DiagnosticDescriptor JumpOutOfFinally = E(327, "A '{0}' statement cannot leave a 'finally' block.");
+    public static readonly DiagnosticDescriptor ModifyValueTypeTemporary = E(328, "Cannot modify '{0}' because it is a copy of a value type; assign it to a variable first.");
     public static readonly DiagnosticDescriptor NoEntryPoint = E(170, "Program does not contain an entry point; add top-level statements or a 'main' function.");
 }

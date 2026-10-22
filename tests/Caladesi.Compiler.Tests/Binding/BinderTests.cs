@@ -153,4 +153,17 @@ public class BinderTests
     {
         AssertError("function f(): void { throw new Exception(\"x\"); }\ntry { f(); } catch (e) { const g = () => { throw; }; g(); }", Descriptors.RethrowOutsideCatch, OutputKind.ConsoleApplication);
     }
+
+    [TestMethod]
+    public void Item07_StructMemberWriteThroughProperty_IsReported()
+    {
+        AssertError("""
+            import { Vector2 } from "System.Numerics";
+            class P { pos: Vector2 = new Vector2(0, 0); m(): void { this.pos.X = 1; } }
+            """, Descriptors.ModifyValueTypeTemporary);
+        AssertError("""
+            import { Vector2 } from "System.Numerics";
+            class P { pos: Vector2 = new Vector2(0, 0); m(): void { this.pos.X += 1; } }
+            """, Descriptors.ModifyValueTypeTemporary);
+    }
 }

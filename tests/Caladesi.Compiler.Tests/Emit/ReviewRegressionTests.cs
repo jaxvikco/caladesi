@@ -112,4 +112,19 @@ public class ReviewRegressionTests
         Console.WriteLine(first());
         """, "1\n");
     }
+
+    [TestMethod]
+    public void Item07_CompoundStructMemberWritesMutateFieldsAndArrayElements()
+    {
+        Check("""
+        import { Vector2 } from "System.Numerics";
+        class P { private ppos: Vector2 = new Vector2(0, 0); arr: Vector2[] = [new Vector2(0, 0)];
+          m(): void { this.ppos.X += 1; this.ppos.X++; this.arr[0].X += 1; this.arr[0].Y = 5; this.arr[0].X++; }
+          show(): string { return `${this.ppos.X} ${this.arr[0].X} ${this.arr[0].Y}`; } }
+        const p = new P(); p.m(); Console.WriteLine(p.show());
+        let local = new Vector2(0, 0);
+        local.X = 3; local.Y += 4;
+        Console.WriteLine(`${local.X} ${local.Y}`);
+        """, "2 2 5\n3 4\n");
+    }
 }
