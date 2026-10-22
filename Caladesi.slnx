@@ -5,6 +5,7 @@
     <Project Path="src/Caladesi.Compiler/Caladesi.Compiler.csproj" />
     <Project Path="src/Caladesi.LanguageServer/Caladesi.LanguageServer.csproj" />
     <Project Path="src/Caladesi.Runtime/Caladesi.Runtime.csproj" />
+    <Project Path="src/Caladesi.Runtime.Generators/Caladesi.Runtime.Generators.csproj" />
     <Project Path="src/Caladesi.Sdk/Caladesi.Sdk.csproj" />
     <Project Path="src/Caladesi.Templates/Caladesi.Templates.csproj" />
   </Folder>
