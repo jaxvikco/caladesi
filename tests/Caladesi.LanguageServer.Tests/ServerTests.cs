@@ -501,6 +501,16 @@ public class ServerTests
     }
 
     [TestMethod]
+    public async Task NullResultResponseIsIgnored()
+    {
+        using TestClient client = await Started().ConfigureAwait(false);
+        client.Send(/*lang=json,strict*/ """{"jsonrpc":"2.0","id":42,"result":null}""");
+        JsonElement response = await client.RequestRawWithId(42, "textDocument/documentSymbol", $$$"""{"textDocument":{"uri":"{{{Uri}}}"}}""").ConfigureAwait(false);
+        Assert.IsFalse(response.TryGetProperty("error", out _), response.ToString());
+        await client.Shutdown().ConfigureAwait(false);
+    }
+
+    [TestMethod]
     public async Task SourceWithSyntaxErrorsStillAnswersRequests()
     {
         Marked m = Marked.Parse("function broken(a: int { return a +;\nconst x = brok|en(;\n");

@@ -343,7 +343,8 @@ internal sealed partial class LanguageServer
         string? method = root.Get("method").GetString();
         if (method == null)
         {
-            if (id == null || (root.Get("result") == null && root.Get("error") == null))
+            bool isResponse = root.TryGetProperty("result", out _) || root.TryGetProperty("error", out _);
+            if (id == null || !isResponse)
             {
                 SendError(id, InvalidRequest, "Invalid request: missing method");
             }
