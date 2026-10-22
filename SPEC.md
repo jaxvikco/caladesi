@@ -112,6 +112,8 @@ sealed class Final {}
 * `override` is required (`CAL0161`); interface implementation is checked (`CAL0164`). Overriding and interface matching
   treat `foo` and `Foo` as the same name, and the emitted member takes the name of the base member (so C# interfaces can be
   implemented with natural TypeScript casing).
+* An override must have the type of the member it overrides (`CAL0329`) and cannot override a `sealed override` (`CAL0333`).
+  Overloads that differ only in `T` versus `T | null` for a reference type are duplicates (`CAL0157`); an ambiguous call is `CAL0200`.
 * A derived class without a constructor inherits its base class constructors (TypeScript semantics).
 * Member names are emitted verbatim: an Caladesi member `shout` is `shout` to C# callers.
 * Interfaces are CLR interfaces. Generic interfaces support `in`/`out` variance.
@@ -130,7 +132,10 @@ const v = new Vec(1.5, 2);
 * Records have value equality (`==`), `ToString`, `GetHashCode`, `Equals`, `<Clone>$`, and a primary constructor.
 * An object literal is typed by its target: a record or class → constructor call or object initializer; a dictionary →
   indexer assignments. Without a target it becomes a compiler-generated sealed record (internal, generic over its property
-  types) usable within the declaring method. A leading single spread is supported (`{ ...p, x: 3 }`).
+  types) usable within the declaring method. A leading single spread is supported (`{ ...p, x: 3 }`), also over another
+  anonymous object (`{ ...anon, age: 4 }`, which builds a new instance).
+* A member of a struct reached through a property or call result is a copy: `this.pos.X = 1` where `pos` is a property is an
+  error (`CAL0328`); assign the struct to a variable, change it, and write it back. Fields, locals and array elements are variables.
 
 ### Generics
 
@@ -162,7 +167,9 @@ function f(x: int | string) { … }                        // inline union: Cala
 ## 5. Statements and expressions
 
 * `if`, `for`, `for…of`, `while`, `do…while`, `switch`, labeled `break`/`continue`, `try`/`catch`/`finally` with typed
-  catches (`catch (e: IOException)`), `throw`. `for…in` is an error (`CAL0021`).
+  catches (`catch (e: IOException)`), `throw`. `for…in` is an error (`CAL0021`). `return`, `break` and `continue` cannot leave a
+  `finally` block (`CAL0327`); a bare `throw;` is only valid directly in a `catch` block, not in a lambda declared inside one (`CAL0289`).
+* Code nested more than 256 levels deep (expressions, statements, types) is rejected with `CAL0330`.
 * `using x = …;` and `await using x = …;` dispose at the end of the enclosing block.
 * Object and array destructuring in declarations, parameters and assignments, including defaults and nesting.
 * Template literals `` `a${b}` `` become string concatenation/interpolation.
