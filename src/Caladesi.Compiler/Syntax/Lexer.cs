@@ -441,10 +441,12 @@ public sealed class Lexer(SourceText source, string path, DiagnosticBag diagnost
                 else if (suffix == "f")
                 {
                     value = float.Parse(digits, NumberStyles.Float, CultureInfo.InvariantCulture);
+                    if (float.IsInfinity((float)value)) { error = "out of range"; ok = false; } // modern .NET parses overflow to Infinity instead of throwing
                 }
                 else if (suffix == "d")
                 {
                     value = double.Parse(digits, NumberStyles.Float, CultureInfo.InvariantCulture);
+                    if (double.IsInfinity((double)value)) { error = "out of range"; ok = false; }
                 }
                 else if (suffix == "m")
                 {
@@ -453,6 +455,7 @@ public sealed class Lexer(SourceText source, string path, DiagnosticBag diagnost
                 else if (isReal)
                 {
                     value = double.Parse(digits, NumberStyles.Float, CultureInfo.InvariantCulture);
+                    if (double.IsInfinity((double)value)) { error = "out of range"; ok = false; }
                 }
                 else
                 {

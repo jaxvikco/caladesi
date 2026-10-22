@@ -75,4 +75,16 @@ public class ReviewParserTests
             Assert.AreEqual(src.Contains("a * -2", StringComparison.Ordinal), tree.Diagnostics.Any(d => d.Id == Descriptors.UnaryBeforeExponent.Id), src);
         }
     }
+
+    [TestMethod]
+    public void Item35_OverflowingRealLiteralIsReported()
+    {
+        foreach (string src in new[] { "const x = 1e400;", "const x = 1e400d;", "const x = 1e50f;" })
+        {
+            SyntaxTree tree = Parse(src);
+            Assert.IsTrue(tree.Diagnostics.Any(d => d.Id == Descriptors.InvalidNumber.Id), src);
+        }
+
+        Assert.IsEmpty(Parse("const x = 1e308; const y = 3.4e38f; const z = 1e-400;").Diagnostics);
+    }
 }
