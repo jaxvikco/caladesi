@@ -196,7 +196,8 @@ public sealed partial class Binder
             SwitchSectionSyntax section = sw.Sections[i];
             SectionInfo info = sections[i];
             _narrow = savedNarrow;
-            if (info.Narrowings.Count == 1 && info.TypeCaseCount == 1 && info.ValueCaseCount == 0 && !sw.Sections[i].Labels.Any(l => l.IsDefault))
+            // the previous section falling through into this one means the case test was not what got us here
+            if ((i == 0 || !lastCompletes) && info.Narrowings.Count == 1 && info.TypeCaseCount == 1 && info.ValueCaseCount == 0 && !sw.Sections[i].Labels.Any(l => l.IsDefault))
             {
                 _narrow = _narrow.SetItem(info.Narrowings[0].Path, info.Narrowings[0].Type);
             }

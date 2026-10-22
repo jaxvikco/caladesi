@@ -246,7 +246,8 @@ public sealed partial class Binder
                     Narrowings whenTrue = new([(tp, tt.Target)]);
                     Narrowings whenFalse = Narrowings.Empty;
                     TypeSymbol? opType = tt.Operand.Type?.StripNullable();
-                    if (opType is NamedTypeSymbol { IsUnionType: true } u)
+                    // for `A | B | null` the false branch may still be null, so only a non-nullable union narrows to its remaining case
+                    if (opType is NamedTypeSymbol { IsUnionType: true } u && !tt.OperandWasNullable)
                     {
                         List<TypeSymbol> rest = [.. u.UnionCases.Where(c => !c.Equals(tt.Target))];
                         if (rest.Count == 1)

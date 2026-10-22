@@ -383,7 +383,7 @@ public sealed partial class Binder
             {
                 if (cases[i].Equals(targetBase))
                 {
-                    return new BoundTypeTest(UnwrapNullableValue(e), targetBase, BoolType, TypeTestKind.UnionCase, i) { Syntax = io };
+                    return new BoundTypeTest(UnwrapNullableValue(e), targetBase, BoolType, TypeTestKind.UnionCase, i) { Syntax = io, OperandWasNullable = source is NullableTypeSymbol };
                 }
             }
         }

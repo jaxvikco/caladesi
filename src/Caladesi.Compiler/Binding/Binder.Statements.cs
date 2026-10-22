@@ -613,6 +613,8 @@ public sealed partial class Binder
         BoundStatement body = BindEmbedded(ds.Body);
         bool breakUsed = _scope.BreakUsed;
         PopScope();
+        // the condition is reached from the end of the body and from `continue`, and the loop is left through the condition or `break`
+        _narrow = saved;
         InvalidateAssignedIn(ds);
         BoundExpression cond = ConvertToBool(BindValue(ds.Condition), ds.Condition);
         BoundDoWhile node = new(cond, body, brk, cont) { Syntax = ds };
@@ -620,8 +622,11 @@ public sealed partial class Binder
         {
             _flow[node] = false;
         }
+        else if (!breakUsed)
+        {
+            _narrow = ApplyNarrowings(_narrow, GetNarrowing(cond).whenFalse);
+        }
 
-        _ = saved;
         return node;
     }
 
@@ -655,6 +660,8 @@ public sealed partial class Binder
         BoundStatement body = BindEmbedded(fs.Body);
         bool breakUsed = _scope.BreakUsed;
         PopScope();
+        // the incrementor is reached from the end of the body and from `continue`: only what held at the start of the body holds there
+        _narrow = ApplyNarrowings(saved, tN);
         BoundStatement? incr = fs.Incrementor != null ? new BoundExpressionStatement(BindStatementExpression(fs.Incrementor)) { Syntax = fs.Incrementor } : null;
         ImmutableArray<LocalSymbol> locals = [.. outer.Locals];
         PopScope();

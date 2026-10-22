@@ -221,6 +221,9 @@ public sealed class BoundTypeTest(BoundExpression operand, TypeSymbol target, Ty
     public TypeSymbol Target { get; } = target;
     public TypeTestKind Kind { get; } = kind;
     public int CaseIndex { get; } = caseIndex;
+
+    /// <summary>The tested value was null-capable before the test unwrapped it, so a failed test does not rule null out.</summary>
+    public bool OperandWasNullable { get; init; }
 }
 
 public sealed class BoundLambda(LambdaSymbol symbol, BoundBlock body, TypeSymbol delegateType) : BoundExpression(delegateType)

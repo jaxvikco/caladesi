@@ -220,4 +220,52 @@ public class BinderTests
             }
             """, OutputKind.DynamicallyLinkedLibrary);
     }
+
+    [TestMethod]
+    public void Item17a_NarrowingDoesNotSurviveBreakOutOfDoWhile()
+    {
+        AssertError("function f(s: string | null): int { do { if (s == null) break; } while (false); return s.Length; }", Descriptors.PossiblyNull);
+    }
+
+    [TestMethod]
+    public void Item17b_ForIncrementorDoesNotSeeNarrowingFromContinuedBody()
+    {
+        AssertError("function f(s: string | null): int { let i = 0; for (; i < 3; i += s.Length) { if (s == null) continue; } return i; }", Descriptors.PossiblyNull);
+    }
+
+    [TestMethod]
+    public void Item17c_SwitchFallthroughDoesNotApplyNextCaseNarrowing()
+    {
+        AssertError("""
+            type Circle = { r: double };
+            type Square = { side: double };
+            type Shape = Circle | Square;
+            function f(x: Shape): double { switch (x) { case Circle: Console.WriteLine("c"); case Square: return x.side; } }
+            """, Descriptors.MemberNotFound);
+    }
+
+    [TestMethod]
+    public void Item17d_InstanceofFalseBranchKeepsNullOfNullableUnion()
+    {
+        AssertError("""
+            type Circle = { r: double };
+            type Square = { side: double };
+            function f(x: Circle | Square | null): double { if (x instanceof Circle) return 1; return x.side; }
+            """, Descriptors.PossiblyNull);
+    }
+
+    [TestMethod]
+    public void Item17_ValidNarrowingStillWorks()
+    {
+        AssertClean("""
+            type Circle = { r: double };
+            type Square = { side: double };
+            type Shape = Circle | Square;
+            function a(s: string | null): int { do { if (s == null) break; } while (false); return s == null ? 0 : s.Length; }
+            function b(s: string | null): int { if (s == null) return 0; let i = 0; for (; i < 3; i += s.Length) { if (i == 1) continue; } return i; }
+            function c(x: Shape): double { switch (x) { case Circle: return x.r; case Square: return x.side; } }
+            function d(x: Shape): double { if (x instanceof Circle) return x.r; return x.side; }
+            function e(x: Circle | Square | null): double { if (x == null) return 0; if (x instanceof Circle) return x.r; return x.side; }
+            """, OutputKind.DynamicallyLinkedLibrary);
+    }
 }
