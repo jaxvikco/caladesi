@@ -357,11 +357,11 @@ public sealed partial class Binder
         {
             return null;
         }
-        // return type must be convertible
+        // the return type must be convertible; unlike a lambda, a method group cannot discard a result (`const a: Action = Console.ReadLine`)
         TypeSymbol rt = res.Method.ReturnType;
-        return !invoke.ReturnType.IsVoid && !rt.IsVoid && !ClassifyImplicit(null, rt, invoke.ReturnType).Exists
-            ? null
-            : !invoke.ReturnType.IsVoid && rt.IsVoid ? null : res.Method;
+        return invoke.ReturnType.IsVoid
+            ? rt.IsVoid || rt.IsNeverType ? res.Method : null
+            : rt.IsVoid || !ClassifyImplicit(null, rt, invoke.ReturnType).Exists ? null : res.Method;
     }
 
     private bool SatisfiesConstraints(MethodSymbol constructed)

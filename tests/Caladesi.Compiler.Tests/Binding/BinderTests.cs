@@ -376,4 +376,11 @@ public class BinderTests
     {
         AssertError("function j(a: string, b: int | null): string { return a + b; }", Descriptors.PossiblyNull);
     }
+
+    [TestMethod]
+    public void Item32_NonVoidMethodGroupDoesNotConvertToVoidDelegate()
+    {
+        AssertError("const a: Action = Console.ReadLine;", Descriptors.MethodGroupNotConvertible, OutputKind.ConsoleApplication);
+        AssertClean("const a: Action = Console.WriteLine;\nconst b: Func<string | null> = Console.ReadLine;", OutputKind.ConsoleApplication);
+    }
 }

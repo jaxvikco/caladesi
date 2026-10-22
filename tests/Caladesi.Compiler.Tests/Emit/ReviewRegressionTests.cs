@@ -385,7 +385,7 @@ public class ReviewRegressionTests
         Console.WriteLine(anon2.age);
         Console.WriteLine(anon2.name);
         Console.WriteLine(anon.age);
-        Console.WriteLine(anon3 == anon);
+        Console.WriteLine(anon3.Equals(anon));
         """, "4\nn\n3\nTrue\n");
     }
 }
