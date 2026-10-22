@@ -560,12 +560,9 @@ public sealed partial class Binder
 
         if (hasDuplicate)
         {
-            foreach (LiteralMember m in members)
+            foreach (LiteralMember m in members.Where(static m => !m.IsSpread))
             {
-                if (!m.IsSpread)
-                {
-                    _ = BindLiteralMemberValue(m, null);
-                }
+                _ = BindLiteralMemberValue(m, null);
             }
 
             return Bad(syntax);

@@ -10,22 +10,22 @@ public class CalacExitCodeTests
         DirectoryInfo? dir = new(AppContext.BaseDirectory);
         string tfm = dir.Name;
         string config = dir.Parent!.Name;
-        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "Caladesi.slnx")))
+        while (dir != null && !File.Exists(Path.Join(dir.FullName, "Caladesi.slnx")))
         {
             dir = dir.Parent;
         }
 
-        return Path.Combine(dir!.FullName, "src", "Caladesi.Cli", "bin", config, tfm, "calac.dll");
+        return Path.Join(dir!.FullName, "src", "Caladesi.Cli", "bin", config, tfm, "calac.dll");
     }
 
     private static (int ExitCode, string Output, bool OutputWritten) RunCalac(string source, params string[] extraReferences)
     {
-        string work = Path.Combine(Path.GetTempPath(), "calac-test-" + Guid.NewGuid().ToString("N"));
+        string work = Path.Join(Path.GetTempPath(), "calac-test-" + Guid.NewGuid().ToString("N"));
         _ = Directory.CreateDirectory(work);
         try
         {
-            string main = Path.Combine(work, "main.cala");
-            string output = Path.Combine(work, "app.dll");
+            string main = Path.Join(work, "main.cala");
+            string output = Path.Join(work, "app.dll");
             File.WriteAllText(main, source);
             ProcessStartInfo psi = new("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true };
             psi.ArgumentList.Add(CalacPath());

@@ -10,7 +10,7 @@ public class SdkVersionTests
     private static string RepoRoot()
     {
         DirectoryInfo? dir = new(AppContext.BaseDirectory);
-        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "Caladesi.slnx")))
+        while (dir != null && !File.Exists(Path.Join(dir.FullName, "Caladesi.slnx")))
         {
             dir = dir.Parent;
         }
@@ -35,17 +35,17 @@ public class SdkVersionTests
 
     private static string EvaluateRuntimeVersion(string sdkFolderName, string extraProperties = "")
     {
-        string work = Path.Combine(Path.GetTempPath(), "sdk-version-" + Guid.NewGuid().ToString("N"));
-        string targets = Path.Combine(work, sdkFolderName, "targets");
+        string work = Path.Join(Path.GetTempPath(), "sdk-version-" + Guid.NewGuid().ToString("N"));
+        string targets = Path.Join(work, sdkFolderName, "targets");
         _ = Directory.CreateDirectory(targets);
         try
         {
-            File.Copy(Path.Combine(RepoRoot(), "src", "Caladesi.Sdk", "targets", "Caladesi.props"), Path.Combine(targets, "Caladesi.props"));
-            string project = Path.Combine(work, "eval.proj");
+            File.Copy(Path.Join(RepoRoot(), "src", "Caladesi.Sdk", "targets", "Caladesi.props"), Path.Join(targets, "Caladesi.props"));
+            string project = Path.Join(work, "eval.proj");
             File.WriteAllText(project, $"""
                 <Project>
                   <PropertyGroup>{extraProperties}</PropertyGroup>
-                  <Import Project="{Path.Combine(targets, "Caladesi.props")}" />
+                  <Import Project="{Path.Join(targets, "Caladesi.props")}" />
                 </Project>
                 """);
             (int exit, string output) = Dotnet(work, "msbuild", project, "-getProperty:CaladesiRuntimeVersion", "-nologo");
@@ -75,14 +75,14 @@ public class SdkVersionTests
     [TestMethod]
     public void Item41_PackedTemplatesRequestTheSdkTheyWerePackedWith()
     {
-        string work = Path.Combine(Path.GetTempPath(), "templates-pack-" + Guid.NewGuid().ToString("N"));
+        string work = Path.Join(Path.GetTempPath(), "templates-pack-" + Guid.NewGuid().ToString("N"));
         _ = Directory.CreateDirectory(work);
         try
         {
-            (int exit, string output) = Dotnet(RepoRoot(), "pack", Path.Combine("src", "Caladesi.Templates", "Caladesi.Templates.csproj"), "-c", "Release", "-p:Version=2.3.4",
-                "--artifacts-path", Path.Combine(work, "art"), "-o", Path.Combine(work, "out"), "--nologo", "-v:q");
+            (int exit, string output) = Dotnet(RepoRoot(), "pack", Path.Join("src", "Caladesi.Templates", "Caladesi.Templates.csproj"), "-c", "Release", "-p:Version=2.3.4",
+                "--artifacts-path", Path.Join(work, "art"), "-o", Path.Join(work, "out"), "--nologo", "-v:q");
             Assert.AreEqual(0, exit, output);
-            using ZipArchive package = ZipFile.OpenRead(Path.Combine(work, "out", "Caladesi.Templates.2.3.4.nupkg"));
+            using ZipArchive package = ZipFile.OpenRead(Path.Join(work, "out", "Caladesi.Templates.2.3.4.nupkg"));
             List<ZipArchiveEntry> projects = [.. package.Entries.Where(e => e.FullName.EndsWith(".calaproj", StringComparison.Ordinal))];
             Assert.HasCount(3, projects);
             foreach (ZipArchiveEntry entry in projects)

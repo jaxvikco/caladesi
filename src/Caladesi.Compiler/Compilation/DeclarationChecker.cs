@@ -334,7 +334,7 @@ internal sealed class DeclarationChecker(Compilation compilation)
             {
                 foreach (Symbol cand in OverrideResolver.LookupNames(t, tp.Name))
                 {
-                    if (cand is not PropertySymbol cp || cp.IsStatic || (cp.IsAbstract && t.Equals(type) && false) || !TypesMatchForImplementation(cp.Type, tp.Type))
+                    if (cand is not PropertySymbol cp || cp.IsStatic || !TypesMatchForImplementation(cp.Type, tp.Type))
                     {
                         continue;
                     }
