@@ -36,7 +36,7 @@ internal static class ProjectEnvironment
         if (string.IsNullOrEmpty(feed))
         {
             feed = Path.Combine(work, "packages");
-            if (!File.Exists(Path.Combine(feed, "Caladesi.Sdk.0.1.0.nupkg")) || !File.Exists(Path.Combine(feed, "Caladesi.Runtime.0.1.0.nupkg")))
+            if (!File.Exists(Path.Combine(feed, "Caladesi.Sdk.1.0.0.nupkg")) || !File.Exists(Path.Combine(feed, "Caladesi.Runtime.1.0.0.nupkg")))
             {
                 var info = new ProcessStartInfo("bash") { WorkingDirectory = RepoRoot, RedirectStandardOutput = true, RedirectStandardError = true };
                 info.ArgumentList.Add(Path.Combine(RepoRoot, "eng", "pack.sh"));
@@ -72,7 +72,7 @@ internal static class ProjectEnvironment
             var dir = Path.Combine(WorkRoot, name);
             Directory.CreateDirectory(dir);
             File.WriteAllText(Path.Combine(dir, "app.calaproj"), $$"""
-                <Project Sdk="Caladesi.Sdk/0.1.0">
+                <Project Sdk="Caladesi.Sdk/1.0.0">
                   <PropertyGroup>
                     <OutputType>{{outputType}}</OutputType>
                     <TargetFramework>net10.0</TargetFramework>

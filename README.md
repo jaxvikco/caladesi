@@ -24,7 +24,7 @@ async function main(args: string[]): Task<int> {
 ## Getting started
 
 ```sh
-dotnet new install Caladesi.Templates          # from your feed; locally: artifacts/packages/Caladesi.Templates.0.1.0.nupkg
+dotnet new install Caladesi.Templates          # from your feed; locally: artifacts/packages/Caladesi.Templates.1.0.0.nupkg
 dotnet new calaconsole -o hello
 cd hello && dotnet run
 ```
@@ -32,7 +32,7 @@ cd hello && dotnet run
 A project file is a normal SDK-style project that uses the Caladesi SDK:
 
 ```xml
-<Project Sdk="Caladesi.Sdk/0.1.0">
+<Project Sdk="Caladesi.Sdk/1.0.0">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
