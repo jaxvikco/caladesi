@@ -181,6 +181,11 @@ public sealed partial class Parser
                 var kw = Eat();
                 return new AwaitExpressionSyntax(kw, ParseUnaryExpression());
             }
+            case SyntaxKind.ThrowKeyword:
+            {
+                var kw = Eat();
+                return new ThrowExpressionSyntax(kw, ParseAssignmentExpression());
+            }
             case SyntaxKind.TypeOfKeyword:
             {
                 var kw = Eat();

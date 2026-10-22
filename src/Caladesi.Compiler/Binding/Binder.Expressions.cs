@@ -87,6 +87,7 @@ public sealed partial class Binder
             case PrefixUnaryExpressionSyntax pu: return BindPrefixUnary(pu, target);
             case PostfixUnaryExpressionSyntax pf: return BindPostfixUnary(pf, valueUsed: true);
             case AwaitExpressionSyntax aw: return BindAwait(aw);
+            case ThrowExpressionSyntax te: return BindThrowExpression(te);
             case TypeOfExpressionSyntax to: return BindTypeOf(to);
             case YieldExpressionSyntax y:
                 Report(Descriptors.YieldNotAllowedHere, y);
@@ -117,6 +118,14 @@ public sealed partial class Binder
     }
 
     // ------------------------------------------------------------------ literals
+
+    private BoundExpression BindThrowExpression(ThrowExpressionSyntax te)
+    {
+        var excType = _c.GetSpecialType(SpecialType.Exception);
+        var operand = BindToType(te.Operand, excType);
+        if (operand.HasErrors) return Bad(te, operand);
+        return new BoundThrowExpression(operand, NeverTypeSymbol.Instance) { Syntax = te };
+    }
 
     private BoundExpression BindLiteral(LiteralExpressionSyntax lit, TypeSymbol? target)
     {
