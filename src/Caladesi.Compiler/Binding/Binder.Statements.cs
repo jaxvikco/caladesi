@@ -1084,7 +1084,13 @@ public sealed partial class Binder
         BoundStatement st = BindStatement(inner);
         ImmutableArray<LocalSymbol> locals = [.. scope.Locals];
         PopScope();
-        return new BoundBlock(locals, [st, new BoundLabel(scope.BreakLabel) { Syntax = ls }]) { Syntax = ls };
+        BoundBlock labeled = new(locals, [st, new BoundLabel(scope.BreakLabel) { Syntax = ls }]) { Syntax = ls };
+        if (scope.BreakUsed)
+        {
+            _flow[labeled] = true; // `break label` jumps to the end of the block, so it completes even when its body does not
+        }
+
+        return labeled;
     }
 
     // ------------------------------------------------------------------ try

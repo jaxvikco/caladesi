@@ -268,4 +268,11 @@ public class BinderTests
             function e(x: Circle | Square | null): double { if (x == null) return 0; if (x instanceof Circle) return x.r; return x.side; }
             """, OutputKind.DynamicallyLinkedLibrary);
     }
+
+    [TestMethod]
+    public void Item18_LabeledBlockExitedWithBreakCompletesNormally()
+    {
+        AssertError("function f(x: bool): int { outer: { if (x) break outer; return 1; } }", Descriptors.NotAllPathsReturn);
+        AssertClean("function f(x: bool): int { outer: { if (x) break outer; return 1; } return 2; }", OutputKind.DynamicallyLinkedLibrary);
+    }
 }
