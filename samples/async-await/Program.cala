@@ -23,14 +23,14 @@ async function work(n: int): Task<int> {
   return sum;
 }
 
-async function* numbers(n: int): AsyncIterable<int> {
+async function* numbers(n: int): IAsyncEnumerable<int> {
   for (let i = 0; i < n; i++) {
     await Task.Delay(1);
     yield i * 10;
   }
 }
 
-async function* withCleanup(): AsyncIterable<string> {
+async function* withCleanup(): IAsyncEnumerable<string> {
   try {
     yield "a";
     yield "b";

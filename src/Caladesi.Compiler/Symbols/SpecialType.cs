@@ -55,10 +55,10 @@ public static class SpecialTypes
 
     public static string? Keyword(this SpecialType t) => t switch
     {
-        SpecialType.Object => "object", SpecialType.Void => "void", SpecialType.Boolean => "boolean", SpecialType.Char => "char",
+        SpecialType.Object => "object", SpecialType.Void => "void", SpecialType.Boolean => "bool", SpecialType.Char => "char",
         SpecialType.SByte => "sbyte", SpecialType.Byte => "byte", SpecialType.Int16 => "short", SpecialType.UInt16 => "ushort",
         SpecialType.Int32 => "int", SpecialType.UInt32 => "uint", SpecialType.Int64 => "long", SpecialType.UInt64 => "ulong",
-        SpecialType.Single => "float", SpecialType.Double => "number", SpecialType.Decimal => "decimal", SpecialType.String => "string",
+        SpecialType.Single => "float", SpecialType.Double => "double", SpecialType.Decimal => "decimal", SpecialType.String => "string",
         SpecialType.IntPtr => "nint", SpecialType.UIntPtr => "nuint", SpecialType.BigInteger => "bigint",
         _ => null,
     };

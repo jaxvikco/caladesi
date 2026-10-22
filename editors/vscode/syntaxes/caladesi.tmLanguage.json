@@ -549,7 +549,7 @@
     },
     "primitive-type": {
       "name": "support.type.primitive.caladesi",
-      "match": "(?<![\\w$.])(?:number|string|boolean|void|object|unknown|never|bigint|int|long|short|byte|sbyte|uint|ulong|ushort|float|double|decimal|nint|nuint|char)(?![\\w$])"
+      "match": "(?<![\\w$.])(?:string|bool|void|object|never|bigint|int|long|short|byte|sbyte|uint|ulong|ushort|float|double|decimal|nint|nuint|char)(?![\\w$])"
     },
     "type-args": {
       "name": "meta.type.parameters.caladesi",

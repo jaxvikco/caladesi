@@ -279,11 +279,6 @@ public sealed partial class Binder
                 case "any": Report(Descriptors.AnyNotAllowed, span); return Bad(syntax);
             }
         }
-        else if (s_predefinedGenericNames.Contains(name))
-        {
-            var pg = PredefinedGenericType(name, typeArgs, syntax);
-            if (pg != null) return new BoundTypeExpression(pg) { Syntax = syntax };
-        }
         Report(Descriptors.NameNotFound, span, name);
         return Bad(syntax);
     }
