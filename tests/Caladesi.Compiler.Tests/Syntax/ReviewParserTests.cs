@@ -39,8 +39,8 @@ public class ReviewParserTests
         SyntaxTree tree = Parse("const v = c ? (x) : y => y * 2;");
         Assert.IsEmpty(tree.Diagnostics, TestCompiler.Format(tree.Diagnostics));
         ConditionalExpressionSyntax cond = tree.Root.DescendantNodes().OfType<ConditionalExpressionSyntax>().Single();
-        Assert.IsInstanceOfType<ParenthesizedExpressionSyntax>(cond.WhenTrue);
-        Assert.IsInstanceOfType<ArrowFunctionSyntax>(cond.WhenFalse);
+        _ = Assert.IsInstanceOfType<ParenthesizedExpressionSyntax>(cond.WhenTrue);
+        _ = Assert.IsInstanceOfType<ArrowFunctionSyntax>(cond.WhenFalse);
     }
 
     [TestMethod]
@@ -48,7 +48,7 @@ public class ReviewParserTests
     {
         SyntaxTree tree = Parse("const v = c ? (a: int): int => a : null;");
         Assert.IsEmpty(tree.Diagnostics, TestCompiler.Format(tree.Diagnostics));
-        Assert.IsInstanceOfType<ArrowFunctionSyntax>(tree.Root.DescendantNodes().OfType<ConditionalExpressionSyntax>().Single().WhenTrue);
+        _ = Assert.IsInstanceOfType<ArrowFunctionSyntax>(tree.Root.DescendantNodes().OfType<ConditionalExpressionSyntax>().Single().WhenTrue);
         Assert.IsEmpty(Parse("const w = c ? f((a: int): int => a) : null;").Diagnostics);
     }
 
@@ -57,7 +57,7 @@ public class ReviewParserTests
     {
         SyntaxTree tree = Parse("Console.WriteLine(typeof(int).Name);");
         Assert.IsEmpty(tree.Diagnostics, TestCompiler.Format(tree.Diagnostics));
-        Assert.IsInstanceOfType<MemberAccessExpressionSyntax>(tree.Root.DescendantNodes().OfType<InvocationExpressionSyntax>().First().Arguments.Arguments[0]);
+        _ = Assert.IsInstanceOfType<MemberAccessExpressionSyntax>(tree.Root.DescendantNodes().OfType<InvocationExpressionSyntax>().First().Arguments.Arguments[0]);
     }
 
     [TestMethod]

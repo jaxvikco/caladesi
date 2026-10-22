@@ -266,7 +266,7 @@ internal sealed partial class MethodBodyEmitter
             NamedTypeSymbol dec = _c.GetSpecialType(SpecialType.Decimal);
             NamedTypeSymbol fromT = _c.GetSpecialType(from);
             NamedTypeSymbol toT = _c.GetSpecialType(to);
-            string name = from == SpecialType.Decimal || from is SpecialType.Single or SpecialType.Double ? "op_Explicit" : "op_Implicit"; // decimal has no implicit conversion from floating point
+            string name = from is SpecialType.Decimal or SpecialType.Single or SpecialType.Double ? "op_Explicit" : "op_Implicit"; // decimal has no implicit conversion from floating point
             MethodSymbol? m = null;
             foreach (MethodSymbol cand in dec.GetMembers(name).OfType<MethodSymbol>())
             {

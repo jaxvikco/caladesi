@@ -926,7 +926,7 @@ public sealed partial class Binder
         {
             args.Add(overrides.TryGetValue(name, out BoundExpression? replaced)
                 ? replaced
-                : new BoundPropertyAccess(new BoundLocal(tmp), nt.GetMembers(name).OfType<PropertySymbol>().First(), ImmutableArray<BoundExpression>.Empty) { Syntax = syntax });
+                : new BoundPropertyAccess(new BoundLocal(tmp), nt.GetMembers(name).OfType<PropertySymbol>().First(), []) { Syntax = syntax });
         }
 
         BoundObjectCreation created = new(ctor, nt, args.ToImmutable(), []) { Syntax = syntax };
