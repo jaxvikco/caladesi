@@ -24,6 +24,7 @@ public sealed partial class Binder
     public Dictionary<SyntaxNode, Symbol>? SymbolMap { get; set; }
     public Dictionary<SyntaxNode, TypeSymbol>? TypeMap { get; set; }
     public Dictionary<SyntaxNode, BoundNode>? BoundMap { get; set; }
+    internal Dictionary<(SyntaxTree, int), Symbol>? DeclarationMap { get; set; }
 
     public Binder(Compilation compilation, SourceFile file, Symbol? containing, DiagnosticBag? diagnostics)
     {
@@ -86,13 +87,15 @@ public sealed partial class Binder
     {
         var saved = _diag;
         var savedMaps = (SymbolMap, TypeMap, BoundMap);
+        var savedDecls = DeclarationMap;
         _diag = null;
-        SymbolMap = null; TypeMap = null; BoundMap = null;
+        SymbolMap = null; TypeMap = null; BoundMap = null; DeclarationMap = null;
         try { return f(); }
         finally
         {
             _diag = saved;
             (SymbolMap, TypeMap, BoundMap) = savedMaps;
+            DeclarationMap = savedDecls;
         }
     }
 
@@ -140,6 +143,11 @@ public sealed partial class Binder
         }
         _scope.Symbols[name] = symbol;
         if (symbol is LocalSymbol l) _scope.Locals.Add(l);
+        if (DeclarationMap != null && at != null)
+        {
+            var token = at as SyntaxToken ?? (at as ParameterSyntax)?.Identifier ?? (at as SyntaxNode)?.GetFirstToken();
+            if (token != null && !token.IsMissing) DeclarationMap[(_file.Tree, token.Start)] = symbol;
+        }
     }
 
     private Symbol? LookupLocal(string name)

@@ -25,6 +25,14 @@ internal static class TestCompiler
         return Compilation.Create(options, trees, References);
     }
 
+    public static Compilation CreateWithSemantics(string source, string path = "/proj/main.cala", params (string path, string text)[] more)
+    {
+        var trees = new List<SyntaxTree> { SyntaxTree.ParseText(source, path) };
+        foreach (var (p, t) in more) trees.Add(SyntaxTree.ParseText(t, p));
+        var options = new CompilationOptions { AssemblyName = "Test", RootNamespace = "Test", ProjectDirectory = "/proj", RecordSemanticInfo = true };
+        return Compilation.Create(options, trees, References);
+    }
+
     public static ImmutableArray<Diagnostic> Diagnose(string source, OutputKind kind = OutputKind.ConsoleApplication) =>
         Create(source, kind).GetDiagnostics();
 

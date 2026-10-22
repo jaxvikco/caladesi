@@ -202,6 +202,29 @@ public sealed class FileScope
         return result.ToImmutableArray();
     }
 
+    /// <summary>Every name usable at module level in this file (own declarations, imports, global namespaces and types).</summary>
+    public IEnumerable<(string Name, Symbol Symbol)> VisibleNames()
+    {
+        foreach (var kv in Declared)
+            foreach (var s in kv.Value) yield return (kv.Key, s);
+        ResolveImports();
+        foreach (var kv in _named!)
+            foreach (var s in kv.Value) yield return (kv.Key, s);
+        foreach (var kv in _aliases!) yield return (kv.Key, kv.Value);
+        foreach (var w in _wildcards!)
+            if (w is NamespaceSymbol ns)
+            {
+                foreach (var t in ns.GetTypeMembers().Where(t => t.DeclaredAccessibility == Accessibility.Public)) yield return (t.Name, t);
+            }
+            else if (w is NamedTypeSymbol nt)
+            {
+                foreach (var m in nt.GetMembers().Where(m => m.IsStatic && m.DeclaredAccessibility == Accessibility.Public)) yield return (m.Name, m);
+            }
+        var g = Compilation.GlobalNamespace;
+        foreach (var n in g.GetNamespaceMembers()) yield return (n.Name, n);
+        foreach (var t in g.GetTypeMembers()) yield return (t.Name, t);
+    }
+
     /// <summary>Static type containers and namespaces imported with wildcard imports (for extension-method lookup).</summary>
     public IReadOnlyList<Symbol> WildcardImports
     {

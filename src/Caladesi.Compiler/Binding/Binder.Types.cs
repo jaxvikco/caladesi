@@ -621,12 +621,20 @@ public sealed partial class Binder
 
     public TypeSymbol InferVariableType(ExpressionSyntax initializer)
     {
-        return Speculatively(() =>
+        var inferred = Speculatively(() =>
         {
             var bound = BindExpression(initializer);
             if (bound is BoundUnbound u && HasNaturalType(u)) bound = u.BindToType(null);
             return WidenInferredType(bound, initializer, report: false);
         });
+        if (inferred.IsErrorType)
+        {
+            // the speculative pass hides diagnostics; bind again so the user learns why the type could not be inferred
+            var bound = BindExpression(initializer);
+            if (bound is BoundUnbound u && HasNaturalType(u)) bound = u.BindToType(null);
+            WidenInferredType(bound, initializer, report: true);
+        }
+        return inferred;
     }
 
     /// <summary>The type a variable gets when declared without annotation (after binding the initializer).</summary>

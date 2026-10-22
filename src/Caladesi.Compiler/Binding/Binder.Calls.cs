@@ -114,6 +114,12 @@ public sealed partial class Binder
         }
 
         var m = res.Method;
+        if (SymbolMap != null)
+        {
+            // point the callee name at the overload that was chosen
+            SyntaxNode? nameNode = inv.Expression switch { MemberAccessExpressionSyntax ma => ma.Name, _ => inv.Expression };
+            if (nameNode != null) SymbolMap[nameNode] = m.OriginalDefinition;
+        }
         BoundExpression? receiver = null;
         if (extReceiver != null || m.IsStatic)
         {

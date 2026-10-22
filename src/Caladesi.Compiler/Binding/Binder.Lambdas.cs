@@ -93,7 +93,11 @@ public sealed partial class Binder
         Func<TypeSymbol?, BoundExpression> bindToType = target =>
         {
             target ??= NaturalDelegateType(info);
-            if (target == null) return Bad(syntax);
+            if (target == null)
+            {
+                Report(Descriptors.CannotInferType, syntax);
+                return Bad(syntax);
+            }
             return WithCapturedState(capturedScope, capturedNarrow, () => BindLambdaToDelegate(syntax, info, names, parameterList, target, isAsync, isGenerator, body));
         };
         return new BoundUnbound(syntax, bindToType) { IsLambda = true, Lambda = info };
@@ -109,7 +113,7 @@ public sealed partial class Binder
         if (info.IsGenerator || info.ExplicitParameterTypes.Any(t => t == null) || info.ParameterCount > 16) return null;
         var ps = info.ExplicitParameterTypes.Select(t => t!).ToImmutableArray();
         var ret = info.ExplicitReturnType ?? info.InferReturnType(ps);
-        if (ret == null) return null;
+        if (ret == null || ret.IsErrorType) return null;
         if (info.IsAsync && info.ExplicitReturnType == null) ret = WrapInTask(ret);
         var n = ps.Length;
         if (ret.IsVoid)

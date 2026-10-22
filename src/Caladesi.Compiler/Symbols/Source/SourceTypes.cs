@@ -158,6 +158,13 @@ public sealed class SourceClassSymbol : SourceNamedType
                     if (nt.IsSealed || nt.SpecialType is SpecialType.String or SpecialType.Array or SpecialType.Enum or SpecialType.ValueType)
                         Compilation.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.CannotInheritSealed, File.FilePath, ext.Types[0].Span, nt.ToDisplayString()));
                     _base = nt;
+                    for (var x = nt; x != null; x = x.BaseType)
+                        if (ReferenceEquals(x.OriginalDefinition, this))
+                        {
+                            Compilation.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.CyclicInheritance, File.FilePath, ext.Types[0].Span, Name));
+                            _base = obj;
+                            break;
+                        }
                 }
                 else if (!t.IsErrorType)
                 {
@@ -470,17 +477,29 @@ public sealed class SourceInterfaceSymbol : SourceNamedType
         {
             if (!_interfaces.IsDefault) return _interfaces;
             if (_syntax.ExtendsClause == null) return _interfaces = ImmutableArray<NamedTypeSymbol>.Empty;
+            _interfaces = ImmutableArray<NamedTypeSymbol>.Empty; // while binding, a cycle sees no base interfaces
             var binder = CreateBinder();
             var b = ImmutableArray.CreateBuilder<NamedTypeSymbol>();
             foreach (var ts in _syntax.ExtendsClause.Types)
             {
                 var t = binder.BindType(ts);
-                if (t is NamedTypeSymbol { TypeKind: TypeKind.Interface } i) b.Add(i);
+                if (t is NamedTypeSymbol { TypeKind: TypeKind.Interface } i && ReachesSelf(i, new HashSet<NamedTypeSymbol>(ReferenceEqualityComparer.Instance)))
+                    Compilation.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.CyclicInheritance, File.FilePath, ts.Span, Name));
+                else if (t is NamedTypeSymbol { TypeKind: TypeKind.Interface } i2) b.Add(i2);
                 else if (!t.IsErrorType)
                     Compilation.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.ImplementsMustBeInterface, File.FilePath, ts.Span, t.ToDisplayString()));
             }
             return _interfaces = b.ToImmutable();
         }
+    }
+
+    private bool ReachesSelf(NamedTypeSymbol i, HashSet<NamedTypeSymbol> seen)
+    {
+        if (ReferenceEquals(i.OriginalDefinition, this)) return true;
+        if (!seen.Add(i.OriginalDefinition)) return false;
+        foreach (var next in i.Interfaces)
+            if (ReachesSelf(next, seen)) return true;
+        return false;
     }
 
     protected override ImmutableArray<Symbol> BuildMembers()

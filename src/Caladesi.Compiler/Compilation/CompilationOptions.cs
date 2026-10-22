@@ -25,4 +25,6 @@ public sealed record CompilationOptions
     /// <summary>When true, the compiler generates a Microsoft.Testing.Platform entry point for MSTest projects.</summary>
     public bool GenerateTestEntryPoint { get; init; }
     public bool Optimize { get; init; }
+    /// <summary>Records which symbol every name resolves to (needed by <see cref="Semantics.SemanticModel"/>; costs memory).</summary>
+    public bool RecordSemanticInfo { get; init; }
 }
