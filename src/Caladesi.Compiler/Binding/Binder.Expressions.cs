@@ -36,6 +36,9 @@ public sealed partial class Binder
             case BoundTypeExpression or BoundNamespaceExpression or BoundModuleExpression:
                 ReportNotAValue(e, syntax);
                 return Bad(syntax, e);
+            case BoundPropertyAccess { Property.GetMethod: null } wo when !ReferenceEquals(syntax, _assignTargetSyntax):
+                Report(Descriptors.PropertyWriteOnly, syntax, wo.Property.Name);
+                return Bad(syntax, e);
         }
         return e;
     }
