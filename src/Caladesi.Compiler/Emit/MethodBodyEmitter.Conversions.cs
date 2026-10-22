@@ -52,9 +52,9 @@ internal sealed partial class MethodBodyEmitter
                 break;
             case ConversionKind.Boxing:
                 EmitExpression(c.Operand, true);
-                if (EmitModule.IsValueTypeLike(_m.ClrType(from)) || from is TypeParameterSymbol || EmitModule.IsNullableValue(from))
+                if (EmitModule.IsValueTypeLike(_m.ClrType(from)) || from.StripNullable() is TypeParameterSymbol || EmitModule.IsNullableValue(from))
                 {
-                    _il.Token(ILOpCode.Box, _m.GetTypeEntity(from), 0);
+                    _il.Token(ILOpCode.Box, _m.GetTypeEntity(from.StripNullable() is TypeParameterSymbol tp ? tp : from), 0);
                 }
 
                 break;

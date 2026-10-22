@@ -303,7 +303,7 @@ public sealed partial class Binder
                     : inner.Kind switch
                     {
                         ConversionKind.ImplicitNumeric or ConversionKind.EnumNumeric => Conversion.Implicit(ConversionKind.LiftedNumeric),
-                        ConversionKind.Boxing when sn.Underlying.IsValueType => Conversion.Implicit(ConversionKind.Boxing),
+                        ConversionKind.Boxing when sn.Underlying.IsValueType || sn.Underlying is TypeParameterSymbol => Conversion.Implicit(ConversionKind.Boxing),
                         _ when sn.Underlying.IsValueType => Conversion.None,
                         _ => Conversion.Implicit(ConversionKind.TypeOnly),
                     };
@@ -320,6 +320,12 @@ public sealed partial class Binder
         if (HasImplicitNumeric(source.SpecialType, target.SpecialType) && source.SpecialType != SpecialType.None)
         {
             return Conversion.Implicit(ConversionKind.ImplicitNumeric);
+        }
+
+        // a type parameter is only known to be a reference at run time; converting it to a reference type needs a box
+        if (source is TypeParameterSymbol && BoxingConversionExists(source, target))
+        {
+            return Conversion.Implicit(ConversionKind.Boxing);
         }
 
         // reference
