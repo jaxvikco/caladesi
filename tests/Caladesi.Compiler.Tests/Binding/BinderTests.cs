@@ -383,4 +383,12 @@ public class BinderTests
         AssertError("const a: Action = Console.ReadLine;", Descriptors.MethodGroupNotConvertible, OutputKind.ConsoleApplication);
         AssertClean("const a: Action = Console.WriteLine;\nconst b: Func<string | null> = Console.ReadLine;", OutputKind.DynamicallyLinkedLibrary);
     }
+
+    [TestMethod]
+    public void Item36_NaNAndInfinityHaveTargetedMessages()
+    {
+        ImmutableArray<Diagnostic> d = TestCompiler.Diagnose("const x = NaN;\nconst y = Infinity;");
+        Assert.AreEqual(2, d.Count(x => x.Id == Descriptors.NotSupportedUseInstead.Id), TestCompiler.Format(d));
+        Assert.IsFalse(d.Any(x => x.Id == Descriptors.NameNotFound.Id), TestCompiler.Format(d));
+    }
 }

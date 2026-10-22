@@ -320,6 +320,8 @@ public sealed partial class Binder
             {
                 case "undefined": Report(Descriptors.UndefinedNotAllowed, span); return Bad(syntax);
                 case "any": Report(Descriptors.AnyNotAllowed, span); return Bad(syntax);
+                case "NaN": Report(Descriptors.NotSupportedUseInstead, span, name, "double.NaN"); return Bad(syntax);
+                case "Infinity": Report(Descriptors.NotSupportedUseInstead, span, name, "double.PositiveInfinity"); return Bad(syntax);
             }
         }
         Report(Descriptors.NameNotFound, span, name);

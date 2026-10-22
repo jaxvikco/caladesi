@@ -36,7 +36,8 @@ Each entry records a choice that is not obvious from the language specification,
   members are nullable with a `null` default.
 * **Object literals without a target** become a compiler-generated internal record generic over its property types (like C#
   anonymous types). Only a single leading spread is supported.
-* **`===` is `op_Equality` when present**, otherwise reference or value equality as appropriate. `==` is rejected with a fix-it.
+* **`==` is `op_Equality` when present**, otherwise reference or value equality as appropriate. `===` and `!==` are rejected with one
+  targeted error (`CAL0332`); so are the removed globals `NaN` and `Infinity`.
 * **Fields are initialized after the base constructor call**, in declaration order, before the rest of the constructor body.
 * **Top-level variables are static fields** of the file's module class; their initializers run in the entry method (or the
   static constructor for library projects). Consequently ref struct types cannot be top-level variables.

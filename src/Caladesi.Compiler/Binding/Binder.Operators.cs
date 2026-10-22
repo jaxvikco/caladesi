@@ -519,8 +519,8 @@ public sealed partial class Binder
             BinaryOperatorKind.LessThanOrEqual => "<=",
             BinaryOperatorKind.GreaterThan => ">",
             BinaryOperatorKind.GreaterThanOrEqual => ">=",
-            BinaryOperatorKind.Equal => "===",
-            BinaryOperatorKind.NotEqual => "!==",
+            BinaryOperatorKind.Equal => "==",
+            BinaryOperatorKind.NotEqual => "!=",
             _ => "?",
         };
         Report(Descriptors.BadOperands, syntax is BinaryExpressionSyntax be ? be.OperatorToken.Span : syntax.Span, op, l.ToDisplayString(), r.ToDisplayString());

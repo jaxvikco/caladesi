@@ -213,7 +213,7 @@ be omitted. A trailing object literal assigns attribute properties/fields. Argum
 
 ## 7. Unsupported on purpose
 
-`var`, `any`, `undefined`, `===`/`!==`, `for…in`, `export default`, `namespace`, `delete`, `declare`, intersection types other than generic
+`var`, `any`, `undefined`, `NaN` and `Infinity` (use `double.NaN`, `double.PositiveInfinity`; `CAL0332`), `===`/`!==` (use `==`/`!=`; `CAL0332`), `for…in`, `export default`, `namespace`, `delete`, `declare`, intersection types other than generic
 constraints, object type literals outside type aliases, `async` constructors.
 
 ## 8. Tooling

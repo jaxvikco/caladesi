@@ -182,7 +182,20 @@ public sealed partial class Parser
                 break;
             }
 
-            SyntaxToken op = EatComposite(opKind, count);
+            SyntaxToken op;
+            if (opKind is SyntaxKind.EqualsEqualsToken or SyntaxKind.ExclamationEqualsToken && PeekKind(1) == SyntaxKind.EqualsToken && IsAdjacent(_i + 1))
+            {
+                // `===` / `!==` read as one operator with one targeted error, not as `==` followed by a stray `=`
+                SyntaxToken first = Eat();
+                SyntaxToken extra = Eat();
+                op = new SyntaxToken(first.Kind, first.Text + extra.Text, first.FullStart, first.LeadingTrivia, extra.TrailingTrivia);
+                Report(Descriptors.NotSupportedUseInstead, op.Span, op.Text, first.Text);
+            }
+            else
+            {
+                op = EatComposite(opKind, count);
+            }
+
             switch (opKind)
             {
                 case SyntaxKind.AsKeyword:

@@ -87,4 +87,15 @@ public class ReviewParserTests
 
         Assert.IsEmpty(Parse("const x = 1e308; const y = 3.4e38f; const z = 1e-400;").Diagnostics);
     }
+
+    [TestMethod]
+    public void Item36_StrictEqualityIsOneTargetedError()
+    {
+        foreach (string src in new[] { "const b = a === 1;", "const c = a !== 2;" })
+        {
+            SyntaxTree tree = Parse(src);
+            Assert.HasCount(1, tree.Diagnostics, src + "\n" + TestCompiler.Format(tree.Diagnostics));
+            Assert.AreEqual(Descriptors.NotSupportedUseInstead.Id, tree.Diagnostics[0].Id);
+        }
+    }
 }
