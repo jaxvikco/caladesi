@@ -273,8 +273,6 @@ public sealed partial class Binder
             if (p != null && p is not NullableTypeSymbol) return new BoundTypeExpression(p) { Syntax = syntax };
             switch (name)
             {
-                case "NaN": return new BoundLiteral(new ConstantValue(double.NaN), DoubleType) { Syntax = syntax };
-                case "Infinity": return new BoundLiteral(new ConstantValue(double.PositiveInfinity), DoubleType) { Syntax = syntax };
                 case "undefined": Report(Descriptors.UndefinedNotAllowed, span); return Bad(syntax);
                 case "any": Report(Descriptors.AnyNotAllowed, span); return Bad(syntax);
             }
