@@ -27,7 +27,6 @@ public readonly struct ModifierSet
     public bool IsReadonly => Has(SyntaxKind.ReadonlyKeyword);
     public bool IsSealed => Has(SyntaxKind.SealedKeyword);
     public bool IsStruct => Has(SyntaxKind.StructKeyword);
-    public bool IsDeclare => Has(SyntaxKind.DeclareKeyword);
 
     /// <summary>Accessibility for a type-level declaration (export = public, otherwise internal).</summary>
     public Accessibility TypeAccessibility => IsExport || IsPublic ? Accessibility.Public : Accessibility.Internal;

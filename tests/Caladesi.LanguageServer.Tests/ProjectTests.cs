@@ -84,7 +84,7 @@ public class ProjectTests
         var dir = env.CreateProject("shared", "Exe",
             ("Program.cala", "import { twice } from \"./lib\";\nConsole.WriteLine(twice(21));\n"),
             ("lib.cala", "export function twice(x: int): int { return x * 2; }\n"),
-            ("bad.cala", "var oops = 1;\n"));
+            ("bad.cala", "for (const k in [1]) {}\n"));
         var program = Path.Combine(dir, "Program.cala");
         var lib = Path.Combine(dir, "lib.cala");
         var bad = Path.Combine(dir, "bad.cala");
@@ -97,7 +97,7 @@ public class ProjectTests
         client.Open(programUri, File.ReadAllText(program));
 
         var badDiagnostics = client.WaitForDiagnostics(badUri, d => d.GetArrayLength() > 0);
-        Assert.AreEqual("CAL0022", badDiagnostics.GetProperty("diagnostics")[0].GetProperty("code").GetString());
+        Assert.AreEqual("CAL0021", badDiagnostics.GetProperty("diagnostics")[0].GetProperty("code").GetString());
 
         var call = Marked.Parse("import { twice } from \"./lib\";\nConsole.WriteLine(twi|ce(21));\n");
         var position = TestClient.Position(programUri, call.Line, call.Character);
@@ -125,7 +125,7 @@ public class ProjectTests
 
         mark = client.Mark();
         var extra = Path.Combine(dir, "extra.cala");
-        File.WriteAllText(extra, "var again = 2;\n");
+        File.WriteAllText(extra, "for (const k in [1]) {}\n");
         client.Notify("workspace/didChangeWatchedFiles", $$$"""{"changes":[{"uri":"{{{TestClient.Uri(extra)}}}","type":1}]}""");
         client.WaitForDiagnostics(TestClient.Uri(extra), d => d.GetArrayLength() > 0, mark);
 

@@ -6,7 +6,7 @@ public static class SyntaxFacts
     {
         ["break"] = SyntaxKind.BreakKeyword, ["case"] = SyntaxKind.CaseKeyword, ["catch"] = SyntaxKind.CatchKeyword,
         ["class"] = SyntaxKind.ClassKeyword, ["const"] = SyntaxKind.ConstKeyword, ["continue"] = SyntaxKind.ContinueKeyword,
-        ["default"] = SyntaxKind.DefaultKeyword, ["delete"] = SyntaxKind.DeleteKeyword, ["do"] = SyntaxKind.DoKeyword,
+        ["default"] = SyntaxKind.DefaultKeyword, ["do"] = SyntaxKind.DoKeyword,
         ["else"] = SyntaxKind.ElseKeyword, ["enum"] = SyntaxKind.EnumKeyword, ["export"] = SyntaxKind.ExportKeyword,
         ["extends"] = SyntaxKind.ExtendsKeyword, ["false"] = SyntaxKind.FalseKeyword, ["finally"] = SyntaxKind.FinallyKeyword,
         ["for"] = SyntaxKind.ForKeyword, ["function"] = SyntaxKind.FunctionKeyword, ["if"] = SyntaxKind.IfKeyword,
@@ -15,17 +15,17 @@ public static class SyntaxFacts
         ["null"] = SyntaxKind.NullKeyword, ["return"] = SyntaxKind.ReturnKeyword, ["super"] = SyntaxKind.SuperKeyword,
         ["switch"] = SyntaxKind.SwitchKeyword, ["this"] = SyntaxKind.ThisKeyword, ["throw"] = SyntaxKind.ThrowKeyword,
         ["true"] = SyntaxKind.TrueKeyword, ["try"] = SyntaxKind.TryKeyword, ["typeof"] = SyntaxKind.TypeOfKeyword,
-        ["var"] = SyntaxKind.VarKeyword, ["void"] = SyntaxKind.VoidKeyword, ["while"] = SyntaxKind.WhileKeyword,
+        ["void"] = SyntaxKind.VoidKeyword, ["while"] = SyntaxKind.WhileKeyword,
         ["await"] = SyntaxKind.AwaitKeyword, ["yield"] = SyntaxKind.YieldKeyword,
 
         ["abstract"] = SyntaxKind.AbstractKeyword, ["as"] = SyntaxKind.AsKeyword, ["async"] = SyntaxKind.AsyncKeyword,
-        ["declare"] = SyntaxKind.DeclareKeyword, ["from"] = SyntaxKind.FromKeyword, ["get"] = SyntaxKind.GetKeyword,
+        ["from"] = SyntaxKind.FromKeyword, ["get"] = SyntaxKind.GetKeyword,
         ["implements"] = SyntaxKind.ImplementsKeyword, ["internal"] = SyntaxKind.InternalKeyword, ["of"] = SyntaxKind.OfKeyword,
         ["out"] = SyntaxKind.OutKeyword, ["override"] = SyntaxKind.OverrideKeyword, ["private"] = SyntaxKind.PrivateKeyword,
         ["protected"] = SyntaxKind.ProtectedKeyword, ["public"] = SyntaxKind.PublicKeyword, ["readonly"] = SyntaxKind.ReadonlyKeyword,
         ["satisfies"] = SyntaxKind.SatisfiesKeyword, ["sealed"] = SyntaxKind.SealedKeyword, ["set"] = SyntaxKind.SetKeyword,
         ["static"] = SyntaxKind.StaticKeyword, ["struct"] = SyntaxKind.StructKeyword, ["type"] = SyntaxKind.TypeKeyword,
-        ["using"] = SyntaxKind.UsingKeyword, ["namespace"] = SyntaxKind.NamespaceKeyword, ["module"] = SyntaxKind.ModuleKeyword,
+        ["using"] = SyntaxKind.UsingKeyword,
         ["constructor"] = SyntaxKind.ConstructorKeyword, ["operator"] = SyntaxKind.OperatorKeyword, ["is"] = SyntaxKind.IsKeyword,
     };
 
@@ -90,7 +90,7 @@ public static class SyntaxFacts
 
     public static bool IsModifier(SyntaxKind k) => k switch
     {
-        SyntaxKind.AbstractKeyword or SyntaxKind.AsyncKeyword or SyntaxKind.DeclareKeyword or SyntaxKind.ExportKeyword
+        SyntaxKind.AbstractKeyword or SyntaxKind.AsyncKeyword or SyntaxKind.ExportKeyword
             or SyntaxKind.InternalKeyword or SyntaxKind.OverrideKeyword or SyntaxKind.PrivateKeyword
             or SyntaxKind.ProtectedKeyword or SyntaxKind.PublicKeyword or SyntaxKind.ReadonlyKeyword
             or SyntaxKind.SealedKeyword or SyntaxKind.StaticKeyword or SyntaxKind.StructKeyword

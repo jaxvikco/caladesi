@@ -43,17 +43,17 @@ public enum SyntaxKind
 
     // ---- Reserved keywords
     BreakKeyword, CaseKeyword, CatchKeyword, ClassKeyword, ConstKeyword, ContinueKeyword, DefaultKeyword,
-    DeleteKeyword, DoKeyword, ElseKeyword, EnumKeyword, ExportKeyword, ExtendsKeyword, FalseKeyword,
+    DoKeyword, ElseKeyword, EnumKeyword, ExportKeyword, ExtendsKeyword, FalseKeyword,
     FinallyKeyword, ForKeyword, FunctionKeyword, IfKeyword, ImportKeyword, InKeyword, InstanceOfKeyword,
     InterfaceKeyword, LetKeyword, NewKeyword, NullKeyword, ReturnKeyword, SuperKeyword, SwitchKeyword,
-    ThisKeyword, ThrowKeyword, TrueKeyword, TryKeyword, TypeOfKeyword, VarKeyword, VoidKeyword, WhileKeyword,
+    ThisKeyword, ThrowKeyword, TrueKeyword, TryKeyword, TypeOfKeyword, VoidKeyword, WhileKeyword,
     AwaitKeyword, YieldKeyword,
 
     // ---- Contextual keywords (usable as identifiers)
-    AbstractKeyword, AsKeyword, AsyncKeyword, DeclareKeyword, FromKeyword, GetKeyword, ImplementsKeyword,
+    AbstractKeyword, AsKeyword, AsyncKeyword, FromKeyword, GetKeyword, ImplementsKeyword,
     InternalKeyword, OfKeyword, OutKeyword, OverrideKeyword, PrivateKeyword, ProtectedKeyword, PublicKeyword,
     ReadonlyKeyword, SatisfiesKeyword, SealedKeyword, SetKeyword, StaticKeyword, StructKeyword, TypeKeyword,
-    UsingKeyword, NamespaceKeyword, ModuleKeyword, ConstructorKeyword, OperatorKeyword, IsKeyword,
+    UsingKeyword, ConstructorKeyword, OperatorKeyword, IsKeyword,
 
     // ---- Nodes: lists
     List,

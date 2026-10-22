@@ -127,8 +127,8 @@ public class ServerTests
         client.Open(Uri, "const a = 1;\n");
         const int edits = 40;
         for (var i = 0; i < edits; i++) client.Change(Uri, $"const a = {i} == 1;\n", i + 2);
-        client.Change(Uri, "var a = 5;\n", edits + 5);
-        var final = client.WaitForDiagnostics(Uri, d => d.GetArrayLength() > 0 && d[0].GetProperty("code").GetString() == "CAL0022");
+        client.Change(Uri, "for (const k in [1]) {}\n", edits + 5);
+        var final = client.WaitForDiagnostics(Uri, d => d.GetArrayLength() > 0 && d[0].GetProperty("code").GetString() == "CAL0021");
         Assert.AreEqual(edits + 5, final.GetProperty("version").GetInt32());
         Assert.IsLessThan(10, client.CountDiagnosticNotifications(Uri), "expected stale diagnostics runs to be skipped");
         await client.Shutdown();

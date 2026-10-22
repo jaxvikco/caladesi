@@ -37,9 +37,6 @@
       "include": "#enum-decl"
     },
     {
-      "include": "#namespace-decl"
-    },
-    {
       "include": "#type-alias"
     },
     {
@@ -313,7 +310,7 @@
     "struct-type-alias": {
       "name": "meta.type.declaration.caladesi",
       "begin": "(?<![\\w$.])(struct)\\s+(type)\\s+([A-Za-z_$][\\w$]*)(?=\\s*[<=])",
-      "end": ";|(?=^\\s*(?:export|declare|function|class|interface|enum|type|struct|const|let|import|namespace|abstract|async)\\b)|(?<=\\})(?!\\s*[|&\\[])",
+      "end": ";|(?=^\\s*(?:export|function|class|interface|enum|type|struct|const|let|import|abstract|async)\\b)|(?<=\\})(?!\\s*[|&\\[])",
       "beginCaptures": {
         "1": {
           "name": "storage.type.struct.caladesi"
@@ -382,21 +379,10 @@
         }
       ]
     },
-    "namespace-decl": {
-      "match": "(?<![\\w$.])(namespace)\\s+([A-Za-z_$][\\w$]*(?:\\.[A-Za-z_$][\\w$]*)*)",
-      "captures": {
-        "1": {
-          "name": "storage.type.namespace.caladesi"
-        },
-        "2": {
-          "name": "entity.name.namespace.caladesi"
-        }
-      }
-    },
     "type-alias": {
       "name": "meta.type.declaration.caladesi",
       "begin": "(?<![\\w$.])(type)\\s+([A-Za-z_$][\\w$]*)(?=\\s*[<=])",
-      "end": ";|(?=^\\s*(?:export|declare|function|class|interface|enum|type|const|let|import|namespace|abstract|async)\\b)|(?<=\\})(?!\\s*[|&\\[])",
+      "end": ";|(?=^\\s*(?:export|function|class|interface|enum|type|const|let|import|abstract|async)\\b)|(?<=\\})(?!\\s*[|&\\[])",
       "beginCaptures": {
         "1": {
           "name": "storage.type.type.caladesi"
@@ -723,7 +709,7 @@
         },
         {
           "name": "storage.modifier.caladesi",
-          "match": "(?<![\\w$.])(?:static|abstract|override|readonly|sealed|private|protected|internal|public|async|declare|extends|implements)(?![\\w$])"
+          "match": "(?<![\\w$.])(?:static|abstract|override|readonly|sealed|private|protected|internal|public|async|extends|implements)(?![\\w$])"
         },
         {
           "name": "storage.modifier.caladesi",

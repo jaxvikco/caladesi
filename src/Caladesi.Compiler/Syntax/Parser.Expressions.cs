@@ -194,12 +194,6 @@ public sealed partial class Parser
                 var close = Expect(SyntaxKind.CloseParenToken);
                 return new TypeOfExpressionSyntax(kw, open, t, close);
             }
-            case SyntaxKind.DeleteKeyword:
-            {
-                ReportAtCurrent(Descriptors.FeatureNotSupported, "'delete'");
-                var kw = Eat();
-                return new PrefixUnaryExpressionSyntax(kw, ParseUnaryExpression());
-            }
             case SyntaxKind.VoidKeyword:
             {
                 ReportAtCurrent(Descriptors.FeatureNotSupported, "The 'void' operator");

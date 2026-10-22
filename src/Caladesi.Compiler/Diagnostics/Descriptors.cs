@@ -25,12 +25,10 @@ public static class Descriptors
     public static readonly DiagnosticDescriptor ModifierNotAllowed = E(19, "Modifier '{0}' is not valid on this declaration.");
     public static readonly DiagnosticDescriptor DuplicateModifier = E(20, "Duplicate modifier '{0}'.");
     public static readonly DiagnosticDescriptor ForInNotSupported = E(21, "'for...in' is not supported; use 'for...of' over the keys, e.g. 'for (const k of dict.Keys)'.");
-    public static readonly DiagnosticDescriptor VarNotSupported = E(22, "'var' is not supported; use 'let' or 'const'.");
     public static readonly DiagnosticDescriptor LooseEqualityNotSupported = E(23, "'{0}' is not supported; use '{1}'.");
     public static readonly DiagnosticDescriptor AnyNotSupported = E(24, "'any' is not supported; use a specific type, 'unknown' or 'object'.");
     public static readonly DiagnosticDescriptor UndefinedNotSupported = E(25, "'undefined' is not supported; use 'null'.");
     public static readonly DiagnosticDescriptor ExportDefaultNotSupported = E(26, "'export default' is not supported; use a named export.");
-    public static readonly DiagnosticDescriptor NamespaceNotSupported = E(27, "Namespace declarations are not supported; the namespace is derived from the folder path.");
     public static readonly DiagnosticDescriptor FeatureNotSupported = E(28, "{0} is not supported.");
     public static readonly DiagnosticDescriptor RegexNotSupported = E(29, "Regular expression literals are not supported.");
 
@@ -178,7 +176,6 @@ public static class Descriptors
     public static readonly DiagnosticDescriptor UndefinedNotAllowed = E(311, "'undefined' is not supported; use 'null'.");
     public static readonly DiagnosticDescriptor UnionTooLarge = E(312, "A union can have at most 8 member types.");
     public static readonly DiagnosticDescriptor UseNewForType = E(313, "Use 'new' to create an instance of a type.");
-    public static readonly DiagnosticDescriptor VarNotAllowed = E(314, "'var' is not supported; use 'let' or 'const'.");
     public static readonly DiagnosticDescriptor VoidDeref = E(315, "Cannot access a member of a 'void' value.");
     public static readonly DiagnosticDescriptor VoidNotAllowed = E(316, "'void' is only allowed as a return type.");
     public static readonly DiagnosticDescriptor WrongArgumentCount = E(317, "'{0}' expects {1} argument(s) but got {2}.");
