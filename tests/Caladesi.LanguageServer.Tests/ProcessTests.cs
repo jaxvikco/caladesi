@@ -88,10 +88,10 @@ public class ProcessTests
         Stream output = process.StandardOutput.BaseStream;
         try
         {
-            Write(input, """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":null,"capabilities":{}}}""");
+            Write(input, /*lang=json,strict*/ """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":null,"capabilities":{}}}""");
             JsonElement init = ReadUntil(output, m => m.TryGetProperty("id", out JsonElement id) && id.GetInt32() == 1);
             Assert.AreEqual("cala-ls", init.GetProperty("result").GetProperty("serverInfo").GetProperty("name").GetString());
-            Write(input, """{"jsonrpc":"2.0","method":"initialized","params":{}}""");
+            Write(input, /*lang=json,strict*/ """{"jsonrpc":"2.0","method":"initialized","params":{}}""");
 
             const string uri = "file:///virtual/process.cala";
             Write(input, $$$$"""{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"{{{{uri}}}}","languageId":"caladesi","version":1,"text":"const a = 1;\nlet b: any = a;\n"}}}""");
@@ -102,9 +102,9 @@ public class ProcessTests
             JsonElement hover = ReadUntil(output, m => m.TryGetProperty("id", out JsonElement id) && id.ValueKind == JsonValueKind.Number && id.GetInt32() == 2);
             StringAssert.Contains(hover.GetProperty("result").GetProperty("contents").GetProperty("value").GetString(), "a");
 
-            Write(input, """{"jsonrpc":"2.0","id":3,"method":"shutdown"}""");
+            Write(input, /*lang=json,strict*/ """{"jsonrpc":"2.0","id":3,"method":"shutdown"}""");
             _ = ReadUntil(output, m => m.TryGetProperty("id", out JsonElement id) && id.ValueKind == JsonValueKind.Number && id.GetInt32() == 3);
-            Write(input, """{"jsonrpc":"2.0","method":"exit"}""");
+            Write(input, /*lang=json,strict*/ """{"jsonrpc":"2.0","method":"exit"}""");
             Assert.IsTrue(process.WaitForExit(30_000), "server did not exit");
             Assert.AreEqual(0, process.ExitCode, stderr.ToString());
         }

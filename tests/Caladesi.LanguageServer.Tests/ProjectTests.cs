@@ -74,7 +74,7 @@ public class ProjectTests
         Assert.IsNull(MsBuildProjectData.Parse("{ not json", "/p"));
         Assert.IsNull(MsBuildProjectData.Parse("[1,2]", "/p"));
 
-        MsBuildProjectData? data = MsBuildProjectData.Parse("{\"Properties\":{},\"Items\":{}}", "/p");
+        MsBuildProjectData? data = MsBuildProjectData.Parse(/*lang=json,strict*/ "{\"Properties\":{},\"Items\":{}}", "/p");
         Assert.IsNotNull(data);
         CompilationOptions options = data.ToCompilationOptions("/p/demo.calaproj");
         Assert.AreEqual("demo", options.AssemblyName);

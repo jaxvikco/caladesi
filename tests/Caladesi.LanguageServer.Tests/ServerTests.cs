@@ -458,10 +458,10 @@ public class ServerTests
         using TestClient client = await Started().ConfigureAwait(false);
         JsonElement response = await client.RequestRaw("textDocument/madeUp").ConfigureAwait(false);
         Assert.AreEqual(-32601, response.GetProperty("error").GetProperty("code").GetInt32());
-        client.Notify("custom/notification", """{"a":1}""");
-        client.Notify("$/setTrace", """{"value":"off"}""");
-        client.Notify("$/cancelRequest", """{"id":12345}""");
-        client.Notify("workspace/didChangeConfiguration", """{"settings":null}""");
+        client.Notify("custom/notification", /*lang=json,strict*/ """{"a":1}""");
+        client.Notify("$/setTrace", /*lang=json,strict*/ """{"value":"off"}""");
+        client.Notify("$/cancelRequest", /*lang=json,strict*/ """{"id":12345}""");
+        client.Notify("workspace/didChangeConfiguration", /*lang=json,strict*/ """{"settings":null}""");
         JsonElement hover = await client.Request("textDocument/hover", TestClient.Position(Uri, 0, 0)).ConfigureAwait(false);
         Assert.AreEqual(JsonValueKind.Null, hover.ValueKind);
         await client.Shutdown().ConfigureAwait(false);
@@ -481,7 +481,7 @@ public class ServerTests
         _ = client.WaitForError(-32600, mark);
 
         mark = client.Mark();
-        client.Send("""{"jsonrpc":"2.0","id":99}""");
+        client.Send(/*lang=json,strict*/ """{"jsonrpc":"2.0","id":99}""");
         _ = client.WaitForError(-32600, mark);
 
         client.WriteRaw("garbage line without colon\r\n\r\n"u8.ToArray());
@@ -489,11 +489,11 @@ public class ServerTests
         client.WriteRaw("Content-Type: application/vscode-jsonrpc\r\n\r\n"u8.ToArray());
         client.WriteRaw("content-length: 2\r\n\r\n{}"u8.ToArray());
         client.Notify("textDocument/didOpen", "{}");
-        client.Notify("textDocument/didChange", """{"textDocument":{"uri":"file:///virtual/never-opened.cala"},"contentChanges":[{"text":"x"}]}""");
-        client.Notify("textDocument/didOpen", """{"textDocument":{"uri":5}}""");
-        client.Notify("workspace/didChangeWatchedFiles", """{"changes":[{"uri":null}]}""");
+        client.Notify("textDocument/didChange", /*lang=json,strict*/ """{"textDocument":{"uri":"file:///virtual/never-opened.cala"},"contentChanges":[{"text":"x"}]}""");
+        client.Notify("textDocument/didOpen", /*lang=json,strict*/ """{"textDocument":{"uri":5}}""");
+        client.Notify("workspace/didChangeWatchedFiles", /*lang=json,strict*/ """{"changes":[{"uri":null}]}""");
 
-        JsonElement response = await client.RequestRaw("textDocument/hover", """{"textDocument":{}}""").ConfigureAwait(false);
+        JsonElement response = await client.RequestRaw("textDocument/hover", /*lang=json,strict*/ """{"textDocument":{}}""").ConfigureAwait(false);
         Assert.IsTrue(response.TryGetProperty("result", out _) || response.TryGetProperty("error", out _));
         JsonElement symbols = await client.Request("textDocument/documentSymbol", $$$"""{"textDocument":{"uri":"{{{Uri}}}"}}""").ConfigureAwait(false);
         Assert.AreEqual(1, symbols.GetArrayLength());
@@ -517,7 +517,7 @@ public class ServerTests
     public async Task CancelledRequestIsAnsweredWithCancellation()
     {
         using TestClient client = await Started("const a = 1;\n").ConfigureAwait(false);
-        client.Notify("$/cancelRequest", """{"id":777}""");
+        client.Notify("$/cancelRequest", /*lang=json,strict*/ """{"id":777}""");
         int mark = client.Mark();
         client.Send($$$"""{"jsonrpc":"2.0","id":777,"method":"textDocument/hover","params":{{{TestClient.Position(Uri, 0, 0)}}}}""");
         _ = client.WaitForError(-32800, mark);

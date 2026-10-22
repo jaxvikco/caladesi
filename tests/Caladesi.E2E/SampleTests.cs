@@ -120,7 +120,7 @@ public sealed class SampleTests
             // Microsoft.Testing.Platform mode of `dotnet test` is selected through global.json.
             if (!File.Exists(Path.Combine(work, "global.json")))
             {
-                await File.WriteAllTextAsync(Path.Combine(work, "global.json"), "{ \"test\": { \"runner\": \"Microsoft.Testing.Platform\" } }\n").ConfigureAwait(false);
+                await File.WriteAllTextAsync(Path.Combine(work, "global.json"), /*lang=json,strict*/ "{ \"test\": { \"runner\": \"Microsoft.Testing.Platform\" } }\n").ConfigureAwait(false);
             }
 
             ProcessResult test = await Dotnet.RunAsync(["test", "--project", entry, "--no-build"], work, env, CommandTimeout).ConfigureAwait(false);
