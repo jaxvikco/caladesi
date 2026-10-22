@@ -53,7 +53,7 @@ public enum SyntaxKind
     AbstractKeyword, AsKeyword, AsyncKeyword, FromKeyword, GetKeyword, ImplementsKeyword,
     InternalKeyword, OfKeyword, OutKeyword, OverrideKeyword, PrivateKeyword, ProtectedKeyword, PublicKeyword,
     ReadonlyKeyword, SatisfiesKeyword, SealedKeyword, SetKeyword, StaticKeyword, StructKeyword, TypeKeyword,
-    UsingKeyword, ConstructorKeyword, OperatorKeyword, IsKeyword,
+    UsingKeyword, ConstructorKeyword,
 
     // ---- Nodes: lists
     List,
