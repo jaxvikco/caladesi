@@ -1,0 +1,27 @@
+class Version2 implements IComparable<Version2>, IEquatable<Version2> {
+  constructor(public major: int, public minor: int) {}
+  compareTo(other: Version2): int { return this.major !== other.major ? this.major - other.major : this.minor - other.minor; }
+  equals(other: Version2 | null): boolean { return other !== null && this.major === other.major && this.minor === other.minor; }
+  override toString(): string { return `${this.major}.${this.minor}`; }
+}
+class Range3 implements IEnumerable<int> {
+  constructor(private n: int) {}
+  *getEnumerator(): IEnumerator<int> { for (let i = 0; i < this.n; i++) yield i; }
+}
+const vs = [new Version2(1, 2), new Version2(0, 9), new Version2(1, 0)];
+Array.Sort(vs);
+Console.WriteLine(string.Join(",", vs.Select(v => v.toString())));
+Console.WriteLine(new Version2(1, 1).equals(new Version2(1, 1)));
+Console.WriteLine(string.Join(",", new Range3(4)));
+Console.WriteLine(new Range3(5).Sum());
+const sb: sbyte = -5;
+const by: byte = 200;
+const sh: short = -300;
+const us: ushort = 60000;
+const fl: float = 1.5f;
+console_types: {
+  Console.WriteLine(sb + by + sh + us);
+  Console.WriteLine(fl * 2);
+}
+const ni: nint = 5;
+Console.WriteLine(ni);

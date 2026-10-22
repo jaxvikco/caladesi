@@ -170,7 +170,7 @@ internal sealed class DeclarationChecker(Compilation compilation)
             {
                 if (im.MethodKind is not (MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet) || im.IsStatic) continue;
                 if (!im.IsAbstract) continue;
-                if (FindImplementation(type, im, requireOverride: false) == null && !(type.IsAbstract && false))
+                if (FindImplementation(type, im, requireOverride: false) == null && FindBridgeTarget(type, im) == null)
                     Report(Descriptors.InterfaceMemberNotImplemented, type, span, type.Name, iface.Name + "." + (im.AssociatedSymbol?.Name ?? im.Name));
             }
         }
@@ -202,17 +202,65 @@ internal sealed class DeclarationChecker(Compilation compilation)
         return null;
     }
 
+    /// <summary>
+    /// For an interface member the class does not implement directly: a public member with the same name and parameters whose return
+    /// type converts to the interface's by a reference conversion (e.g. <c>IEnumerator&lt;T&gt; GetEnumerator()</c> for
+    /// <c>IEnumerable.GetEnumerator()</c>). The compiler then emits an explicit bridge, as C# programmers write by hand.
+    /// </summary>
+    public static MethodSymbol? FindBridgeTarget(NamedTypeSymbol type, MethodSymbol target)
+    {
+        for (var t = (NamedTypeSymbol?)type; t != null; t = t.BaseType)
+        {
+            if (target.AssociatedSymbol is PropertySymbol tp)
+            {
+                if (target.MethodKind != MethodKind.PropertyGet) continue;
+                foreach (var cand in OverrideResolver.LookupNames(t, tp.Name))
+                    if (cand is PropertySymbol { IsStatic: false, GetMethod: { } g } cp && cp.DeclaredAccessibility == Accessibility.Public && ReferenceConvertible(cp.Type, tp.Type)) return g;
+                continue;
+            }
+            foreach (var cand in OverrideResolver.LookupNames(t, target.Name))
+            {
+                if (cand is not MethodSymbol cm || cm.MethodKind != target.MethodKind || cm.IsStatic || cm.Arity != target.Arity || cm.DeclaredAccessibility != Accessibility.Public) continue;
+                if (cm.Parameters.Length != target.Parameters.Length) continue;
+                var paramsMatch = true;
+                for (var i = 0; i < cm.Parameters.Length && paramsMatch; i++)
+                    paramsMatch = TypesMatchForImplementation(cm.Parameters[i].Type, target.Parameters[i].Type);
+                if (paramsMatch && ReferenceConvertible(cm.ReturnType, target.ReturnType)) return cm;
+            }
+        }
+        return null;
+    }
+
+    private static bool ReferenceConvertible(TypeSymbol from, TypeSymbol to)
+    {
+        from = StripReferenceNullability(from);
+        to = StripReferenceNullability(to);
+        if (from.Equals(to)) return true;
+        if (to.SpecialType == SpecialType.Object && !from.IsValueType) return true;
+        if (from.IsValueType || to.IsValueType) return false;
+        for (var x = from; x != null; x = x.BaseType)
+            if (x.Equals(to)) return true;
+        foreach (var i in from.AllInterfaces)
+            if (i.Equals(to)) return true;
+        return false;
+    }
+
+    private static TypeSymbol StripReferenceNullability(TypeSymbol t) =>
+        t is NullableTypeSymbol { Underlying: { } u } && !u.IsValueType && u is not TypeParameterSymbol ? u : t;
+
+    private static bool TypesMatchForImplementation(TypeSymbol a, TypeSymbol b)
+    {
+        if (a is TypeParameterSymbol { IsMethodTypeParameter: true } pa && b is TypeParameterSymbol { IsMethodTypeParameter: true } pb) return pa.Ordinal == pb.Ordinal;
+        // nullability annotations of reference types do not change the CLR signature
+        return StripReferenceNullability(a).Equals(StripReferenceNullability(b));
+    }
+
     private static bool SignatureMatchesForImplementation(MethodSymbol impl, MethodSymbol target)
     {
         if (impl.Parameters.Length != target.Parameters.Length) return false;
         for (var i = 0; i < impl.Parameters.Length; i++)
-        {
-            var a = impl.Parameters[i].Type;
-            var b = target.Parameters[i].Type;
-            if (a is TypeParameterSymbol { IsMethodTypeParameter: true } pa && b is TypeParameterSymbol { IsMethodTypeParameter: true } pb) { if (pa.Ordinal != pb.Ordinal) return false; continue; }
-            if (!a.Equals(b)) return false;
-        }
-        return true;
+            if (!TypesMatchForImplementation(impl.Parameters[i].Type, target.Parameters[i].Type)) return false;
+        return impl.MethodKind is MethodKind.Constructor || TypesMatchForImplementation(impl.ReturnType, target.ReturnType);
     }
 }
 

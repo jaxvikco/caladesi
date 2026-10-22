@@ -35,6 +35,7 @@ internal static class Lowerer
             var host = (NamedTypeSymbol)lm.ContainingSymbol!;
             StateMachineLowerer.Lower(compilation, program, lm, host, ordinalCounter++, program.Bodies[lm]);
         }
+        foreach (var type in program.Types.OfType<SourceClassSymbol>().ToList()) AddInterfaceBridges(program, type);
         program.EntryPoint = new EntryPointChecker(compilation).FindEntryPoint();
         if (program.EntryPoint is { } entry && entry.ReturnType.StripNullable() is NamedTypeSymbol rt
             && rt.OriginalDefinition.SpecialType is SpecialType.Task or SpecialType.TaskT or SpecialType.ValueTask or SpecialType.ValueTaskT)
@@ -68,5 +69,29 @@ internal static class Lowerer
         if (!program.ExtraMembers.TryGetValue(container, out var list)) program.ExtraMembers[container] = list = new List<Symbol>();
         list.Add(bridge);
         return bridge;
+    }
+
+    /// <summary>Explicit interface implementations that forward to a compatible public member (see <see cref="DeclarationChecker.FindBridgeTarget"/>).</summary>
+    private static void AddInterfaceBridges(LoweredProgram program, SourceClassSymbol type)
+    {
+        foreach (var iface in type.AllInterfaces)
+        {
+            foreach (var im in iface.GetMembers().OfType<MethodSymbol>())
+            {
+                if (im.MethodKind is not (MethodKind.Ordinary or MethodKind.PropertyGet) || im.IsStatic || !im.IsAbstract) continue;
+                if (DeclarationChecker.FindImplementation(type, im, requireOverride: false) != null) continue;
+                if (DeclarationChecker.FindBridgeTarget(type, im) is not { } target) continue;
+                var ps = im.Parameters.Select((p, i) => new ParameterSymbol(p.Name, p.Type, i, null)).ToImmutableArray();
+                var bridge = new SynthesizedMethodSymbol(type, iface.ToDisplayString() + "." + im.Name, MethodKind.Ordinary, Accessibility.Private, false, im.ReturnType, ps)
+                { SynthesizedKind = SynthesizedBodyKind.Custom, Overrides = [im] };
+                BoundExpression call = new BoundCall(new BoundThis(type.IsGenericType ? type.Construct(type.TypeArguments) : type), target,
+                    ps.Select(p => (BoundExpression)new BoundParameter(p)).ToImmutableArray());
+                if (!target.ReturnType.Equals(im.ReturnType)) call = new BoundConversion(call, ConversionKind.ImplicitReference, im.ReturnType);
+                BoundStatement body = im.ReturnType.IsVoid ? new BoundExpressionStatement(call) : new BoundReturn(call);
+                program.Bodies[bridge] = new BoundBlock(ImmutableArray<LocalSymbol>.Empty, [body]);
+                if (!program.ExtraMembers.TryGetValue(type, out var list)) program.ExtraMembers[type] = list = new List<Symbol>();
+                list.Add(bridge);
+            }
+        }
     }
 }
