@@ -1,0 +1,9 @@
+const [ok, v] = int.TryParse("42");
+Console.WriteLine(ok);
+Console.WriteLine(v);
+const d = new Dictionary<string, int>();
+d["a"] = 1;
+const [found, val] = d.TryGetValue("a");
+Console.WriteLine(found + ":" + val);
+const [no, nv] = d.TryGetValue("zz");
+Console.WriteLine(no + ":" + nv);

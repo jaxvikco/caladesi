@@ -137,7 +137,32 @@ public sealed partial class Binder
             receiver = mg.Receiver ?? ImplicitThis(inv);
             if (receiver is BoundBadExpression) return Bad(inv, [mg, .. args]);
         }
-        return new BoundCall(receiver, m, res.Arguments) { Syntax = inv, IsBaseCall = mg.IsBaseAccess };
+        var call = new BoundCall(receiver, m, res.Arguments) { Syntax = inv, IsBaseCall = mg.IsBaseAccess };
+        return res.OutLocals.IsEmpty ? call : WrapOutResults(call, res.OutLocals, inv);
+    }
+
+    /// <summary>A call with omitted trailing out parameters evaluates to a tuple of the return value (unless void) and the out values.</summary>
+    private BoundExpression WrapOutResults(BoundCall call, ImmutableArray<LocalSymbol> outs, SyntaxNode syntax)
+    {
+        var locals = outs.ToBuilder();
+        var stmts = ImmutableArray.CreateBuilder<BoundStatement>();
+        var elements = ImmutableArray.CreateBuilder<BoundExpression>();
+        if (call.Method.ReturnType.IsVoid) stmts.Add(new BoundExpressionStatement(call) { Syntax = syntax });
+        else
+        {
+            var ret = new LocalSymbol("<ret>", call.Type!, false, LocalOwner) { IsSynthesized = true };
+            locals.Add(ret);
+            stmts.Add(new BoundExpressionStatement(new BoundAssignment(new BoundLocal(ret), call) { Syntax = syntax, IsDiscarded = true }) { Syntax = syntax });
+            elements.Add(new BoundLocal(ret));
+        }
+        foreach (var o in outs) elements.Add(new BoundLocal(o));
+        if (elements.Count == 1) return new BoundSequence(locals.ToImmutable(), stmts.ToImmutable(), elements[0]) { Syntax = syntax };
+        var tupleDef = _c.GetWellKnownType("System.ValueTuple`" + elements.Count);
+        if (tupleDef == null || elements.Count > 7) { Report(Descriptors.FeatureNotSupported, syntax, "Calls with that many out parameters"); return Bad(syntax); }
+        var tuple = tupleDef.Construct(elements.Select(e => e.Type!).ToImmutableArray());
+        var ctor = tuple.InstanceConstructors.First(c => c.Parameters.Length == elements.Count);
+        var value = new BoundObjectCreation(ctor, tuple, elements.ToImmutable(), ImmutableArray<BoundMemberInit>.Empty) { Syntax = syntax };
+        return new BoundSequence(locals.ToImmutable(), stmts.ToImmutable(), value) { Syntax = syntax };
     }
 
     private BoundExpression ImplicitThis(SyntaxNode at)

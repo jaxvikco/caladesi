@@ -665,6 +665,12 @@ public sealed class AwaitExpressionSyntax(SyntaxToken keyword, ExpressionSyntax 
     public ExpressionSyntax Operand => Node<ExpressionSyntax>(1);
 }
 
+public sealed class ThrowExpressionSyntax(SyntaxToken keyword, ExpressionSyntax operand)
+    : ExpressionSyntax(SyntaxKind.ThrowExpression, keyword, operand)
+{
+    public ExpressionSyntax Operand => Node<ExpressionSyntax>(1);
+}
+
 public sealed class TypeOfExpressionSyntax(SyntaxToken keyword, SyntaxToken open, TypeSyntax type, SyntaxToken close)
     : ExpressionSyntax(SyntaxKind.TypeOfExpression, keyword, open, type, close)
 {

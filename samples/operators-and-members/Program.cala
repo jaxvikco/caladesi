@@ -1,0 +1,68 @@
+struct type Pair<A, B> = { first: A; second: B };
+enum Flags { None = 0, Read = 1, Write = 2, Exec = 4 }
+class Util {
+  static readonly Max = 3;
+  static clamp(x: int): int { return Math.Min(x, Util.Max); }
+  protected secret = 5;
+  internal shown = 6;
+}
+class Sub extends Util { reveal(): int { return this.secret + this.shown; } }
+
+const p = new Pair<int, string>(1, "a");
+Console.WriteLine(p);
+const f: Flags = Flags.Read | Flags.Exec;
+Console.WriteLine(f);
+Console.WriteLine((f & Flags.Write) === Flags.None);
+Console.WriteLine(5 & 3);
+Console.WriteLine(5 | 3);
+Console.WriteLine(5 ^ 3);
+Console.WriteLine(~5);
+Console.WriteLine(1 << 4);
+Console.WriteLine(-16 >> 2);
+Console.WriteLine(17 % 5);
+Console.WriteLine(Util.clamp(10));
+Console.WriteLine(new Sub().reveal());
+const v = int.Parse("12");
+const maybe: string | null = null;
+const len = maybe?.Length ?? -1;
+Console.WriteLine(v + len);
+function must(x: string | null): string { return x ?? throw new ArgumentNullException("x"); }
+try { must(null); } catch (e: ArgumentNullException) { Console.WriteLine("null arg"); }
+function grade(n: int): string {
+  switch (n) {
+    case 1:
+    case 2:
+      return "low";
+    case 3: {
+      const t = "mid";
+      return t;
+    }
+    default:
+      return "high";
+  }
+}
+Console.WriteLine(grade(1) + grade(3) + grade(9));
+Console.WriteLine("apple" < "banana");
+const c = 'a';
+Console.WriteLine(c === 'a');
+Console.WriteLine(Math.Abs(-3));
+const xs = [-1, -2, 3].Select(Math.Abs).ToArray();
+Console.WriteLine(xs.Sum());
+const fn: Func<int, int> = x => x + 1;
+const act: Action<string> = s => Console.WriteLine(s);
+act("act " + fn(1));
+let i = 0;
+do { i++; } while (i < 5);
+Console.WriteLine(i);
+let n = 10;
+while (true) { n--; if (n < 5) break; }
+Console.WriteLine(n);
+Console.WriteLine(`nested ${`inner ${1 + 1}`}`);
+const [ok, parsed] = int.TryParse("zz");
+Console.WriteLine(ok);
+const date = new DateTime(2020, 1, 2);
+Console.WriteLine(date.Year);
+Console.WriteLine(string.Join("-", ["a", "b"]));
+Console.WriteLine(1.5 + 2);
+Console.WriteLine(0.1 + 0.2 === 0.3);
+Console.WriteLine(5 / 2.0);

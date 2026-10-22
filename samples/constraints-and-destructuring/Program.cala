@@ -1,0 +1,33 @@
+class Box<T extends struct> { constructor(public v: T) {} }
+class Ref<T extends class> { constructor(public v: T) {} }
+class NN<T extends notnull> { constructor(public v: T) {} }
+function pick<T extends IComparable<T>>(a: T): T { return a; }
+type Opts = { a: int; b?: int };
+type Pair = { p: int; q: [int, int] };
+
+let flag = true;
+flag &&= false;
+Console.WriteLine(flag);
+let o = false;
+o ||= true;
+Console.WriteLine(o);
+const t = typeof(string);
+Console.WriteLine(t.Name);
+const [x = 5, y = 6]: (int | null)[] = [1, null];
+Console.WriteLine(x + y);
+function opts({ a, b = 2 }: Opts): int { return a + b; }
+Console.WriteLine(opts({ a: 1 }));
+const { p, q: [r, s] }: Pair = { p: 1, q: [2, 3] };
+Console.WriteLine(p + r + s);
+const bx = new Box<int>(3);
+Console.WriteLine(bx.v);
+const sat = { a: 1 } satisfies Opts;
+Console.WriteLine(sat.a);
+const big: long = 3000000000;
+Console.WriteLine(big);
+const u: uint = 7u;
+Console.WriteLine(u);
+Console.WriteLine(pick(5));
+const nn = new NN<string>("s");
+const rf = new Ref<string>("r");
+Console.WriteLine(nn.v + rf.v);

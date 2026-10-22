@@ -12,6 +12,8 @@ internal sealed class ResolvedCall
     public required MethodSymbol Method { get; init; }
     public required ImmutableArray<BoundExpression> Arguments { get; init; }
     public bool Expanded { get; init; }
+    /// <summary>Locals standing for omitted trailing <c>out</c> parameters; the call returns them in a tuple.</summary>
+    public ImmutableArray<LocalSymbol> OutLocals { get; init; } = ImmutableArray<LocalSymbol>.Empty;
 }
 
 public sealed partial class Binder
@@ -22,6 +24,7 @@ public sealed partial class Binder
         public required ImmutableArray<ParameterSymbol> Parameters { get; init; }
         public bool Expanded { get; init; }
         public int DefaultsUsed { get; init; }
+        public int OmittedOuts { get; init; }
         public MethodSymbol Original { get; init; } = null!;
     }
 
@@ -82,8 +85,7 @@ public sealed partial class Binder
         }
 
         var result = BuildArguments(best, fullArgs, at, report);
-        if (extensionReceiver != null) { }
-        return new ResolvedCall { Method = best.Method, Arguments = result, Expanded = best.Expanded };
+        return new ResolvedCall { Method = best.Method, Arguments = result.Arguments, Expanded = best.Expanded, OutLocals = result.OutLocals };
     }
 
     private static string Signature(MethodSymbol m)
@@ -128,6 +130,15 @@ public sealed partial class Binder
             return new Candidate { Method = m, Parameters = ps, Expanded = false, DefaultsUsed = defaults, Original = original };
         if (ps.Length > 0 && ps[^1].IsParams && ps[^1].Type is ArrayTypeSymbol && TryApplicable(ps, args, expanded: true, out defaults))
             return new Candidate { Method = m, Parameters = ps, Expanded = true, DefaultsUsed = defaults, Original = original };
+        // trailing `out` parameters may be omitted; the call then returns them (after the return value) in a tuple
+        var outs = 0;
+        while (outs < ps.Length && ps[ps.Length - 1 - outs].RefKind == RefKind.Out) outs++;
+        if (outs > 0 && !isIndexer)
+        {
+            var visible = ps.Take(ps.Length - outs).ToImmutableArray();
+            if (TryApplicable(visible, args, expanded: false, out defaults))
+                return new Candidate { Method = m, Parameters = ps, Expanded = false, DefaultsUsed = defaults + outs, OmittedOuts = outs, Original = original };
+        }
         return null;
     }
 
@@ -290,6 +301,8 @@ public sealed partial class Binder
         if (g1 && !g2) return false;
         if (!c1.Expanded && c2.Expanded) return true;
         if (c1.Expanded && !c2.Expanded) return false;
+        if (c1.OmittedOuts < c2.OmittedOuts) return true;
+        if (c1.OmittedOuts > c2.OmittedOuts) return false;
         if (c1.DefaultsUsed < c2.DefaultsUsed) return true;
         if (c1.DefaultsUsed > c2.DefaultsUsed) return false;
         // more specific parameter types (compare original declarations)
@@ -379,13 +392,21 @@ public sealed partial class Binder
 
     // ------------------------------------------------------------------ building arguments
 
-    private ImmutableArray<BoundExpression> BuildArguments(Candidate c, ImmutableArray<BoundExpression> args, SyntaxNode at, bool report)
+    private (ImmutableArray<BoundExpression> Arguments, ImmutableArray<LocalSymbol> OutLocals) BuildArguments(Candidate c, ImmutableArray<BoundExpression> args, SyntaxNode at, bool report)
     {
         var ps = c.Parameters;
         var result = ImmutableArray.CreateBuilder<BoundExpression>(ps.Length);
+        var outLocals = ImmutableArray.CreateBuilder<LocalSymbol>();
         for (var i = 0; i < ps.Length; i++)
         {
             var p = ps[i];
+            if (c.OmittedOuts > 0 && i >= ps.Length - c.OmittedOuts)
+            {
+                var local = new LocalSymbol("<out>" + p.Name, p.Type, false, LocalOwner) { IsSynthesized = true };
+                outLocals.Add(local);
+                result.Add(new BoundAddressOf(new BoundLocal(local)));
+                continue;
+            }
             var isParamsExpanded = c.Expanded && i == ps.Length - 1;
             if (isParamsExpanded)
             {
@@ -408,7 +429,7 @@ public sealed partial class Binder
                 result.Add(DefaultArgument(p, at));
             }
         }
-        return result.MoveToImmutable();
+        return (result.MoveToImmutable(), outLocals.ToImmutable());
     }
 
     private BoundExpression ConvertArg(BoundExpression arg, TypeSymbol paramType, bool report, RefKind refKind = RefKind.None)

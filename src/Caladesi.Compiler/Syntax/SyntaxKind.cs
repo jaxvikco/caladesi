@@ -166,6 +166,7 @@ public enum SyntaxKind
     PrefixUnaryExpression,
     PostfixUnaryExpression,
     AwaitExpression,
+    ThrowExpression,
     TypeOfExpression,
     DeleteExpression,
     YieldExpression,

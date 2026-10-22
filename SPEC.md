@@ -172,6 +172,22 @@ function f(x: int | string) { … }                        // inline union: Cala
 * Compound assignments including `??=`, `&&=`, `||=`; `++`/`--`.
 * `typeof(T)` is the .NET type object; `x instanceof T` is a type test.
 
+### Out parameters
+
+A call may omit the trailing `out` parameters of a .NET method; the call then evaluates to a tuple of the return value (unless the
+method returns `void`) followed by the out values:
+
+```ts
+const [ok, value] = int.TryParse("42");                  // [boolean, int]
+const [found, item] = dictionary.TryGetValue("key");     // [boolean, V]
+```
+
+`ref` parameters are not supported from Caladesi source.
+
+### Throw expressions
+
+`x ?? throw new ArgumentNullException("x")` and `cond ? value : throw …` — `throw` is an expression of type `never`.
+
 ### Async and iterators
 
 ```ts
