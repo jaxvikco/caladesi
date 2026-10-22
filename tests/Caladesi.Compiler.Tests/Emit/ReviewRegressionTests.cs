@@ -374,4 +374,18 @@ public class ReviewRegressionTests
         Console.WriteLine(typeof(int).Name);
         """, "5\nTrue\n3\nInt32\n");
     }
+
+    [TestMethod]
+    public void Item31_SpreadOfAnonymousRecord()
+    {
+        Check("""
+        const anon = { name: "n", age: 3 };
+        const anon2 = { ...anon, age: 4 };
+        const anon3 = { ...anon };
+        Console.WriteLine(anon2.age);
+        Console.WriteLine(anon2.name);
+        Console.WriteLine(anon.age);
+        Console.WriteLine(anon3 == anon);
+        """, "4\nn\n3\nTrue\n");
+    }
 }

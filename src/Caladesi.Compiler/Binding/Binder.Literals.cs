@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using Caladesi.Compiler.Bound;
 using Caladesi.Compiler.Diagnostics;
 using Caladesi.Compiler.Symbols;
+using Caladesi.Compiler.Symbols.Source;
 using Caladesi.Compiler.Syntax;
 
 namespace Caladesi.Compiler;
@@ -854,6 +855,11 @@ public sealed partial class Binder
         }
         if (source.Type is NullableTypeSymbol) { Report(Descriptors.PossiblyNull, members[0].NameNode, "spread operand"); return Bad(syntax); }
 
+        if (nt.OriginalDefinition is SynthesizedAnonymousRecord anonymous)
+        {
+            return BindAnonymousSpread(syntax, members, nt, anonymous, source);
+        }
+
         LocalSymbol tmp = new("<with>", nt, false, LocalOwner) { IsSynthesized = true };
         ImmutableArray<BoundStatement>.Builder stmts = ImmutableArray.CreateBuilder<BoundStatement>();
         BoundExpression init;
@@ -890,6 +896,41 @@ public sealed partial class Binder
             stmts.Add(new BoundExpressionStatement(new BoundAssignment(targetExpr, cv) { Syntax = syntax, IsDiscarded = true }) { Syntax = syntax });
         }
         return new BoundSequence([tmp], stmts.ToImmutable(), new BoundLocal(tmp)) { Syntax = syntax };
+    }
+
+    /// <summary>
+    /// `{ ...anon, age: 4 }` where `anon` is an anonymous record: its properties are get-only and it has no clone method, so the result is a
+    /// new instance built from the overrides and the remaining properties of the spread value.
+    /// </summary>
+    private BoundExpression BindAnonymousSpread(ObjectLiteralExpressionSyntax syntax, List<LiteralMember> members, NamedTypeSymbol nt, SynthesizedAnonymousRecord anonymous, BoundExpression source)
+    {
+        LocalSymbol tmp = new("<spread>", nt, false, LocalOwner) { IsSynthesized = true };
+        MethodSymbol ctor = nt.InstanceConstructors.First(c => c.Parameters.Length == anonymous.PropertyNames.Length);
+        Dictionary<string, BoundExpression> overrides = new(StringComparer.Ordinal);
+        for (int i = 1; i < members.Count; i++)
+        {
+            LiteralMember m = members[i];
+            PropertySymbol? prop = nt.GetMembers(m.Name).OfType<PropertySymbol>().FirstOrDefault();
+            if (prop == null) { ReportUnknownLiteralMember(m, nt); _ = BindLiteralMemberValue(m, null); continue; }
+            BoundExpression v = BindLiteralMemberValue(m, prop.Type);
+            if (v is BoundBadExpression)
+            {
+                return Bad(syntax);
+            }
+
+            overrides[m.Name] = ConvertImplicit(v, prop.Type, m.Value ?? m.NameNode);
+        }
+
+        ImmutableArray<BoundExpression>.Builder args = ImmutableArray.CreateBuilder<BoundExpression>();
+        foreach (string name in anonymous.PropertyNames)
+        {
+            args.Add(overrides.TryGetValue(name, out BoundExpression? replaced)
+                ? replaced
+                : new BoundPropertyAccess(new BoundLocal(tmp), nt.GetMembers(name).OfType<PropertySymbol>().First(), ImmutableArray<BoundExpression>.Empty) { Syntax = syntax });
+        }
+
+        BoundObjectCreation created = new(ctor, nt, args.ToImmutable(), []) { Syntax = syntax };
+        return new BoundSequence([tmp], [new BoundLocalDeclaration(tmp, source) { Syntax = syntax }], created) { Syntax = syntax };
     }
 
     private BoundExpression BindAnonymousObject(ObjectLiteralExpressionSyntax syntax, List<LiteralMember> members)
