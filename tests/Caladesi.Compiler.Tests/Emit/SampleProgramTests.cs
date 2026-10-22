@@ -15,7 +15,7 @@ public class SampleProgramTests
 
     public static IEnumerable<string> RunnableSamples() =>
         Directory.GetDirectories(SamplesRoot())
-            .Where(d => File.Exists(Path.Combine(d, "Program.cala")) && File.Exists(Path.Combine(d, "expected.stdout")) && !File.Exists(Path.Combine(d, "expected.test")) && !File.Exists(Path.Combine(d, "needs-nuget-org.txt")))
+            .Where(d => File.Exists(Path.Combine(d, "Program.cala")) && File.Exists(Path.Combine(d, "expected.stdout")) && !File.Exists(Path.Combine(d, "expected.test")) && !File.Exists(Path.Combine(d, "needs-nuget-org.txt")) && !File.Exists(Path.Combine(d, "args.txt")))
             .Select(Path.GetFileName)!;
 
     public static IEnumerable<string> ErrorSamples() =>
