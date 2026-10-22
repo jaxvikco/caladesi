@@ -10,8 +10,11 @@ internal static class TestReferences
         string coreLib = typeof(object).Assembly.Location;
         string dotnetRoot = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(coreLib)!, "..", "..", ".."));
         string packs = Path.Combine(dotnetRoot, "packs", "Microsoft.NETCore.App.Ref");
-        string dir = Directory.GetDirectories(packs).OrderByDescending(d => d, StringComparer.Ordinal).First();
-        string refDir = Path.Combine(dir, "ref", "net10.0");
+        string refDir = Directory.GetDirectories(packs)
+            .Select(d => Path.Combine(d, "ref", "net10.0"))
+            .Where(Directory.Exists)
+            .OrderByDescending(d => d, StringComparer.Ordinal)
+            .First();
         return Directory.GetFiles(refDir, "*.dll");
     }
 }
