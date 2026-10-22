@@ -273,7 +273,7 @@ public sealed partial class Binder
             items.Add(body.Statements[i]);
         }
         // the statements keep their original parents; this list node is only used for enumeration
-        return new SyntaxList<StatementSyntax>(new ListNode(SyntaxKind.List, [.. items.Select(x => x)]));
+        return new SyntaxList<StatementSyntax>(new ListNode(SyntaxKind.List, [.. items]));
     }
 
     private BoundThis ThisRef(NamedTypeSymbol cls, SyntaxNode at)
