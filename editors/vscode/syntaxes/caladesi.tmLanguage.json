@@ -25,6 +25,9 @@
       "include": "#class-decl"
     },
     {
+      "include": "#struct-type-alias"
+    },
+    {
       "include": "#struct-decl"
     },
     {
@@ -288,7 +291,7 @@
     },
     "struct-decl": {
       "name": "meta.struct.caladesi",
-      "begin": "(?<![\\w$.])(struct)\\s+([A-Za-z_$][\\w$]*)",
+      "begin": "(?<![\\w$.])(struct)\\s+(?!type\\s+[A-Za-z_$])([A-Za-z_$][\\w$]*)",
       "end": "(?=\\{)|(?=;)",
       "beginCaptures": {
         "1": {
@@ -301,6 +304,36 @@
       "patterns": [
         {
           "include": "#comments"
+        },
+        {
+          "include": "#type-expression"
+        }
+      ]
+    },
+    "struct-type-alias": {
+      "name": "meta.type.declaration.caladesi",
+      "begin": "(?<![\\w$.])(struct)\\s+(type)\\s+([A-Za-z_$][\\w$]*)(?=\\s*[<=])",
+      "end": ";|(?=^\\s*(?:export|declare|function|class|interface|enum|type|struct|const|let|import|namespace|abstract|async)\\b)|(?<=\\})(?!\\s*[|&\\[])",
+      "beginCaptures": {
+        "1": {
+          "name": "storage.type.struct.caladesi"
+        },
+        "2": {
+          "name": "storage.type.type.caladesi"
+        },
+        "3": {
+          "name": "entity.name.type.struct.caladesi"
+        }
+      },
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.terminator.statement.caladesi"
+        }
+      },
+      "patterns": [
+        {
+          "name": "keyword.operator.assignment.caladesi",
+          "match": "=(?!>)"
         },
         {
           "include": "#type-expression"
@@ -648,6 +681,10 @@
     },
     "keywords": {
       "patterns": [
+        {
+          "name": "storage.type.function.constructor.caladesi",
+          "match": "(?<![\\w$.])constructor(?=\\s*\\()"
+        },
         {
           "name": "keyword.control.caladesi",
           "match": "(?<![\\w$.])(?:if|else|for|while|do|switch|break|continue|return|throw|try|catch|finally|await|yield)(?![\\w$])"

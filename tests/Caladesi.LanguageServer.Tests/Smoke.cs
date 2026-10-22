@@ -1,6 +1,6 @@
 using Caladesi.Compiler;
 
-[assembly: Parallelize(Workers = 0, Scope = ExecutionScope.MethodLevel)]
+[assembly: DoNotParallelize]
 
 namespace Caladesi_LanguageServer_Tests;
 
