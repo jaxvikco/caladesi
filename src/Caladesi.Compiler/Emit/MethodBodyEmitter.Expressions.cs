@@ -992,11 +992,12 @@ internal sealed partial class MethodBodyEmitter
     private void EmitDelegateCreation(BoundDelegateCreation dc, bool used)
     {
         MethodSymbol m = dc.Method;
-        if (dc.Receiver != null && !m.IsStatic)
+        // an extension method group is a delegate closed over its first argument
+        if (dc.Receiver != null && (!m.IsStatic || m.IsExtensionMethod))
         {
             TypeSymbol rt = dc.Receiver.Type!;
             EmitExpression(dc.Receiver, true);
-            if (EmitModule.IsValueTypeLike(_m.ClrType(rt)))
+            if (!m.IsStatic && EmitModule.IsValueTypeLike(_m.ClrType(rt)))
             {
                 _il.Token(ILOpCode.Box, _m.GetTypeEntity(rt), 0);
             }

@@ -197,8 +197,11 @@ public sealed partial class Binder
     /// <summary>Binary numeric promotion; returns None if the operands have no common arithmetic type.</summary>
     private static SpecialType BinaryPromotion(BoundExpression l, BoundExpression r)
     {
-        SpecialType a = l.Type!.SpecialType;
-        SpecialType b = r.Type!.SpecialType;
+        return BinaryPromotion(l.Type!.SpecialType, r.Type!.SpecialType, l, r);
+    }
+
+    private static SpecialType BinaryPromotion(SpecialType a, SpecialType b, BoundExpression? l = null, BoundExpression? r = null)
+    {
         if (!a.IsNumeric() || !b.IsNumeric())
         {
             return SpecialType.None;
@@ -233,11 +236,11 @@ public sealed partial class Binder
         if (a == SpecialType.UInt64 || b == SpecialType.UInt64)
         {
             SpecialType other = a == SpecialType.UInt64 ? b : a;
-            BoundExpression otherExpr = a == SpecialType.UInt64 ? r : l;
+            BoundExpression? otherExpr = a == SpecialType.UInt64 ? r : l;
             if (other.IsSignedIntegral())
             {
                 // signed constant that fits is allowed
-                return otherExpr.ConstantValue is { Value: { } cv } && ConstantFits(cv, SpecialType.UInt64) ? SpecialType.UInt64 : SpecialType.None;
+                return otherExpr?.ConstantValue is { Value: { } cv } && ConstantFits(cv, SpecialType.UInt64) ? SpecialType.UInt64 : SpecialType.None;
             }
             return SpecialType.UInt64;
         }
@@ -249,9 +252,9 @@ public sealed partial class Binder
         if (a == SpecialType.UInt32 || b == SpecialType.UInt32)
         {
             SpecialType other = a == SpecialType.UInt32 ? b : a;
-            BoundExpression otherExpr = a == SpecialType.UInt32 ? r : l;
+            BoundExpression? otherExpr = a == SpecialType.UInt32 ? r : l;
             return other == SpecialType.Int32
-                ? otherExpr.ConstantValue is { Value: int ci } && ci >= 0 ? SpecialType.UInt32 : SpecialType.Int64
+                ? otherExpr?.ConstantValue is { Value: int ci } && ci >= 0 ? SpecialType.UInt32 : SpecialType.Int64
                 : SpecialType.UInt32;
         }
         return SpecialType.Int32;
@@ -643,7 +646,18 @@ public sealed partial class Binder
         // anything else comparable via Object.Equals (value types without operators, nullable values, tuples)
         if (ClassifyImplicit(null, lu, ru).Exists || ClassifyImplicit(null, ru, lu).Exists)
         {
-            TypeSymbol common = ClassifyImplicit(null, lu, ru).Exists ? ru : lu;
+            // numeric operands of different widths (`long | null == int`) are compared in their common type, lifted to nullable
+            if (anyNullableValue && lu.SpecialType.IsNumeric() && ru.SpecialType.IsNumeric() && !lu.Equals(ru))
+            {
+                SpecialType promoted = BinaryPromotion(lu.SpecialType, ru.SpecialType);
+                if (promoted != SpecialType.None)
+                {
+                    NullableTypeSymbol lifted = new(Special(promoted));
+                    left = ConvertImplicit(left, lifted, syntax);
+                    right = ConvertImplicit(right, lifted, syntax);
+                }
+            }
+
             MethodSymbol objEquals = Special(SpecialType.Object).GetMembers("Equals").OfType<MethodSymbol>().First(m => m.IsStatic && m.Parameters.Length == 2);
             BoundCall call = new(null, objEquals, [BoxToObject(left, syntax), BoxToObject(right, syntax)]) { Syntax = syntax };
             return kind == BinaryOperatorKind.Equal ? call : new BoundUnary(UnaryOperatorKind.Not, call, BoolType) { Syntax = syntax };

@@ -155,4 +155,28 @@ public class ReviewRegressionTests
         Console.WriteLine(f(1e19));
         """, "10000000000000000000\n");
     }
+
+    [TestMethod]
+    public void Item11_ExtensionMethodGroupBindsItsReceiver()
+    {
+        Check("""
+        export function shout(this s: string): string { return s.ToUpper(); }
+        const f: () => string = "abc".shout;
+        Console.WriteLine(f());
+        """, "ABC\n");
+    }
+
+    [TestMethod]
+    public void Item12_NullableEqualityWithWiderNumeric()
+    {
+        Check("""
+        function isOne(x: long | null): bool { return x == 1; }
+        function isOne2(x: int | null, y: long): bool { return x == y; }
+        function isNone(x: int | null, y: long): bool { return x != y; }
+        Console.WriteLine(isOne(1L));
+        Console.WriteLine(isOne2(1, 1L));
+        Console.WriteLine(isOne2(null, 1L));
+        Console.WriteLine(isNone(1, 2L));
+        """, "True\nTrue\nFalse\nTrue\n");
+    }
 }
