@@ -43,6 +43,20 @@ public class SemanticModelTests
     }
 
     [TestMethod]
+    public void ReferencesIncludeImportSpecifiers()
+    {
+        var comp = TestCompiler.CreateWithSemantics(
+            "import { twice } from \"./lib\";\nConsole.WriteLine(twice(21));", "/proj/main.cala",
+            ("/proj/lib.cala", "export function twice(x: int): int { return x * 2; }"));
+        var m = comp.GetSemanticModel(comp.SyntaxTrees[0]);
+        var text = comp.SyntaxTrees[0].Root.ToFullString();
+        var at = m!.GetSymbolAt(text.LastIndexOf("twice", StringComparison.Ordinal) + 1)!;
+        var refs = m!.FindReferences(at.Symbol);
+        Assert.HasCount(3, refs);
+        Assert.IsTrue(refs.Any(r => r.Span.Start == text.IndexOf("twice", StringComparison.Ordinal) && !r.IsDeclaration));
+    }
+
+    [TestMethod]
     public void MemberCompletionOnString()
     {
         var (m, _) = Model("const s = \"hi\";\nConsole.WriteLine(s.|);", out var pos);

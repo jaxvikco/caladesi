@@ -34,6 +34,7 @@ public sealed partial class SemanticModel
     {
         SimpleNameSyntax s => s.Identifier,
         QualifiedNameSyntax q => q.Right.Identifier,
+        ImportSpecifierSyntax i => i.NameToken,
         _ => null,
     };
 
