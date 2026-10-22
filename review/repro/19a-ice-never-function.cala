@@ -1,0 +1,2 @@
+function thrower(): never { throw new Exception("t"); }
+Console.WriteLine(1);

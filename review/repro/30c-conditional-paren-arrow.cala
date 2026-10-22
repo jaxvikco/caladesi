@@ -1,0 +1,3 @@
+const c = true; const x: Func<int, int> = y => y;
+const v = c ? (x) : y => y * 2;
+Console.WriteLine(v(3));

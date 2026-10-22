@@ -1,0 +1,3 @@
+function f(x: bool): int { outer: { if (x) break outer; return 1; } }
+Console.WriteLine(f(true));
+Console.WriteLine(f(false));

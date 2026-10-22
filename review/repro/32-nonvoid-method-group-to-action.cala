@@ -1,0 +1,2 @@
+const a: Action = Console.ReadLine; // compiles; blocks on stdin when run
+Console.WriteLine("compiled");

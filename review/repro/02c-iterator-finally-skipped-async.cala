@@ -1,0 +1,10 @@
+async function* a(): IAsyncEnumerable<int> { try { await Task.Delay(1); yield 1; yield 2; } finally { Console.WriteLine("fin-a"); } }
+async function* b(): IAsyncEnumerable<int> { try { for (let i = 0; i < 3; i++) { yield i; } } finally { Console.WriteLine("fin-b"); } }
+async function* c(): IAsyncEnumerable<int> { try { yield 1; await Task.Delay(1); yield 2; } finally { Console.WriteLine("fin-c"); } }
+async function* d(): IAsyncEnumerable<int> { try { for (let i = 0; i < 3; i++) { yield i; await Task.Delay(1); } } finally { Console.WriteLine("fin-d"); } }
+async function* e(): IAsyncEnumerable<int> { await Task.Delay(1); try { yield 1; yield 2; } finally { Console.WriteLine("fin-e"); } }
+for await (const t of a()) { break; } Console.WriteLine("a done");
+for await (const t of b()) { break; } Console.WriteLine("b done");
+for await (const t of c()) { break; } Console.WriteLine("c done");
+for await (const t of d()) { break; } Console.WriteLine("d done");
+for await (const t of e()) { break; } Console.WriteLine("e done");

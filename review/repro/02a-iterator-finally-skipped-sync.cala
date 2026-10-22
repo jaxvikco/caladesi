@@ -1,0 +1,14 @@
+function* sf(): IEnumerable<int> { try { for (let i = 0; i < 3; i++) { yield i; } } finally { Console.WriteLine("fin-sf"); } }
+function* sw(): IEnumerable<int> { try { let i = 0; while (i < 3) { yield i; i++; } } finally { Console.WriteLine("fin-sw"); } }
+function* sfo(): IEnumerable<int> { try { for (const x of [1, 2, 3]) { yield x; } } finally { Console.WriteLine("fin-sfo"); } }
+function* sif(): IEnumerable<int> { try { if (true) { yield 1; } yield 2; } finally { Console.WriteLine("fin-sif"); } }
+function* sblk(): IEnumerable<int> { try { { yield 1; } yield 2; } finally { Console.WriteLine("fin-sblk"); } }
+function* susing(): IEnumerable<int> { using d = new System.IO.StringReader("x"); yield 1; yield 2; Console.WriteLine("not reached"); }
+for (const t of sf()) { break; } Console.WriteLine("sf done");
+for (const t of sw()) { break; } Console.WriteLine("sw done");
+for (const t of sfo()) { break; } Console.WriteLine("sfo done");
+for (const t of sif()) { break; } Console.WriteLine("sif done");
+for (const t of sblk()) { break; } Console.WriteLine("sblk done");
+for (const t of susing()) { break; } Console.WriteLine("susing done");
+const en = sf().GetEnumerator();
+en.MoveNext(); en.Dispose(); Console.WriteLine("manual done");

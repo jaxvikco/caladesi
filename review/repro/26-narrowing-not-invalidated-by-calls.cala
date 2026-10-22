@@ -1,0 +1,12 @@
+class K {
+  v: object = 1;
+  reset(): void { this.v = "s"; }
+  test(): string {
+    if (this.v instanceof int) { this.reset(); if (this.v instanceof string) return "now string"; }
+    return "int";
+  }
+}
+Console.WriteLine(new K().test());
+let o: object = 1;
+function mut(): void { o = "str"; }
+if (o instanceof int) { mut(); Console.WriteLine(o instanceof string ? "now string" : "still int"); }

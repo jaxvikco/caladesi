@@ -1,0 +1,2 @@
+const o: object = new List();
+Console.WriteLine(o.GetType());

@@ -1,0 +1,3 @@
+class B { f(): int { return 1; } }
+class D extends B { override f(): string { return "x"; } }
+const b: B = new D(); Console.WriteLine(b.f());

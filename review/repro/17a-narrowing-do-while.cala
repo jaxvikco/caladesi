@@ -1,0 +1,3 @@
+function f(s: string | null): int { do { if (s == null) break; } while (false); return s.Length; }
+Console.WriteLine(f("ab"));
+Console.WriteLine(f(null));

@@ -1,0 +1,3 @@
+enum Color { Red, Green }
+const c = 1 + Color.Red;
+Console.WriteLine(c);

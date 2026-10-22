@@ -1,0 +1,5 @@
+let s1: string | null = "x";
+Console.WriteLine(s1.Length); // CAL0283, but assignment form below is accepted
+let s2: string | null = null;
+s2 = "yy";
+Console.WriteLine(s2.Length);

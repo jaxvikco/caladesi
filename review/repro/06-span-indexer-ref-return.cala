@@ -1,0 +1,2 @@
+function first(): int { const sp: Span<int> = [1, 2, 3]; return sp[0]; }
+Console.WriteLine(first());

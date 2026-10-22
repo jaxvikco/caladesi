@@ -1,0 +1,3 @@
+class AsyncRes implements IAsyncDisposable { DisposeAsync(): ValueTask { Console.WriteLine("ad"); return ValueTask.CompletedTask; } }
+function f(): void { await using x = new AsyncRes(); }
+f();

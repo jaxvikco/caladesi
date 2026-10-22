@@ -1,0 +1,3 @@
+function useNever(x: int | null): int { return x ?? throw new Exception("t"); }
+Console.WriteLine(useNever(3));
+const f = (): never => throw new Exception("x");

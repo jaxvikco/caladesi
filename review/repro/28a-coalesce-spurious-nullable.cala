@@ -1,0 +1,2 @@
+function f(x: int | null, y: long): long { return x ?? y; }
+Console.WriteLine(f(null, 5L));

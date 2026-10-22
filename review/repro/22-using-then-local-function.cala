@@ -1,0 +1,1 @@
+function main(): void { using f = new System.IO.StringReader("x"); function helper(): int { return 1; } Console.WriteLine(helper()); }

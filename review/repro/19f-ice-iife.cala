@@ -1,0 +1,1 @@
+Console.WriteLine(((y: int) => y * 2)(4));

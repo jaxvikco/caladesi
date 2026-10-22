@@ -1,0 +1,3 @@
+function toObj<T>(a: T): object { const o: object = a!; return o; }
+Console.WriteLine(toObj(1));
+Console.WriteLine(toObj("s"));

@@ -1,0 +1,1 @@
+const x = NaN; // CAL0255 "Did you forget an import?"

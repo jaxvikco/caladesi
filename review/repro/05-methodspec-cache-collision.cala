@@ -1,0 +1,6 @@
+function id<T>(x: T): T { return x; }
+function pick<T>(x: T): T { return id(x); }
+class Box<T> { constructor(public v: T) {} get(): T { return id(this.v); } }
+Console.WriteLine(pick(5));
+Console.WriteLine(new Box<string>("s").get());
+Console.WriteLine(new Box<int>(7).get());

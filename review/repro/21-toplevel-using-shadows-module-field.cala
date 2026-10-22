@@ -1,0 +1,6 @@
+class Res implements IDisposable { Dispose(): void { Console.WriteLine("disp"); } }
+using scope = new Res();
+let counter = 1;
+function bump(): void { counter++; }
+bump();
+Console.WriteLine(counter);

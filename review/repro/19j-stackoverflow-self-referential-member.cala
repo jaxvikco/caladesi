@@ -1,0 +1,2 @@
+class C { static a = C.a; }
+Console.WriteLine(1);

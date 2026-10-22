@@ -1,0 +1,4 @@
+function isOne(x: long | null): bool { return x == 1; }
+Console.WriteLine(isOne(1L));
+function isOne2(x: int | null, y: long): bool { return x == y; }
+Console.WriteLine(isOne2(1, 1L));

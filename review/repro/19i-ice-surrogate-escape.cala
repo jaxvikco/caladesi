@@ -1,0 +1,2 @@
+const s = "\u{D800}";
+Console.WriteLine(s.Length);

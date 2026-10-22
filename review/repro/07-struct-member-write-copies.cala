@@ -1,0 +1,8 @@
+import { Vector2 } from "System.Numerics";
+class P { pos: Vector2 = new Vector2(0, 0); private ppos: Vector2 = new Vector2(0, 0); arr: Vector2[] = [new Vector2(0, 0)];
+  m(): void { this.pos.X = 1; this.ppos.X += 1; this.arr[0].X += 1; this.arr[0].Y = 5; }
+  show(): string { return `${this.pos.X} ${this.ppos.X} ${this.arr[0].X} ${this.arr[0].Y}`; } }
+const p = new P(); p.m(); Console.WriteLine(p.show());
+let local = new Vector2(0, 0);
+local.X = 3; local.Y += 4;
+Console.WriteLine(`${local.X} ${local.Y}`);

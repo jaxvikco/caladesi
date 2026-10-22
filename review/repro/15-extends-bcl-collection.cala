@@ -1,0 +1,2 @@
+class MyList extends List<int> {}
+const m = new MyList(); m.Add(1); Console.WriteLine(m.Count);

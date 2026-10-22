@@ -1,0 +1,3 @@
+function f(x: string): string { return "a"; }
+function f(x: string | null): string { return "b"; }
+Console.WriteLine(f("q"));

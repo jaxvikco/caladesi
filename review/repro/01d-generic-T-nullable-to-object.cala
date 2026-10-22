@@ -1,0 +1,2 @@
+function f<T>(x: T | null): object | null { return x; }
+Console.WriteLine(f(5));

@@ -1,0 +1,3 @@
+const anon = { name: "n", age: 3 };
+const anon2 = { ...anon, age: 4 };
+Console.WriteLine(anon2.age);

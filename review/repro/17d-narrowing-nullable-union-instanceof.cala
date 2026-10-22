@@ -1,0 +1,5 @@
+type Circle = { r: double };
+type Square = { side: double };
+function f(x: Circle | Square | null): double { if (x instanceof Circle) return 1; return x.side; }
+Console.WriteLine(f(new Square(2)));
+Console.WriteLine(f(null));

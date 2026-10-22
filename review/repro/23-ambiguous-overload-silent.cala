@@ -1,0 +1,3 @@
+function f(a: int, b: long): string { return "A"; }
+function f(a: long, b: int): string { return "B"; }
+Console.WriteLine(f(1, 2));

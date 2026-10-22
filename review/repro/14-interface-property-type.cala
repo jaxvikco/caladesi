@@ -1,0 +1,3 @@
+interface I { x: string }
+class C implements I { x: int = 1; }
+const i: I = new C(); Console.WriteLine(i.x);

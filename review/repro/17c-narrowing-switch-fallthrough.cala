@@ -1,0 +1,5 @@
+type Circle = { r: double };
+type Square = { side: double };
+type Shape = Circle | Square;
+function f(x: Shape): double { switch (x) { case Circle: Console.WriteLine("c"); case Square: return x.side; } }
+Console.WriteLine(f(new Circle(5)));

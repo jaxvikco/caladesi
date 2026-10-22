@@ -1,0 +1,3 @@
+function f(s: string | null): int { let i = 0; for (; i < 3; i += s.Length) { if (s == null) continue; } return i; }
+Console.WriteLine(f("ab"));
+Console.WriteLine(f(null));

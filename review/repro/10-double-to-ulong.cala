@@ -1,0 +1,2 @@
+function f(x: double): ulong { return x as ulong; }
+Console.WriteLine(f(1e19));

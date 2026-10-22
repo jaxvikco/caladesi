@@ -1,0 +1,21 @@
+class D implements IDisposable { constructor(public name: string) {} Dispose(): void { Console.WriteLine("disposed " + this.name); } }
+function* constLoop(): IEnumerable<int> { try { for (let i = 0; i < 3; i++) { yield 1; } } finally { Console.WriteLine("fin-constLoop"); } }
+function* param(n: int): IEnumerable<int> { try { yield n; yield n; } finally { Console.WriteLine("fin-param"); } }
+function* hoisted(): IEnumerable<int> { try { let i = 5; yield i; i++; yield i; } finally { Console.WriteLine("fin-hoisted"); } }
+function* notHoisted(): IEnumerable<int> { try { const i = 5; yield i; yield 2; } finally { Console.WriteLine("fin-notHoisted"); } }
+class H { v = 9; *m(): IEnumerable<int> { try { yield this.v; yield 1; } finally { Console.WriteLine("fin-this"); } } }
+function* usingIt(): IEnumerable<int> { using d = new D("iter"); yield 1; yield 2; }
+async function* aparam(n: int): IAsyncEnumerable<int> { try { yield n; yield n; } finally { Console.WriteLine("fin-aparam"); } }
+for (const t of constLoop()) { break; } Console.WriteLine("constLoop done");
+for (const t of param(1)) { break; } Console.WriteLine("param done");
+for (const t of hoisted()) { break; } Console.WriteLine("hoisted done");
+for (const t of notHoisted()) { break; } Console.WriteLine("notHoisted done");
+for (const t of new H().m()) { break; } Console.WriteLine("this done");
+for (const t of usingIt()) { break; } Console.WriteLine("usingIt done");
+for await (const t of aparam(1)) { break; } Console.WriteLine("aparam done");
+function plainUsing(): void { using d = new D("plain"); Console.WriteLine("in plainUsing"); }
+plainUsing();
+async function asyncUsing(): Task { using d = new D("async"); await Task.Delay(1); Console.WriteLine("in asyncUsing"); }
+await asyncUsing();
+function earlyReturnUsing(): int { using d = new D("early"); if (true) return 1; return 2; }
+Console.WriteLine(earlyReturnUsing());

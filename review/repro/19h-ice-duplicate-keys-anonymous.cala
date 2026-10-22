@@ -1,0 +1,2 @@
+const o = { x: 1, x: 2 };
+Console.WriteLine(o.x);

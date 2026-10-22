@@ -1,0 +1,3 @@
+export function shout(this s: string): string { return s.ToUpper(); }
+const f: () => string = "abc".shout;
+Console.WriteLine(f());

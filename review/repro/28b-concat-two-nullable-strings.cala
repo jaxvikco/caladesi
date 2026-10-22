@@ -1,0 +1,2 @@
+function j(a: string | null, b: string | null): string { return a + b; }
+Console.WriteLine(j(null, "b"));
