@@ -30,15 +30,22 @@ public abstract class Symbol
     public virtual bool IsSealed => false;
     public virtual bool IsFromSource => false;
     public virtual Symbol OriginalDefinition => this;
-    public virtual ImmutableArray<SourceLocation> Locations => ImmutableArray<SourceLocation>.Empty;
-    public virtual ImmutableArray<AttributeData> GetAttributes() => ImmutableArray<AttributeData>.Empty;
+    public virtual ImmutableArray<SourceLocation> Locations => [];
+    public virtual ImmutableArray<AttributeData> GetAttributes()
+    {
+        return [];
+    }
 
     public NamedTypeSymbol? ContainingType
     {
         get
         {
-            var s = ContainingSymbol;
-            while (s != null && s is not NamedTypeSymbol) s = s.ContainingSymbol;
+            Symbol? s = ContainingSymbol;
+            while (s is not null and not NamedTypeSymbol)
+            {
+                s = s.ContainingSymbol;
+            }
+
             return s as NamedTypeSymbol;
         }
     }
@@ -47,8 +54,12 @@ public abstract class Symbol
     {
         get
         {
-            var s = ContainingSymbol;
-            while (s != null && s is not NamespaceSymbol) s = s.ContainingSymbol;
+            Symbol? s = ContainingSymbol;
+            while (s is not null and not NamespaceSymbol)
+            {
+                s = s.ContainingSymbol;
+            }
+
             return s as NamespaceSymbol;
         }
     }
@@ -57,8 +68,12 @@ public abstract class Symbol
     {
         get
         {
-            var s = ContainingSymbol;
-            while (s != null && s is not AssemblySymbol) s = s.ContainingSymbol;
+            Symbol? s = ContainingSymbol;
+            while (s is not null and not AssemblySymbol)
+            {
+                s = s.ContainingSymbol;
+            }
+
             return s as AssemblySymbol;
         }
     }
@@ -67,37 +82,44 @@ public abstract class Symbol
 
     public bool HasAttribute(string fullName)
     {
-        foreach (var a in GetAttributes())
-            if (a.AttributeClass?.ToMetadataString() == fullName) return true;
+        foreach (AttributeData a in GetAttributes())
+        {
+            if (a.AttributeClass?.ToMetadataString() == fullName)
+            {
+                return true;
+            }
+        }
+
         return false;
     }
 
     public AttributeData? GetAttribute(string fullName)
     {
-        foreach (var a in GetAttributes())
-            if (a.AttributeClass?.ToMetadataString() == fullName) return a;
+        foreach (AttributeData a in GetAttributes())
+        {
+            if (a.AttributeClass?.ToMetadataString() == fullName)
+            {
+                return a;
+            }
+        }
+
         return null;
     }
 
-    public override string ToString() => Name;
+    public override string ToString()
+    {
+        return Name;
+    }
 }
 
 /// <summary>A decoded custom attribute (constructor arguments and named arguments).</summary>
-public sealed class AttributeData
+public sealed class AttributeData(NamedTypeSymbol? attributeClass, MethodSymbol? constructor, ImmutableArray<object?> ctorArgs,
+    ImmutableArray<KeyValuePair<string, object?>> namedArgs)
 {
-    public AttributeData(NamedTypeSymbol? attributeClass, MethodSymbol? constructor, ImmutableArray<object?> ctorArgs,
-        ImmutableArray<KeyValuePair<string, object?>> namedArgs)
-    {
-        AttributeClass = attributeClass;
-        Constructor = constructor;
-        ConstructorArguments = ctorArgs;
-        NamedArguments = namedArgs;
-    }
-
-    public NamedTypeSymbol? AttributeClass { get; }
-    public MethodSymbol? Constructor { get; }
-    public ImmutableArray<object?> ConstructorArguments { get; }
-    public ImmutableArray<KeyValuePair<string, object?>> NamedArguments { get; }
+    public NamedTypeSymbol? AttributeClass { get; } = attributeClass;
+    public MethodSymbol? Constructor { get; } = constructor;
+    public ImmutableArray<object?> ConstructorArguments { get; } = ctorArgs;
+    public ImmutableArray<KeyValuePair<string, object?>> NamedArguments { get; } = namedArgs;
 }
 
 public abstract class AssemblySymbol : Symbol

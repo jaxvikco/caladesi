@@ -13,6 +13,8 @@
     <DevelopmentDependency>true</DevelopmentDependency>
     <EnableDefaultItems>false</EnableDefaultItems>
     <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <!-- Packaging-only project: no assembly is produced, so there is nothing to version. -->
+    <NoWarn>$(NoWarn);CA1016</NoWarn>
     <NoWarn>$(NoWarn);NU5128;NU5100;NU5105</NoWarn>
     <CalacPublishDir Condition="'$(CalacPublishDir)' == ''">$(CaladesiRepoRoot)artifacts/pack-obj/calac/</CalacPublishDir>
     <CaladesiTasksDir Condition="'$(CaladesiTasksDir)' == ''">$(CaladesiRepoRoot)artifacts/pack-obj/tasks/</CaladesiTasksDir>

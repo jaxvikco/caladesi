@@ -7,44 +7,48 @@ namespace Caladesi.LanguageServer.Projects;
 internal sealed record ProjectLoadResult(MsBuildProjectData? Data, string? Error);
 
 /// <summary>Runs <c>dotnet msbuild</c> to read the compile items, properties and reference assemblies of an <c>.calaproj</c>.</summary>
-internal sealed class ProjectLoader
+internal sealed class ProjectLoader(ServerOptions options)
 {
     private static readonly TimeSpan Timeout = TimeSpan.FromMinutes(2);
-    private readonly ServerOptions _options;
-
-    public ProjectLoader(ServerOptions options) => _options = options;
-
     public ProjectLoadResult Load(string projectPath)
     {
-        var directory = Path.GetDirectoryName(projectPath) ?? ".";
-        var first = Evaluate(projectPath, directory);
-        if (first.Data is { References.Count: > 0 }) return first;
+        string directory = Path.GetDirectoryName(projectPath) ?? ".";
+        ProjectLoadResult first = Evaluate(projectPath, directory);
+        if (first.Data is { References.Count: > 0 })
+        {
+            return first;
+        }
 
         if (!File.Exists(Path.Combine(directory, "obj", "project.assets.json")))
         {
             Log.Write("project is not restored, running dotnet restore: " + projectPath);
-            var restore = Run(["restore", projectPath, "-nologo", "-v:q"], directory);
-            if (restore.ExitCode != 0)
-                return new ProjectLoadResult(null, "dotnet restore failed: " + Truncate(restore.Output));
-            var second = Evaluate(projectPath, directory);
-            if (second.Data is { References.Count: > 0 }) return second;
-            return second.Data == null ? second : new ProjectLoadResult(null, "no reference assemblies were resolved for " + Path.GetFileName(projectPath));
+            (int ExitCode, string Output) = Run(["restore", projectPath, "-nologo", "-v:q"], directory);
+            if (ExitCode != 0)
+            {
+                return new ProjectLoadResult(null, "dotnet restore failed: " + Truncate(Output));
+            }
+
+            ProjectLoadResult second = Evaluate(projectPath, directory);
+            return second.Data is { References.Count: > 0 }
+                ? second
+                : second.Data == null ? second : new ProjectLoadResult(null, "no reference assemblies were resolved for " + Path.GetFileName(projectPath));
         }
         return first.Data == null ? first : new ProjectLoadResult(null, "no reference assemblies were resolved for " + Path.GetFileName(projectPath));
     }
 
     private ProjectLoadResult Evaluate(string projectPath, string directory)
     {
-        var result = Run(
+        (int ExitCode, string Output) = Run(
         [
             "msbuild", projectPath, "-nologo", "-nodeReuse:false",
             "-getProperty:" + MsBuildProjectData.ProjectProperties,
             "-getItem:Compile,CaladesiGlobalImport,ReferencePathWithRefAssemblies,TestingPlatformBuilderHook",
             "-target:ResolveAssemblyReferences,FindReferenceAssembliesForReferences",
         ], directory);
-        var data = MsBuildProjectData.Parse(result.Output, directory);
-        if (data == null) return new ProjectLoadResult(null, "dotnet msbuild failed (exit code " + result.ExitCode + "): " + Truncate(result.Output));
-        return new ProjectLoadResult(data, null);
+        MsBuildProjectData? data = MsBuildProjectData.Parse(Output, directory);
+        return data == null
+            ? new ProjectLoadResult(null, "dotnet msbuild failed (exit code " + ExitCode + "): " + Truncate(Output))
+            : new ProjectLoadResult(data, null);
     }
 
     private static string Truncate(string text)
@@ -55,7 +59,7 @@ internal sealed class ProjectLoader
 
     private (int ExitCode, string Output) Run(IEnumerable<string> arguments, string workingDirectory)
     {
-        var info = new ProcessStartInfo(DotnetHost())
+        ProcessStartInfo info = new(DotnetHost())
         {
             WorkingDirectory = workingDirectory,
             RedirectStandardOutput = true,
@@ -66,28 +70,42 @@ internal sealed class ProjectLoader
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
         };
-        foreach (var a in arguments) info.ArgumentList.Add(a);
+        foreach (string a in arguments)
+        {
+            info.ArgumentList.Add(a);
+        }
+
         info.Environment["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0";
         info.Environment["MSBUILDDISABLENODEREUSE"] = "1";
         info.Environment["DOTNET_NOLOGO"] = "1";
         info.Environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
         info.Environment["DOTNET_SKIP_FIRST_TIME_EXPERIENCE"] = "1";
         info.Environment["NUGET_XMLDOC_MODE"] = "skip";
-        foreach (var (key, value) in _options.ChildEnvironment)
+        foreach ((string? key, string? value) in options.ChildEnvironment)
         {
-            if (value == null) info.Environment.Remove(key);
-            else info.Environment[key] = value;
+            if (value == null)
+            {
+                _ = info.Environment.Remove(key);
+            }
+            else
+            {
+                info.Environment[key] = value;
+            }
         }
 
         try
         {
-            using var process = Process.Start(info);
-            if (process == null) return (-1, "could not start dotnet");
+            using Process? process = Process.Start(info);
+            if (process == null)
+            {
+                return (-1, "could not start dotnet");
+            }
+
             process.StandardInput.Close();
-            var stdout = new StringBuilder();
-            var stderr = new StringBuilder();
-            var outTask = Task.Run(() => { string? line; while ((line = process.StandardOutput.ReadLine()) != null) lock (stdout) stdout.AppendLine(line); });
-            var errTask = Task.Run(() => { string? line; while ((line = process.StandardError.ReadLine()) != null) lock (stderr) stderr.AppendLine(line); });
+            StringBuilder stdout = new();
+            StringBuilder stderr = new();
+            Task outTask = Task.Run(() => { string? line; while ((line = process.StandardOutput.ReadLine()) != null) { lock (stdout) { _ = stdout.AppendLine(line); } } });
+            Task errTask = Task.Run(() => { string? line; while ((line = process.StandardError.ReadLine()) != null) { lock (stderr) { _ = stderr.AppendLine(line); } } });
             if (!process.WaitForExit(Timeout))
             {
                 try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
@@ -105,14 +123,25 @@ internal sealed class ProjectLoader
 
     private string DotnetHost()
     {
-        if (_options.DotnetPath is { Length: > 0 } configured) return configured;
-        var host = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH");
-        if (!string.IsNullOrEmpty(host) && File.Exists(host)) return host;
-        var root = DotnetLocator.FindRoot();
+        if (options.DotnetPath is { Length: > 0 } configured)
+        {
+            return configured;
+        }
+
+        string? host = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH");
+        if (!string.IsNullOrEmpty(host) && File.Exists(host))
+        {
+            return host;
+        }
+
+        string? root = DotnetLocator.FindRoot();
         if (root != null)
         {
-            var candidate = Path.Combine(root, OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
-            if (File.Exists(candidate)) return candidate;
+            string candidate = Path.Combine(root, OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
         }
         return "dotnet";
     }

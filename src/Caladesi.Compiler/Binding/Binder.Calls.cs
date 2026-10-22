@@ -14,16 +14,23 @@ public sealed partial class Binder
 
     private ImmutableArray<BoundExpression> BindArguments(SeparatedSyntaxList<ExpressionSyntax> list)
     {
-        var b = ImmutableArray.CreateBuilder<BoundExpression>(list.Count);
-        for (var i = 0; i < list.Count; i++)
+        ImmutableArray<BoundExpression>.Builder b = ImmutableArray.CreateBuilder<BoundExpression>(list.Count);
+        for (int i = 0; i < list.Count; i++)
         {
-            var a = list[i];
+            ExpressionSyntax a = list[i];
             if (a is SpreadElementSyntax sp)
             {
-                if (i != list.Count - 1) Report(Descriptors.SpreadMustBeLast, sp);
+                if (i != list.Count - 1)
+                {
+                    Report(Descriptors.SpreadMustBeLast, sp);
+                }
+
                 b.Add(BindValue(sp.Expression));
             }
-            else b.Add(BindValue(a));
+            else
+            {
+                b.Add(BindValue(a));
+            }
         }
         return b.MoveToImmutable();
     }
@@ -32,27 +39,27 @@ public sealed partial class Binder
 
     private BoundExpression BindInvocation(InvocationExpressionSyntax inv, TypeSymbol? target)
     {
-        var calleeSyntax = inv.Expression;
+        ExpressionSyntax calleeSyntax = inv.Expression;
         if (calleeSyntax is SuperExpressionSyntax)
         {
             Report(Descriptors.SuperCallPosition, calleeSyntax);
-            BindArguments(inv.Arguments.Arguments);
+            _ = BindArguments(inv.Arguments.Arguments);
             return Bad(inv);
         }
-        var callee = BindExpression(calleeSyntax);
+        BoundExpression callee = BindExpression(calleeSyntax);
         if (callee is BoundBadExpression)
         {
-            BindArguments(inv.Arguments.Arguments);
+            _ = BindArguments(inv.Arguments.Arguments);
             return Bad(inv, callee);
         }
-        if (callee is BoundConditionalAccess ca && calleeSyntax is not ParenthesizedExpressionSyntax)
-            return LiftConditional(ca, inner => BindInvocationOn(inner, inv, target), inv);
-        return BindInvocationOn(callee, inv, target);
+        return callee is BoundConditionalAccess ca && calleeSyntax is not ParenthesizedExpressionSyntax
+            ? LiftConditional(ca, inner => BindInvocationOn(inner, inv, target), inv)
+            : BindInvocationOn(callee, inv, target);
     }
 
     private BoundExpression BindInvocationOn(BoundExpression callee, InvocationExpressionSyntax inv, TypeSymbol? target)
     {
-        var args = BindArguments(inv.Arguments.Arguments);
+        ImmutableArray<BoundExpression> args = BindArguments(inv.Arguments.Arguments);
         switch (callee)
         {
             case BoundMethodGroup mg:
@@ -64,8 +71,12 @@ public sealed partial class Binder
                 ReportNotAValue(callee, inv.Expression);
                 return Bad(inv, callee);
         }
-        var t = callee.Type;
-        if (t == null || t.IsErrorType) return Bad(inv, callee);
+        TypeSymbol? t = callee.Type;
+        if (t == null || t.IsErrorType)
+        {
+            return Bad(inv, callee);
+        }
+
         if (t is NullableTypeSymbol nt)
         {
             Report(Descriptors.PossiblyNull, inv.Expression, inv.Expression.ToFullString().Trim());
@@ -73,9 +84,8 @@ public sealed partial class Binder
         }
         if (t is NamedTypeSymbol { TypeKind: TypeKind.Delegate } d && d.DelegateInvokeMethod is { } invoke)
         {
-            var res = ResolveOverloads([invoke], args, ImmutableArray<TypeSymbol>.Empty, inv, "invoke", report: true);
-            if (res == null) return Bad(inv, callee);
-            return new BoundCall(callee, res.Method, res.Arguments) { Syntax = inv };
+            ResolvedCall? res = ResolveOverloads([invoke], args, [], inv, "invoke", report: true);
+            return res == null ? Bad(inv, callee) : new BoundCall(callee, res.Method, res.Arguments) { Syntax = inv };
         }
         Report(Descriptors.NotCallable, inv.Expression, t.ToDisplayString());
         return Bad(inv, callee);
@@ -83,50 +93,79 @@ public sealed partial class Binder
 
     private BoundExpression BindMethodGroupCall(BoundMethodGroup mg, ImmutableArray<BoundExpression> args, InvocationExpressionSyntax inv, TypeSymbol? target)
     {
-        if (args.Any(a => a is BoundBadExpression)) return Bad(inv, [mg, .. args]);
-        var candidates = mg.Candidates;
-        var recvIsType = mg.Receiver is BoundTypeExpression;
+        if (args.Any(a => a is BoundBadExpression))
+        {
+            return Bad(inv, [mg, .. args]);
+        }
+
+        ImmutableArray<MethodSymbol> candidates = mg.Candidates;
+        bool recvIsType = mg.Receiver is BoundTypeExpression;
         ResolvedCall? res = null;
         if (candidates.Length > 0)
+        {
             res = ResolveOverloads(candidates, args, mg.TypeArguments, inv, mg.Name, report: false, expectedType: target);
+        }
 
         BoundExpression? extReceiver = null;
         if (res == null && mg.Receiver is { } r && !recvIsType && r.Type != null)
         {
-            var ext = LookupExtensionMethods(mg.Name);
+            List<MethodSymbol> ext = LookupExtensionMethods(mg.Name);
             if (ext.Count > 0)
             {
                 res = ResolveOverloads(ext, args, mg.TypeArguments, inv, mg.Name, report: false, extensionReceiver: r, expectedType: target);
-                if (res != null) extReceiver = r;
+                if (res != null)
+                {
+                    extReceiver = r;
+                }
             }
         }
         if (res == null)
         {
-            if (candidates.Length > 0) ResolveOverloads(candidates, args, mg.TypeArguments, inv, mg.Name, report: true);
+            if (candidates.Length > 0)
+            {
+                _ = ResolveOverloads(candidates, args, mg.TypeArguments, inv, mg.Name, report: true);
+            }
             else if (mg.Receiver is { } rr && rr.Type != null)
             {
-                var ext = LookupExtensionMethods(mg.Name);
-                if (ext.Count > 0) ResolveOverloads(ext, args, mg.TypeArguments, inv, mg.Name, report: true, extensionReceiver: rr);
-                else Report(Descriptors.MemberNotFound, inv.Expression, mg.Name, rr.Type.ToDisplayString());
+                List<MethodSymbol> ext = LookupExtensionMethods(mg.Name);
+                if (ext.Count > 0)
+                {
+                    _ = ResolveOverloads(ext, args, mg.TypeArguments, inv, mg.Name, report: true, extensionReceiver: rr);
+                }
+                else
+                {
+                    Report(Descriptors.MemberNotFound, inv.Expression, mg.Name, rr.Type.ToDisplayString());
+                }
             }
-            else Report(Descriptors.NotCallable, inv.Expression);
+            else
+            {
+                Report(Descriptors.NotCallable, inv.Expression);
+            }
+
             return Bad(inv, [mg, .. args]);
         }
 
-        var m = res.Method;
+        MethodSymbol m = res.Method;
         if (SymbolMap != null)
         {
             // point the callee name at the overload that was chosen
             SyntaxNode? nameNode = inv.Expression switch { MemberAccessExpressionSyntax ma => ma.Name, _ => inv.Expression };
-            if (nameNode != null) SymbolMap[nameNode] = m.OriginalDefinition;
+            if (nameNode != null)
+            {
+                SymbolMap[nameNode] = m.OriginalDefinition;
+            }
         }
         BoundExpression? receiver = null;
+#pragma warning disable CA1508 // extReceiver is only set on paths not yet reachable here; kept for the extension-call path
         if (extReceiver != null || m.IsStatic)
         {
             receiver = null;
             if (m.IsStatic && mg.Receiver is { } sr && sr is not BoundTypeExpression && extReceiver == null && mg.Receiver.Type != null)
+            {
                 Report(Descriptors.StaticViaInstance, inv.Expression, m.Name, mg.Receiver.Type.ToDisplayString());
+            }
         }
+#pragma warning restore CA1508
         else
         {
             if (recvIsType)
@@ -135,45 +174,59 @@ public sealed partial class Binder
                 return Bad(inv, [mg, .. args]);
             }
             receiver = mg.Receiver ?? ImplicitThis(inv);
-            if (receiver is BoundBadExpression) return Bad(inv, [mg, .. args]);
+            if (receiver is BoundBadExpression)
+            {
+                return Bad(inv, [mg, .. args]);
+            }
         }
-        var call = new BoundCall(receiver, m, res.Arguments) { Syntax = inv, IsBaseCall = mg.IsBaseAccess };
+        BoundCall call = new(receiver, m, res.Arguments) { Syntax = inv, IsBaseCall = mg.IsBaseAccess };
         return res.OutLocals.IsEmpty ? call : WrapOutResults(call, res.OutLocals, inv);
     }
 
     /// <summary>A call with omitted trailing out parameters evaluates to a tuple of the return value (unless void) and the out values.</summary>
     private BoundExpression WrapOutResults(BoundCall call, ImmutableArray<LocalSymbol> outs, SyntaxNode syntax)
     {
-        var locals = outs.ToBuilder();
-        var stmts = ImmutableArray.CreateBuilder<BoundStatement>();
-        var elements = ImmutableArray.CreateBuilder<BoundExpression>();
-        if (call.Method.ReturnType.IsVoid) stmts.Add(new BoundExpressionStatement(call) { Syntax = syntax });
+        ImmutableArray<LocalSymbol>.Builder locals = outs.ToBuilder();
+        ImmutableArray<BoundStatement>.Builder stmts = ImmutableArray.CreateBuilder<BoundStatement>();
+        ImmutableArray<BoundExpression>.Builder elements = ImmutableArray.CreateBuilder<BoundExpression>();
+        if (call.Method.ReturnType.IsVoid)
+        {
+            stmts.Add(new BoundExpressionStatement(call) { Syntax = syntax });
+        }
         else
         {
-            var ret = new LocalSymbol("<ret>", call.Type!, false, LocalOwner) { IsSynthesized = true };
+            LocalSymbol ret = new("<ret>", call.Type!, false, LocalOwner) { IsSynthesized = true };
             locals.Add(ret);
             stmts.Add(new BoundExpressionStatement(new BoundAssignment(new BoundLocal(ret), call) { Syntax = syntax, IsDiscarded = true }) { Syntax = syntax });
             elements.Add(new BoundLocal(ret));
         }
-        foreach (var o in outs) elements.Add(new BoundLocal(o));
-        if (elements.Count == 1) return new BoundSequence(locals.ToImmutable(), stmts.ToImmutable(), elements[0]) { Syntax = syntax };
-        var tupleDef = _c.GetWellKnownType("System.ValueTuple`" + elements.Count);
+        foreach (LocalSymbol o in outs)
+        {
+            elements.Add(new BoundLocal(o));
+        }
+
+        if (elements.Count == 1)
+        {
+            return new BoundSequence(locals.ToImmutable(), stmts.ToImmutable(), elements[0]) { Syntax = syntax };
+        }
+
+        NamedTypeSymbol? tupleDef = Compilation.GetWellKnownType("System.ValueTuple`" + elements.Count);
         if (tupleDef == null || elements.Count > 7) { Report(Descriptors.FeatureNotSupported, syntax, "Calls with that many out parameters"); return Bad(syntax); }
-        var tuple = tupleDef.Construct(elements.Select(e => e.Type!).ToImmutableArray());
-        var ctor = tuple.InstanceConstructors.First(c => c.Parameters.Length == elements.Count);
-        var value = new BoundObjectCreation(ctor, tuple, elements.ToImmutable(), ImmutableArray<BoundMemberInit>.Empty) { Syntax = syntax };
+        NamedTypeSymbol tuple = tupleDef.Construct(elements.Select(e => e.Type!).ToImmutableArray());
+        MethodSymbol ctor = tuple.InstanceConstructors.First(c => c.Parameters.Length == elements.Count);
+        BoundObjectCreation value = new(ctor, tuple, elements.ToImmutable(), []) { Syntax = syntax };
         return new BoundSequence(locals.ToImmutable(), stmts.ToImmutable(), value) { Syntax = syntax };
     }
 
     private BoundExpression ImplicitThis(SyntaxNode at)
     {
-        var t = CurrentType;
+        NamedTypeSymbol? t = CurrentType;
         if (t == null || _isStaticContext)
         {
             Report(Descriptors.ThisNotAvailable, at);
             return Bad(at);
         }
-        _usesThis = true;
+        UsesThis = true;
         return new BoundThis(t) { Syntax = at };
     }
 
@@ -181,11 +234,12 @@ public sealed partial class Binder
 
     private BoundExpression BindNew(NewExpressionSyntax n, TypeSymbol? target)
     {
-        var typeSyntax = n.Type;
-        var type = BindNewType(typeSyntax, target);
-        var args = n.Arguments != null ? BindArguments(n.Arguments.Arguments) : ImmutableArray<BoundExpression>.Empty;
-        if (type.IsErrorType || args.Any(a => a is BoundBadExpression)) return BadFrom(n, args.CastArray<BoundNode>());
-        return BuildObjectCreation(type, args, n, typeSyntax);
+        TypeSyntax typeSyntax = n.Type;
+        TypeSymbol type = BindNewType(typeSyntax, target);
+        ImmutableArray<BoundExpression> args = n.Arguments != null ? BindArguments(n.Arguments.Arguments) : [];
+        return type.IsErrorType || args.Any(a => a is BoundBadExpression)
+            ? BadFrom(n, args.CastArray<BoundNode>())
+            : BuildObjectCreation(type, args, n, typeSyntax);
     }
 
     private TypeSymbol BindNewType(TypeSyntax typeSyntax, TypeSymbol? target)
@@ -193,21 +247,29 @@ public sealed partial class Binder
         // target-typed `new List()` : infer type arguments from the expected type
         if (typeSyntax is IdentifierNameSyntax id && target != null && !id.Identifier.IsMissing)
         {
-            var cands = _file.Scope.Lookup(id.Identifier.Text);
-            var generic = cands.OfType<NamedTypeSymbol>().FirstOrDefault(c => c.OwnArity > 0);
+            ImmutableArray<Symbol> cands = File.Scope.Lookup(id.Identifier.Text);
+            NamedTypeSymbol? generic = cands.OfType<NamedTypeSymbol>().FirstOrDefault(c => c.OwnArity > 0);
             if (generic != null && !cands.OfType<NamedTypeSymbol>().Any(c => c.OwnArity == 0))
             {
-                var tt = target.StripNullable();
+                TypeSymbol tt = target.StripNullable();
                 if (tt is NamedTypeSymbol { IsGenericType: true } nt && ReferenceEquals(nt.OriginalDefinition, generic.OriginalDefinition))
+                {
                     return nt;
+                }
+
                 if (tt is NamedTypeSymbol)
+                {
                     return generic.Construct(InferNewTypeArguments(generic, tt) ?? generic.TypeArguments);
+                }
             }
         }
         return BindType(typeSyntax);
     }
 
-    private ImmutableArray<TypeSymbol>? InferNewTypeArguments(NamedTypeSymbol generic, TypeSymbol target) => null;
+    private static ImmutableArray<TypeSymbol>? InferNewTypeArguments(NamedTypeSymbol _1, TypeSymbol _2)
+    {
+        return null;
+    }
 
     internal BoundExpression BuildObjectCreation(TypeSymbol type, ImmutableArray<BoundExpression> args, SyntaxNode syntax, SyntaxNode? typeSyntax = null)
     {
@@ -219,9 +281,9 @@ public sealed partial class Binder
                 return Bad(syntax);
             }
             if (args.Length > 0) { Report(Descriptors.NewTypeParamNoArgs, syntax); return Bad(syntax); }
-            return new BoundObjectCreation(null, type, ImmutableArray<BoundExpression>.Empty, ImmutableArray<BoundMemberInit>.Empty) { Syntax = syntax };
+            return new BoundObjectCreation(null, type, [], []) { Syntax = syntax };
         }
-        if (type is not NamedTypeSymbol nt || nt.TypeKind is TypeKind.Interface or TypeKind.Enum or TypeKind.Array || nt.IsAbstract && nt.TypeKind == TypeKind.Class)
+        if (type is not NamedTypeSymbol nt || nt.TypeKind is TypeKind.Interface or TypeKind.Enum or TypeKind.Array || (nt.IsAbstract && nt.TypeKind == TypeKind.Class))
         {
             Report(Descriptors.CannotInstantiate, typeSyntax ?? syntax, type.ToDisplayString());
             return Bad(syntax);
@@ -234,60 +296,86 @@ public sealed partial class Binder
         if (nt.TypeKind == TypeKind.Delegate)
         {
             if (args.Length == 1)
+            {
                 return ConvertImplicit(args[0], nt, syntax);
+            }
+
             Report(Descriptors.CannotInstantiate, typeSyntax ?? syntax, type.ToDisplayString());
             return Bad(syntax);
         }
-        var ctors = LookupConstructors(nt);
+        ImmutableArray<MethodSymbol> ctors = LookupConstructors(nt);
         if (ctors.Length == 0)
         {
             if (nt.TypeKind == TypeKind.Struct && args.Length == 0)
-                return new BoundObjectCreation(null, type, ImmutableArray<BoundExpression>.Empty, ImmutableArray<BoundMemberInit>.Empty) { Syntax = syntax };
+            {
+                return new BoundObjectCreation(null, type, [], []) { Syntax = syntax };
+            }
+
             Report(Descriptors.NoAccessibleConstructor, typeSyntax ?? syntax, type.ToDisplayString());
             return Bad(syntax);
         }
         if (nt.TypeKind == TypeKind.Struct && args.Length == 0 && !ctors.Any(c => c.Parameters.Length == 0))
-            return new BoundObjectCreation(null, type, ImmutableArray<BoundExpression>.Empty, ImmutableArray<BoundMemberInit>.Empty) { Syntax = syntax };
-        var res = ResolveOverloads(ctors, args, ImmutableArray<TypeSymbol>.Empty, syntax, nt.Name, report: true);
-        if (res == null) return BadFrom(syntax, args.CastArray<BoundNode>());
-        return new BoundObjectCreation(res.Method, type, res.Arguments, ImmutableArray<BoundMemberInit>.Empty) { Syntax = syntax };
+        {
+            return new BoundObjectCreation(null, type, [], []) { Syntax = syntax };
+        }
+
+        ResolvedCall? res = ResolveOverloads(ctors, args, [], syntax, nt.Name, report: true);
+        return res == null
+            ? BadFrom(syntax, args.CastArray<BoundNode>())
+            : new BoundObjectCreation(res.Method, type, res.Arguments, ImmutableArray<BoundMemberInit>.Empty) { Syntax = syntax };
     }
 
     private BoundExpression BindArrayCreation(ArrayCreationExpressionSyntax ac)
     {
-        var elem = BindType(ac.ElementType);
-        var size = BindValue(ac.Size);
-        if (elem.IsErrorType) return Bad(ac, size);
-        var len = ConvertIndex(size, ac.Size);
-        var at = _c.CreateArrayType(elem);
-        return new BoundArrayCreation(at, len, ImmutableArray<BoundExpression>.Empty) { Syntax = ac };
+        TypeSymbol elem = BindType(ac.ElementType);
+        BoundExpression size = BindValue(ac.Size);
+        if (elem.IsErrorType)
+        {
+            return Bad(ac, size);
+        }
+
+        BoundExpression len = ConvertIndex(size, ac.Size);
+        ArrayTypeSymbol at = Compilation.CreateArrayType(elem);
+        return new BoundArrayCreation(at, len, []) { Syntax = ac };
     }
 
     // ------------------------------------------------------------------ await
 
     private BoundExpression BindAwait(AwaitExpressionSyntax aw)
     {
-        var operand = BindValue(aw.Operand);
+        BoundExpression operand = BindValue(aw.Operand);
         if (!_isAsyncContext)
         {
             Report(Descriptors.AwaitOutsideAsync, aw.GetFirstToken()!.Span);
             return Bad(aw, operand);
         }
-        if (operand is BoundBadExpression) return Bad(aw, operand);
+        if (operand is BoundBadExpression)
+        {
+            return Bad(aw, operand);
+        }
+
         if (operand.Type == null) { ReportNotAValue(operand, aw); return Bad(aw, operand); }
-        var info = GetAwaitInfo(operand.Type, aw);
-        if (info == null) return Bad(aw, operand);
-        var resultType = info.GetResult.ReturnType;
+        AwaitInfo? info = GetAwaitInfo(operand.Type, aw);
+        if (info == null)
+        {
+            return Bad(aw, operand);
+        }
+
+        TypeSymbol resultType = info.GetResult.ReturnType;
         return new BoundAwait(operand, info, resultType) { Syntax = aw };
     }
 
     internal AwaitInfo? GetAwaitInfo(TypeSymbol type, SyntaxNode at)
     {
-        if (type is NullableTypeSymbol n) type = n.Underlying;
-        var getAwaiter = LookupMembers(type, "GetAwaiter").OfType<MethodSymbol>().FirstOrDefault(m => m.Parameters.Length == 0 && !m.IsStatic);
+        if (type is NullableTypeSymbol n)
+        {
+            type = n.Underlying;
+        }
+
+        MethodSymbol? getAwaiter = LookupMembers(type, "GetAwaiter").OfType<MethodSymbol>().FirstOrDefault(m => m.Parameters.Length == 0 && !m.IsStatic);
         if (getAwaiter == null)
         {
-            var ext = LookupExtensionMethods("GetAwaiter");
+            List<MethodSymbol> ext = LookupExtensionMethods("GetAwaiter");
             getAwaiter = ext.FirstOrDefault(m => m.Parameters.Length == 1 && ClassifyImplicit(null, type, m.Parameters[0].Type).Exists);
         }
         if (getAwaiter == null)
@@ -295,9 +383,9 @@ public sealed partial class Binder
             Report(Descriptors.NotAwaitable, at, type.ToDisplayString());
             return null;
         }
-        var awaiterType = getAwaiter.ReturnType;
-        var isCompleted = LookupMembers(awaiterType, "IsCompleted").OfType<PropertySymbol>().FirstOrDefault();
-        var getResult = LookupMembers(awaiterType, "GetResult").OfType<MethodSymbol>().FirstOrDefault(m => m.Parameters.Length == 0);
+        TypeSymbol awaiterType = getAwaiter.ReturnType;
+        PropertySymbol? isCompleted = LookupMembers(awaiterType, "IsCompleted").OfType<PropertySymbol>().FirstOrDefault();
+        MethodSymbol? getResult = LookupMembers(awaiterType, "GetResult").OfType<MethodSymbol>().FirstOrDefault(m => m.Parameters.Length == 0);
         if (isCompleted?.GetMethod == null || getResult == null)
         {
             Report(Descriptors.NotAwaitable, at, type.ToDisplayString());
@@ -311,8 +399,8 @@ public sealed partial class Binder
     internal BoundExpression BuildStringConcat(List<BoundExpression> parts, SyntaxNode syntax)
     {
         // fold adjacent constants
-        var folded = new List<BoundExpression>();
-        foreach (var p in parts)
+        List<BoundExpression> folded = [];
+        foreach (BoundExpression p in parts)
         {
             if (folded.Count > 0 && folded[^1].ConstantValue is { Value: string a } && p.ConstantValue is { } cv && p.Type!.SpecialType is SpecialType.String)
             {
@@ -322,62 +410,88 @@ public sealed partial class Binder
             {
                 folded[^1] = new BoundLiteral(new ConstantValue(a2 + ConstantToString(v2)), StringType) { Syntax = syntax };
             }
-            else folded.Add(p);
+            else
+            {
+                folded.Add(p);
+            }
         }
         parts = folded;
-        var strType = StringType;
-        var strSym = Special(SpecialType.String);
-        var concat = strSym.GetMembers("Concat").OfType<MethodSymbol>().ToList();
+        TypeSymbol strType = StringType;
+        NamedTypeSymbol strSym = Special(SpecialType.String);
+        List<MethodSymbol> concat = [.. strSym.GetMembers("Concat").OfType<MethodSymbol>()];
 
         if (parts.Count == 1)
         {
-            var only = parts[0];
-            if (only.Type!.SpecialType == SpecialType.String) return only;
-            var m1 = concat.First(m => m.Parameters.Length == 1 && m.Parameters[0].Type.StripNullable().SpecialType == SpecialType.Object);
+            BoundExpression only = parts[0];
+            if (only.Type!.SpecialType == SpecialType.String)
+            {
+                return only;
+            }
+
+            MethodSymbol m1 = concat.First(m => m.Parameters.Length == 1 && m.Parameters[0].Type.StripNullable().SpecialType == SpecialType.Object);
             return new BoundCall(null, m1, [BoxToObject(only, syntax)]) { Syntax = syntax };
         }
-        var allStrings = parts.All(p => p.Type!.SpecialType == SpecialType.String);
+        bool allStrings = parts.All(p => p.Type!.SpecialType == SpecialType.String);
         if (allStrings && parts.Count <= 4)
         {
-            var m = concat.First(x => x.Parameters.Length == parts.Count && x.Parameters.All(pp => pp.Type.StripNullable().SpecialType == SpecialType.String && !pp.IsParams));
-            return new BoundCall(null, m, parts.ToImmutableArray()) { Syntax = syntax };
+            MethodSymbol m = concat.First(x => x.Parameters.Length == parts.Count && x.Parameters.All(pp => pp.Type.StripNullable().SpecialType == SpecialType.String && !pp.IsParams));
+            return new BoundCall(null, m, [.. parts]) { Syntax = syntax };
         }
         if (!allStrings && parts.Count <= 3)
         {
-            var m = concat.First(x => x.Parameters.Length == parts.Count && x.Parameters.All(pp => pp.Type.StripNullable().SpecialType == SpecialType.Object && !pp.IsParams));
-            return new BoundCall(null, m, parts.Select(p => BoxToObject(p, syntax)).ToImmutableArray()) { Syntax = syntax };
+            MethodSymbol m = concat.First(x => x.Parameters.Length == parts.Count && x.Parameters.All(pp => pp.Type.StripNullable().SpecialType == SpecialType.Object && !pp.IsParams));
+            return new BoundCall(null, m, [.. parts.Select(p => BoxToObject(p, syntax))]) { Syntax = syntax };
         }
         if (allStrings)
         {
-            var m = concat.First(x => x.Parameters.Length == 1 && x.Parameters[0].IsParams && x.Parameters[0].Type.StripNullable() is ArrayTypeSymbol { ElementType: var e1 } && e1.StripNullable().SpecialType == SpecialType.String);
-            var arr = new BoundArrayCreation((ArrayTypeSymbol)m.Parameters[0].Type.StripNullable(), new BoundLiteral(new ConstantValue(parts.Count), IntType), parts.ToImmutableArray()) { Syntax = syntax };
+            MethodSymbol m = concat.First(x => x.Parameters.Length == 1 && x.Parameters[0].IsParams && x.Parameters[0].Type.StripNullable() is ArrayTypeSymbol { ElementType: var e1 } && e1.StripNullable().SpecialType == SpecialType.String);
+            BoundArrayCreation arr = new((ArrayTypeSymbol)m.Parameters[0].Type.StripNullable(), new BoundLiteral(new ConstantValue(parts.Count), IntType), [.. parts]) { Syntax = syntax };
             return new BoundCall(null, m, [arr]) { Syntax = syntax };
         }
         else
         {
-            var m = concat.First(x => x.Parameters.Length == 1 && x.Parameters[0].IsParams && x.Parameters[0].Type.StripNullable() is ArrayTypeSymbol { ElementType: var e2 } && e2.StripNullable().SpecialType == SpecialType.Object);
-            var arr = new BoundArrayCreation((ArrayTypeSymbol)m.Parameters[0].Type.StripNullable(), new BoundLiteral(new ConstantValue(parts.Count), IntType), parts.Select(p => BoxToObject(p, syntax)).ToImmutableArray()) { Syntax = syntax };
+            MethodSymbol m = concat.First(x => x.Parameters.Length == 1 && x.Parameters[0].IsParams && x.Parameters[0].Type.StripNullable() is ArrayTypeSymbol { ElementType: var e2 } && e2.StripNullable().SpecialType == SpecialType.Object);
+            BoundArrayCreation arr = new((ArrayTypeSymbol)m.Parameters[0].Type.StripNullable(), new BoundLiteral(new ConstantValue(parts.Count), IntType), [.. parts.Select(p => BoxToObject(p, syntax))]) { Syntax = syntax };
             return new BoundCall(null, m, [arr]) { Syntax = syntax };
         }
     }
 
-    private static string ConstantToString(object v) => v switch
+    private static string ConstantToString(object v)
     {
-        bool b => b ? "True" : "False",
-        char c => c.ToString(),
-        IFormattable f => f.ToString(null, System.Globalization.CultureInfo.InvariantCulture),
-        _ => v.ToString() ?? "",
-    };
+        return v switch
+        {
+            bool b => b ? "True" : "False",
+            char c => c.ToString(),
+            IFormattable f => f.ToString(null, System.Globalization.CultureInfo.InvariantCulture),
+            _ => v.ToString() ?? "",
+        };
+    }
 
     internal BoundExpression BoxToObject(BoundExpression e, SyntaxNode syntax)
     {
-        var t = e.Type!;
-        if (t.SpecialType == SpecialType.Object && t is not NullableTypeSymbol) return e;
-        if (t.SpecialType == SpecialType.String) return new BoundConversion(e, ConversionKind.ImplicitReference, ObjectType) { Syntax = syntax };
-        if (t.IsValueType || t is TypeParameterSymbol) return new BoundConversion(e, ConversionKind.Boxing, ObjectType) { Syntax = syntax };
+        TypeSymbol t = e.Type!;
+        if (t.SpecialType == SpecialType.Object && t is not NullableTypeSymbol)
+        {
+            return e;
+        }
+
+        if (t.SpecialType == SpecialType.String)
+        {
+            return new BoundConversion(e, ConversionKind.ImplicitReference, ObjectType) { Syntax = syntax };
+        }
+
+        if (t.IsValueType || t is TypeParameterSymbol)
+        {
+            return new BoundConversion(e, ConversionKind.Boxing, ObjectType) { Syntax = syntax };
+        }
+
         if (t is NullableTypeSymbol n)
         {
-            if (n.Underlying.IsValueType) return new BoundConversion(e, ConversionKind.Boxing, ObjectType) { Syntax = syntax }; // boxes Nullable<T>
+            if (n.Underlying.IsValueType)
+            {
+                return new BoundConversion(e, ConversionKind.Boxing, ObjectType) { Syntax = syntax }; // boxes Nullable<T>
+            }
+
             return new BoundConversion(e, ConversionKind.TypeOnly, ObjectType) { Syntax = syntax };
         }
         return new BoundConversion(e, ConversionKind.ImplicitReference, ObjectType) { Syntax = syntax };
@@ -387,23 +501,38 @@ public sealed partial class Binder
 
     internal BoundExpression ConvertMethodGroup(BoundMethodGroup mg, TypeSymbol target, SyntaxNode? syntax, bool report)
     {
-        var d = target.StripNullable() as NamedTypeSymbol;
+        NamedTypeSymbol? d = target.StripNullable() as NamedTypeSymbol;
         if (d is not { TypeKind: TypeKind.Delegate })
         {
-            if (report && !target.IsErrorType) Report(Descriptors.MethodGroupNeedsDelegate, syntax, mg.Name, target.ToDisplayString());
+            if (report && !target.IsErrorType)
+            {
+                Report(Descriptors.MethodGroupNeedsDelegate, syntax, mg.Name, target.ToDisplayString());
+            }
+
             return Bad(syntax, mg);
         }
-        var method = ResolveMethodGroupForDelegate(mg, d);
+        MethodSymbol? method = ResolveMethodGroupForDelegate(mg, d);
         if (method == null)
         {
-            if (report) Report(Descriptors.MethodGroupNotConvertible, syntax, mg.Name, target.ToDisplayString());
+            if (report)
+            {
+                Report(Descriptors.MethodGroupNotConvertible, syntax, mg.Name, target.ToDisplayString());
+            }
+
             return Bad(syntax, mg);
         }
         BoundExpression? receiver = null;
-        var isExt = method.IsExtensionMethod && mg.Receiver is { Type: not null } && !mg.Candidates.Contains(method) && !mg.Candidates.Any(c => ReferenceEquals(c.OriginalDefinition, method.OriginalDefinition));
-        if (isExt) receiver = mg.Receiver;
-        else if (!method.IsStatic) receiver = mg.Receiver ?? ImplicitThis(syntax ?? mg.Syntax!);
-        var created = new BoundDelegateCreation(receiver, method, d) { Syntax = syntax ?? mg.Syntax };
+        bool isExt = method.IsExtensionMethod && mg.Receiver is { Type: not null } && !mg.Candidates.Contains(method) && !mg.Candidates.Any(c => ReferenceEquals(c.OriginalDefinition, method.OriginalDefinition));
+        if (isExt)
+        {
+            receiver = mg.Receiver;
+        }
+        else if (!method.IsStatic)
+        {
+            receiver = mg.Receiver ?? ImplicitThis(syntax ?? mg.Syntax!);
+        }
+
+        BoundDelegateCreation created = new(receiver, method, d) { Syntax = syntax ?? mg.Syntax };
         return target is NullableTypeSymbol ? new BoundConversion(created, ConversionKind.ToNullable, target) { Syntax = syntax } : created;
     }
 }
@@ -412,8 +541,6 @@ internal static class ImmutableArrayCasts
 {
     public static ImmutableArray<BoundNode> CastArray<T>(this ImmutableArray<T> a) where T : BoundNode
     {
-        var b = ImmutableArray.CreateBuilder<BoundNode>(a.Length);
-        foreach (var x in a) b.Add(x);
-        return b.MoveToImmutable();
+        return [.. a];
     }
 }

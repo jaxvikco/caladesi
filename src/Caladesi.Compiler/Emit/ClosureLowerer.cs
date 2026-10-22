@@ -20,9 +20,9 @@ internal sealed class ClosureLowerer
         public Scope? Lexical;
         public int Depth;
         public Ctx Owner = null!;
-        public readonly List<Symbol> Declared = new();
-        public readonly HashSet<Symbol> Captured = new();
-        public readonly List<Symbol> CapturedOrdered = new();
+        public readonly List<Symbol> Declared = [];
+        public readonly HashSet<Symbol> Captured = [];
+        public readonly List<Symbol> CapturedOrdered = [];
         public Env? Env;
     }
 
@@ -33,7 +33,7 @@ internal sealed class ClosureLowerer
         public Ctx? Parent;
         public Scope? DefScope;
         public Scope RootScope = null!;
-        public readonly HashSet<Symbol> FreeVars = new();
+        public readonly HashSet<Symbol> FreeVars = [];
         public bool UsesThis;
         public HostKind Kind;
         public Env? Host;
@@ -48,14 +48,13 @@ internal sealed class ClosureLowerer
         public SynthesizedNamedType Class = null!;
         public NamedTypeSymbol Closed = null!;
         public LocalSymbol Local = null!;
-        public readonly Dictionary<Symbol, FieldSymbol> Fields = new();
+        public readonly Dictionary<Symbol, FieldSymbol> Fields = [];
         public Env? Parent;
         public FieldSymbol? ParentField;
         public bool NeedsThis;
         public FieldSymbol? ThisField;
     }
 
-    private readonly Compilation _c;
     private readonly LoweredProgram _program;
     private readonly MethodSymbol _method;
     private readonly NamedTypeSymbol _container;
@@ -63,8 +62,8 @@ internal sealed class ClosureLowerer
     private int _scopeCounter;
     private int _lambdaCounter;
 
-    private readonly List<Scope> _scopes = new();
-    private readonly List<Ctx> _ctxs = new();
+    private readonly List<Scope> _scopes = [];
+    private readonly List<Ctx> _ctxs = [];
     private readonly Dictionary<object, Scope> _scopeOf = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<Symbol, Scope> _decl = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<BoundLambda, Ctx> _lambdaCtx = new(ReferenceEqualityComparer.Instance);
@@ -73,7 +72,7 @@ internal sealed class ClosureLowerer
 
     private ClosureLowerer(Compilation c, LoweredProgram program, MethodSymbol method, NamedTypeSymbol container, int methodOrdinal)
     {
-        _c = c;
+        Comp = c;
         _program = program;
         _method = method;
         _container = container;
@@ -82,9 +81,13 @@ internal sealed class ClosureLowerer
 
     public static BoundBlock Lower(Compilation c, LoweredProgram program, MethodSymbol method, NamedTypeSymbol container, int methodOrdinal, BoundBlock body)
     {
-        var l = new ClosureLowerer(c, program, method, container, methodOrdinal);
+        ClosureLowerer l = new(c, program, method, container, methodOrdinal);
         l.Analyze(body);
-        if (l._lambdaCount == 0) return body;
+        if (l._lambdaCount == 0)
+        {
+            return body;
+        }
+
         l.Setup();
         return l.RewriteBody(l._rootCtx, body);
     }
@@ -93,14 +96,18 @@ internal sealed class ClosureLowerer
 
     private Scope NewScope(Scope? lexical, Ctx owner)
     {
-        var s = new Scope { Lexical = lexical, Depth = (lexical?.Depth ?? -1) + 1, Owner = owner };
+        Scope s = new() { Lexical = lexical, Depth = (lexical?.Depth ?? -1) + 1, Owner = owner };
         _scopes.Add(s);
         return s;
     }
 
     private void Declare(Symbol sym, Scope scope)
     {
-        if (_decl.ContainsKey(sym)) return;
+        if (_decl.ContainsKey(sym))
+        {
+            return;
+        }
+
         _decl[sym] = scope;
         scope.Declared.Add(sym);
     }
@@ -109,10 +116,14 @@ internal sealed class ClosureLowerer
     {
         _rootCtx = new Ctx();
         _ctxs.Add(_rootCtx);
-        var root = NewScope(null, _rootCtx);
+        Scope root = NewScope(null, _rootCtx);
         _rootCtx.RootScope = root;
-        foreach (var p in _method.Parameters) Declare(p, root);
-        new Analyzer(this, _rootCtx, root).Visit(body);
+        foreach (ParameterSymbol p in _method.Parameters)
+        {
+            Declare(p, root);
+        }
+
+        _ = new Analyzer(this, _rootCtx, root).Visit(body);
     }
 
     private sealed class Analyzer(ClosureLowerer o, Ctx ctx, Scope scope) : BoundTreeRewriter
@@ -122,72 +133,101 @@ internal sealed class ClosureLowerer
 
         public override BoundNode? Visit(BoundNode? node)
         {
-            if (node is BoundBaseReference) MarkThis();
+            if (node is BoundBaseReference)
+            {
+                MarkThis();
+            }
+
             return base.Visit(node);
         }
 
         private Scope Push(IEnumerable<Symbol> locals, object key)
         {
-            var s = o.NewScope(_scope, _ctx);
-            foreach (var l in locals) o.Declare(l, s);
+            Scope s = o.NewScope(_scope, _ctx);
+            foreach (Symbol l in locals)
+            {
+                o.Declare(l, s);
+            }
+
             o._scopeOf[key] = s;
             _scope = s;
             return s;
         }
 
-        private void Pop() => _scope = _scope.Lexical!;
+        private void Pop()
+        {
+            _scope = _scope.Lexical!;
+        }
 
         private void MarkThis()
         {
-            for (var c = _ctx; c != null; c = c.Parent) c.UsesThis = true;
+            for (Ctx? c = _ctx; c != null; c = c.Parent)
+            {
+                c.UsesThis = true;
+            }
         }
 
         private void Reference(Symbol sym)
         {
-            if (!o._decl.TryGetValue(sym, out var declScope))
+            if (!o._decl.TryGetValue(sym, out Scope? declScope))
             {
                 declScope = _ctx.RootScope;
                 o.Declare(sym, declScope);
             }
-            if (declScope.Owner == _ctx) return;
-            if (declScope.Captured.Add(sym)) declScope.CapturedOrdered.Add(sym);
-            for (var c = _ctx; c != null && c != declScope.Owner; c = c.Parent) c.FreeVars.Add(sym);
+            if (declScope.Owner == _ctx)
+            {
+                return;
+            }
+
+            if (declScope.Captured.Add(sym))
+            {
+                declScope.CapturedOrdered.Add(sym);
+            }
+
+            for (Ctx? c = _ctx; c != null && c != declScope.Owner; c = c.Parent)
+            {
+                _ = c.FreeVars.Add(sym);
+            }
         }
 
         protected override BoundNode VisitBlock(BoundBlock n)
         {
-            Push(n.Locals, n);
-            var r = base.VisitBlock(n);
+            _ = Push(n.Locals, n);
+            BoundNode r = base.VisitBlock(n);
             Pop();
             return r;
         }
 
         protected override BoundNode VisitFor(BoundFor n)
         {
-            Push(n.Locals, n);
-            var r = base.VisitFor(n);
+            _ = Push(n.Locals, n);
+            BoundNode r = base.VisitFor(n);
             Pop();
             return r;
         }
 
         protected override BoundNode VisitSequence(BoundSequence n)
         {
-            Push(n.Locals, n);
-            var r = base.VisitSequence(n);
+            _ = Push(n.Locals, n);
+            BoundNode r = base.VisitSequence(n);
             Pop();
             return r;
         }
 
         protected override BoundNode VisitTry(BoundTry n)
         {
-            Visit(n.Body);
-            foreach (var c in n.Catches)
+            _ = Visit(n.Body);
+            foreach (BoundCatch c in n.Catches)
             {
-                Push(c.Local != null ? [c.Local] : [], c);
-                Visit(c.Body);
+                _ = Push(c.Local != null ? [c.Local] : [], c);
+                _ = Visit(c.Body);
                 Pop();
             }
-            if (n.Finally != null) Visit(n.Finally);
+            if (n.Finally != null)
+            {
+                _ = Visit(n.Finally);
+            }
+
             return n;
         }
 
@@ -217,19 +257,27 @@ internal sealed class ClosureLowerer
 
         protected override BoundNode VisitLambda(BoundLambda n)
         {
-            if (o._lambdaCtx.ContainsKey(n)) return n;
+            if (o._lambdaCtx.ContainsKey(n))
+            {
+                return n;
+            }
+
             o._lambdaCount++;
-            var ctx = new Ctx { Node = n, Parent = _ctx, DefScope = _scope };
+            Ctx ctx = new() { Node = n, Parent = _ctx, DefScope = _scope };
             o._ctxs.Add(ctx);
             o._lambdaCtx[n] = ctx;
-            var root = o.NewScope(_scope, ctx);
+            Scope root = o.NewScope(_scope, ctx);
             ctx.RootScope = root;
-            foreach (var p in n.Symbol.Parameters) o.Declare(p, root);
-            var savedCtx = _ctx;
-            var savedScope = _scope;
+            foreach (ParameterSymbol p in n.Symbol.Parameters)
+            {
+                o.Declare(p, root);
+            }
+
+            Ctx savedCtx = _ctx;
+            Scope savedScope = _scope;
             _ctx = ctx;
             _scope = root;
-            Visit(n.Body);
+            _ = Visit(n.Body);
             _ctx = savedCtx;
             _scope = savedScope;
             return n;
@@ -238,7 +286,7 @@ internal sealed class ClosureLowerer
 
     // ------------------------------------------------------------------ display classes and lambda methods
 
-    private Compilation Comp => _c;
+    private Compilation Comp { get; }
 
     private NamedTypeSymbol ContainerSelf => _container.IsGenericType ? _container.Construct(_container.TypeParameters.CastArray<TypeSymbol>()) : _container;
 
@@ -246,53 +294,102 @@ internal sealed class ClosureLowerer
 
     private void Setup()
     {
-        foreach (var s in _scopes.ToList())
-            if (s.Captured.Count > 0) CreateEnv(s);
-        if (IsGenericMethod && _rootCtx.RootScope.Env == null) CreateEnv(_rootCtx.RootScope);
-
-        foreach (var ctx in _ctxs)
+        foreach (Scope? s in _scopes.ToList())
         {
-            if (ctx.Node == null) continue;
-            Scope? deepest = null;
-            foreach (var v in ctx.FreeVars)
+            if (s.Captured.Count > 0)
             {
-                var s = _decl[v];
-                if (deepest == null || s.Depth > deepest.Depth) deepest = s;
+                CreateEnv(s);
+            }
+        }
+
+        if (IsGenericMethod && _rootCtx.RootScope.Env == null)
+        {
+            CreateEnv(_rootCtx.RootScope);
+        }
+
+        foreach (Ctx ctx in _ctxs)
+        {
+            if (ctx.Node == null)
+            {
+                continue;
+            }
+
+            Scope? deepest = null;
+            foreach (Symbol v in ctx.FreeVars)
+            {
+                Scope s = _decl[v];
+                if (deepest == null || s.Depth > deepest.Depth)
+                {
+                    deepest = s;
+                }
             }
             if (deepest != null) { ctx.Kind = HostKind.Env; ctx.Host = deepest.Env; }
             else if (IsGenericMethod) { ctx.Kind = HostKind.Env; ctx.Host = _rootCtx.RootScope.Env; }
-            else ctx.Kind = ctx.UsesThis ? HostKind.ClassInstance : HostKind.Static;
+            else
+            {
+                ctx.Kind = ctx.UsesThis ? HostKind.ClassInstance : HostKind.Static;
+            }
         }
 
-        foreach (var s in _scopes)
+        foreach (Scope s in _scopes)
         {
-            if (s.Env == null) continue;
-            for (var a = s.Lexical; a != null && a.Owner == s.Owner; a = a.Lexical)
+            if (s.Env == null)
+            {
+                continue;
+            }
+
+            for (Scope? a = s.Lexical; a != null && a.Owner == s.Owner; a = a.Lexical)
+            {
                 if (a.Env != null) { s.Env.Parent = a.Env; break; }
+            }
+
             s.Env.Parent ??= s.Owner.Host;
         }
 
-        foreach (var ctx in _ctxs)
-            if (ctx.UsesThis && ctx.Host != null) Top(ctx.Host).NeedsThis = true;
+        foreach (Ctx ctx in _ctxs)
+        {
+            if (ctx.UsesThis && ctx.Host != null)
+            {
+                Top(ctx.Host).NeedsThis = true;
+            }
+        }
 
-        foreach (var s in _scopes)
-            if (s.Env != null) CreateEnvMembers(s.Env);
+        foreach (Scope s in _scopes)
+        {
+            if (s.Env != null)
+            {
+                CreateEnvMembers(s.Env);
+            }
+        }
 
-        foreach (var ctx in _ctxs)
-            if (ctx.Node != null) CreateLambdaMethod(ctx);
+        foreach (Ctx ctx in _ctxs)
+        {
+            if (ctx.Node != null)
+            {
+                CreateLambdaMethod(ctx);
+            }
+        }
     }
 
     private static Env Top(Env e)
     {
-        while (e.Parent != null) e = e.Parent;
+        while (e.Parent != null)
+        {
+            e = e.Parent;
+        }
+
         return e;
     }
 
     private void CreateEnv(Scope scope)
     {
-        if (scope.Env != null) return;
-        var cls = SynthesizedClassFactory.Create(_c, _container, _method, "<>c__DisplayClass" + _methodOrdinal + "_" + _scopeCounter++, null, out var closed);
-        var env = new Env
+        if (scope.Env != null)
+        {
+            return;
+        }
+
+        SynthesizedNamedType cls = SynthesizedClassFactory.Create(Comp, _container, _method, "<>c__DisplayClass" + _methodOrdinal + "_" + _scopeCounter++, null, out NamedTypeSymbol? closed);
+        Env env = new()
         {
             Scope = scope,
             Class = cls,
@@ -305,21 +402,25 @@ internal sealed class ClosureLowerer
 
     private void CreateEnvMembers(Env env)
     {
-        var cls = env.Class;
-        var used = new HashSet<string>(StringComparer.Ordinal);
+        SynthesizedNamedType cls = env.Class;
+        HashSet<string> used = new(StringComparer.Ordinal);
         string Unique(string n)
         {
-            var name = n;
-            for (var i = 1; !used.Add(name); i++) name = n + "_" + i;
+            string name = n;
+            for (int i = 1; !used.Add(name); i++)
+            {
+                name = n + "_" + i;
+            }
+
             return name;
         }
-        var voidType = _c.GetSpecialType(SpecialType.Void);
-        cls.AddMember(new SynthesizedMethodSymbol(cls, ".ctor", MethodKind.Constructor, Accessibility.Public, false, voidType, ImmutableArray<ParameterSymbol>.Empty)
+        NamedTypeSymbol voidType = Comp.GetSpecialType(SpecialType.Void);
+        cls.AddMember(new SynthesizedMethodSymbol(cls, ".ctor", MethodKind.Constructor, Accessibility.Public, false, voidType, [])
         { SynthesizedKind = SynthesizedBodyKind.Custom });
-        foreach (var sym in env.Scope.CapturedOrdered)
+        foreach (Symbol sym in env.Scope.CapturedOrdered)
         {
-            var type = sym switch { LocalSymbol l => l.Type, ParameterSymbol p => p.Type, _ => throw new InvalidOperationException() };
-            var f = new SynthesizedFieldSymbol(cls, Unique(sym.Name), type);
+            TypeSymbol type = sym switch { LocalSymbol l => l.Type, ParameterSymbol p => p.Type, _ => throw new InvalidOperationException() };
+            SynthesizedFieldSymbol f = new(cls, Unique(sym.Name), type);
             cls.AddMember(f);
             env.Fields[sym] = f;
         }
@@ -336,24 +437,37 @@ internal sealed class ClosureLowerer
         if (!ReferenceEquals(env.Closed, cls))
         {
             // fields are accessed through the instantiated type
-            foreach (var key in env.Fields.Keys.ToList()) env.Fields[key] = ClosedField(env, env.Fields[key]);
-            if (env.ParentField != null) env.ParentField = ClosedField(env, env.ParentField);
-            if (env.ThisField != null) env.ThisField = ClosedField(env, env.ThisField);
+            foreach (Symbol? key in env.Fields.Keys.ToList())
+            {
+                env.Fields[key] = ClosedField(env, env.Fields[key]);
+            }
+
+            if (env.ParentField != null)
+            {
+                env.ParentField = ClosedField(env, env.ParentField);
+            }
+
+            if (env.ThisField != null)
+            {
+                env.ThisField = ClosedField(env, env.ThisField);
+            }
         }
     }
 
-    private static FieldSymbol ClosedField(Env env, FieldSymbol def) =>
-        env.Closed.GetMembers(def.Name).OfType<FieldSymbol>().First();
+    private static FieldSymbol ClosedField(Env env, FieldSymbol def)
+    {
+        return env.Closed.GetMembers(def.Name).OfType<FieldSymbol>().First();
+    }
 
     private void CreateLambdaMethod(Ctx ctx)
     {
-        var lambda = ctx.Node!.Symbol;
-        var ordinal = _lambdaCounter++;
-        var name = "<" + _method.Name + ">b__" + _methodOrdinal + "_" + ordinal;
-        var hostType = ctx.Kind == HostKind.Env ? (NamedTypeSymbol)ctx.Host!.Class : _container;
-        var isStatic = ctx.Kind == HostKind.Static;
-        var acc = ctx.Kind == HostKind.Env ? Accessibility.Internal : Accessibility.Private;
-        var m = new SynthesizedMethodSymbol(hostType, name, MethodKind.LambdaMethod, acc, isStatic, lambda.ReturnType, lambda.Parameters)
+        LambdaSymbol lambda = ctx.Node!.Symbol;
+        int ordinal = _lambdaCounter++;
+        string name = "<" + _method.Name + ">b__" + _methodOrdinal + "_" + ordinal;
+        NamedTypeSymbol hostType = ctx.Kind == HostKind.Env ? ctx.Host!.Class : _container;
+        bool isStatic = ctx.Kind == HostKind.Static;
+        Accessibility acc = ctx.Kind == HostKind.Env ? Accessibility.Internal : Accessibility.Private;
+        SynthesizedMethodSymbol m = new(hostType, name, MethodKind.LambdaMethod, acc, isStatic, lambda.ReturnType, lambda.Parameters)
         {
             SynthesizedKind = SynthesizedBodyKind.Custom,
             SourceMethod = _method,
@@ -362,23 +476,33 @@ internal sealed class ClosureLowerer
             IsIteratorMethod = lambda.IsIterator,
         };
         ctx.Method = m;
-        if (ctx.Kind == HostKind.Env) ctx.Host!.Class.AddMember(m);
+        if (ctx.Kind == HostKind.Env)
+        {
+            ctx.Host!.Class.AddMember(m);
+        }
         else
         {
-            if (!_program.ExtraMembers.TryGetValue(_container, out var list)) _program.ExtraMembers[_container] = list = new List<Symbol>();
+            if (!_program.ExtraMembers.TryGetValue(_container, out List<Symbol>? list))
+            {
+                _program.ExtraMembers[_container] = list = [];
+            }
+
             list.Add(m);
         }
         ctx.MethodRef = ctx.Kind == HostKind.Env && !ReferenceEquals(ctx.Host!.Closed, ctx.Host.Class)
             ? ctx.Host.Closed.GetMembers(name).OfType<MethodSymbol>().First()
             : m;
-        if (_program.MethodFiles.TryGetValue(_method, out var file)) _program.MethodFiles[m] = file;
+        if (_program.MethodFiles.TryGetValue(_method, out SourceFile? file))
+        {
+            _program.MethodFiles[m] = file;
+        }
     }
 
     // ------------------------------------------------------------------ rewriting
 
     private BoundBlock RewriteBody(Ctx ctx, BoundBlock body)
     {
-        var rewriter = new Rewriter(this, ctx);
+        Rewriter rewriter = new(this, ctx);
         return rewriter.RewriteCtxBody(ctx, body);
     }
 
@@ -388,48 +512,67 @@ internal sealed class ClosureLowerer
 
         public BoundBlock RewriteCtxBody(Ctx target, BoundBlock body)
         {
-            var saved = _ctx;
+            Ctx saved = _ctx;
             _ctx = target;
-            var root = target.RootScope;
-            var prelude = new List<BoundStatement>();
-            var locals = new List<LocalSymbol>();
+            Scope root = target.RootScope;
+            List<BoundStatement> prelude = [];
+            List<LocalSymbol> locals = [];
             if (root.Env != null)
             {
                 locals.Add(root.Env.Local);
                 prelude.AddRange(EnvPrelude(root.Env));
-                foreach (var sym in root.CapturedOrdered)
+                foreach (Symbol sym in root.CapturedOrdered)
                 {
-                    if (sym is not ParameterSymbol p) continue;
+                    if (sym is not ParameterSymbol p)
+                    {
+                        continue;
+                    }
+
                     prelude.Add(Assign(new BoundFieldAccess(new BoundLocal(root.Env.Local), root.Env.Fields[sym]), new BoundParameter(p)));
                 }
             }
-            var rewritten = (BoundBlock)Visit(body)!;
+            BoundBlock rewritten = (BoundBlock)Visit(body)!;
             _ctx = saved;
-            if (prelude.Count == 0) return rewritten;
+            if (prelude.Count == 0)
+            {
+                return rewritten;
+            }
+
             prelude.Add(rewritten);
-            return new BoundBlock(locals.ToImmutableArray(), prelude.ToImmutableArray()) { Syntax = body.Syntax };
+            return new BoundBlock([.. locals], [.. prelude]) { Syntax = body.Syntax };
         }
 
-        private static BoundStatement Assign(BoundExpression target, BoundExpression value) =>
-            new BoundExpressionStatement(new BoundAssignment(target, value) { IsDiscarded = true });
+        private static BoundExpressionStatement Assign(BoundExpression target, BoundExpression value)
+        {
+            return new BoundExpressionStatement(new BoundAssignment(target, value) { IsDiscarded = true });
+        }
 
         private IEnumerable<BoundStatement> EnvPrelude(Env env)
         {
-            var ctor = env.Closed.InstanceConstructors.First();
-            yield return Assign(new BoundLocal(env.Local), new BoundObjectCreation(ctor, env.Closed, ImmutableArray<BoundExpression>.Empty, ImmutableArray<BoundMemberInit>.Empty));
+            MethodSymbol ctor = env.Closed.InstanceConstructors.First();
+            yield return Assign(new BoundLocal(env.Local), new BoundObjectCreation(ctor, env.Closed, [], []));
             if (env.ParentField != null)
+            {
                 yield return Assign(new BoundFieldAccess(new BoundLocal(env.Local), env.ParentField), AccessEnv(env.Parent!));
+            }
+
             if (env.ThisField != null)
+            {
                 yield return Assign(new BoundFieldAccess(new BoundLocal(env.Local), env.ThisField), ThisExpr());
+            }
         }
 
         /// <summary>The display class instance of <paramref name="target"/> as seen from the current body.</summary>
         private BoundExpression AccessEnv(Env target)
         {
-            if (target.Scope.Owner == _ctx) return new BoundLocal(target.Local);
-            var host = _ctx.Host ?? throw new InvalidOperationException("closure host missing");
+            if (target.Scope.Owner == _ctx)
+            {
+                return new BoundLocal(target.Local);
+            }
+
+            Env host = _ctx.Host ?? throw new InvalidOperationException("closure host missing");
             BoundExpression expr = new BoundThis(host.Closed);
-            var e = host;
+            Env e = host;
             while (!ReferenceEquals(e, target))
             {
                 expr = new BoundFieldAccess(expr, e.ParentField ?? throw new InvalidOperationException("closure chain broken"));
@@ -440,9 +583,13 @@ internal sealed class ClosureLowerer
 
         private BoundExpression ThisExpr()
         {
-            if (_ctx.Host == null) return new BoundThis(o.ContainerSelf);
+            if (_ctx.Host == null)
+            {
+                return new BoundThis(o.ContainerSelf);
+            }
+
             BoundExpression expr = new BoundThis(_ctx.Host.Closed);
-            var e = _ctx.Host;
+            Env e = _ctx.Host;
             while (e.Parent != null)
             {
                 expr = new BoundFieldAccess(expr, e.ParentField!);
@@ -451,100 +598,152 @@ internal sealed class ClosureLowerer
             return new BoundFieldAccess(expr, e.ThisField ?? throw new InvalidOperationException("closure this missing"));
         }
 
-        private bool IsCaptured(Symbol sym) => o._decl.TryGetValue(sym, out var s) && s.Captured.Contains(sym);
-
-        private BoundExpression VarRef(Symbol sym)
+        private bool IsCaptured(Symbol sym)
         {
-            var scope = o._decl[sym];
+            return o._decl.TryGetValue(sym, out Scope? s) && s.Captured.Contains(sym);
+        }
+
+        private BoundFieldAccess VarRef(Symbol sym)
+        {
+            Scope scope = o._decl[sym];
             return new BoundFieldAccess(AccessEnv(scope.Env!), scope.Env!.Fields[sym]);
         }
 
         private static ImmutableArray<LocalSymbol> Remaining(ImmutableArray<LocalSymbol> locals, Scope scope, Env? env)
         {
-            var b = ImmutableArray.CreateBuilder<LocalSymbol>();
-            foreach (var l in locals) if (!scope.Captured.Contains(l)) b.Add(l);
-            if (env != null) b.Add(env.Local);
+            ImmutableArray<LocalSymbol>.Builder b = ImmutableArray.CreateBuilder<LocalSymbol>();
+            foreach (LocalSymbol l in locals)
+            {
+                if (!scope.Captured.Contains(l))
+                {
+                    b.Add(l);
+                }
+            }
+
+            if (env != null)
+            {
+                b.Add(env.Local);
+            }
+
             return b.ToImmutable();
         }
 
-        protected override BoundNode VisitLocal(BoundLocal n) => IsCaptured(n.Local) ? VarRef(n.Local) : n;
-        protected override BoundNode VisitParameter(BoundParameter n) => IsCaptured(n.Parameter) ? VarRef(n.Parameter) : n;
-        protected override BoundNode VisitThis(BoundThis n) => _ctx.Host != null ? ThisExpr() : n;
+        protected override BoundNode VisitLocal(BoundLocal n)
+        {
+            return IsCaptured(n.Local) ? VarRef(n.Local) : n;
+        }
+
+        protected override BoundNode VisitParameter(BoundParameter n)
+        {
+            return IsCaptured(n.Parameter) ? VarRef(n.Parameter) : n;
+        }
+
+        protected override BoundNode VisitThis(BoundThis n)
+        {
+            return _ctx.Host != null ? ThisExpr() : n;
+        }
 
         protected override BoundNode VisitLocalDeclaration(BoundLocalDeclaration n)
         {
-            if (!IsCaptured(n.Local)) return base.VisitLocalDeclaration(n);
-            if (n.Initializer == null) return new BoundNoOp { Syntax = n.Syntax };
-            return new BoundExpressionStatement(new BoundAssignment(VarRef(n.Local), VisitExpr(n.Initializer)) { Syntax = n.Syntax, IsDiscarded = true }) { Syntax = n.Syntax };
+            return !IsCaptured(n.Local)
+                ? base.VisitLocalDeclaration(n)
+                : n.Initializer == null
+                ? new BoundNoOp { Syntax = n.Syntax }
+                : new BoundExpressionStatement(new BoundAssignment(VarRef(n.Local), VisitExpr(n.Initializer)) { Syntax = n.Syntax, IsDiscarded = true }) { Syntax = n.Syntax };
         }
 
         protected override BoundNode VisitBlock(BoundBlock n)
         {
-            var stmts = VisitStmts(n.Statements);
-            if (!o._scopeOf.TryGetValue(n, out var sc) || (sc.Captured.Count == 0 && sc.Env == null))
+            ImmutableArray<BoundStatement> stmts = VisitStmts(n.Statements);
+            if (!o._scopeOf.TryGetValue(n, out Scope? sc) || (sc.Captured.Count == 0 && sc.Env == null))
+            {
                 return stmts == n.Statements ? n : new BoundBlock(n.Locals, stmts) { Syntax = n.Syntax };
-            var all = new List<BoundStatement>();
-            if (sc.Env != null) all.AddRange(EnvPrelude(sc.Env));
+            }
+
+            List<BoundStatement> all = [];
+            if (sc.Env != null)
+            {
+                all.AddRange(EnvPrelude(sc.Env));
+            }
+
             all.AddRange(stmts);
-            return new BoundBlock(Remaining(n.Locals, sc, sc.Env), all.ToImmutableArray()) { Syntax = n.Syntax };
+            return new BoundBlock(Remaining(n.Locals, sc, sc.Env), [.. all]) { Syntax = n.Syntax };
         }
 
         protected override BoundNode VisitFor(BoundFor n)
         {
-            var i = VisitStmtOpt(n.Initializer);
-            var c = VisitExprOpt(n.Condition);
-            var inc = VisitStmtOpt(n.Increment);
-            var b = VisitStmt(n.Body);
-            if (!o._scopeOf.TryGetValue(n, out var sc) || sc.Captured.Count == 0 && sc.Env == null)
+            BoundStatement? i = VisitStmtOpt(n.Initializer);
+            BoundExpression? c = VisitExprOpt(n.Condition);
+            BoundStatement? inc = VisitStmtOpt(n.Increment);
+            BoundStatement b = VisitStmt(n.Body);
+            if (!o._scopeOf.TryGetValue(n, out Scope? sc) || (sc.Captured.Count == 0 && sc.Env == null))
+            {
                 return new BoundFor(n.Locals, i, c, inc, b, n.BreakLabel, n.ContinueLabel) { Syntax = n.Syntax };
-            var loop = new BoundFor(Remaining(n.Locals, sc, null), i, c, inc, b, n.BreakLabel, n.ContinueLabel) { Syntax = n.Syntax };
-            if (sc.Env == null) return loop;
-            var all = new List<BoundStatement>(EnvPrelude(sc.Env)) { loop };
-            return new BoundBlock([sc.Env.Local], all.ToImmutableArray()) { Syntax = n.Syntax };
+            }
+
+            BoundFor loop = new(Remaining(n.Locals, sc, null), i, c, inc, b, n.BreakLabel, n.ContinueLabel) { Syntax = n.Syntax };
+            if (sc.Env == null)
+            {
+                return loop;
+            }
+
+            List<BoundStatement> all = [.. EnvPrelude(sc.Env), loop];
+            return new BoundBlock([sc.Env.Local], [.. all]) { Syntax = n.Syntax };
         }
 
         protected override BoundNode VisitSequence(BoundSequence n)
         {
-            var effects = VisitStmts(n.SideEffects);
-            var value = VisitExpr(n.Value);
-            if (!o._scopeOf.TryGetValue(n, out var sc) || sc.Captured.Count == 0 && sc.Env == null)
+            ImmutableArray<BoundStatement> effects = VisitStmts(n.SideEffects);
+            BoundExpression value = VisitExpr(n.Value);
+            if (!o._scopeOf.TryGetValue(n, out Scope? sc) || (sc.Captured.Count == 0 && sc.Env == null))
+            {
                 return effects == n.SideEffects && ReferenceEquals(value, n.Value) ? n : new BoundSequence(n.Locals, effects, value) { Syntax = n.Syntax };
-            var all = new List<BoundStatement>();
-            if (sc.Env != null) all.AddRange(EnvPrelude(sc.Env));
+            }
+
+            List<BoundStatement> all = [];
+            if (sc.Env != null)
+            {
+                all.AddRange(EnvPrelude(sc.Env));
+            }
+
             all.AddRange(effects);
-            return new BoundSequence(Remaining(n.Locals, sc, sc.Env), all.ToImmutableArray(), value) { Syntax = n.Syntax };
+            return new BoundSequence(Remaining(n.Locals, sc, sc.Env), [.. all], value) { Syntax = n.Syntax };
         }
 
         protected override BoundNode VisitTry(BoundTry n)
         {
-            var body = (BoundBlock)Visit(n.Body)!;
-            var catches = ImmutableArray.CreateBuilder<BoundCatch>(n.Catches.Length);
-            foreach (var c in n.Catches)
+            BoundBlock body = (BoundBlock)Visit(n.Body)!;
+            ImmutableArray<BoundCatch>.Builder catches = ImmutableArray.CreateBuilder<BoundCatch>(n.Catches.Length);
+            foreach (BoundCatch c in n.Catches)
             {
-                var cb = (BoundBlock)Visit(c.Body)!;
-                if (c.Local != null && o._scopeOf.TryGetValue(c, out var sc) && sc.Captured.Contains(c.Local))
+                BoundBlock cb = (BoundBlock)Visit(c.Body)!;
+                if (c.Local != null && o._scopeOf.TryGetValue(c, out Scope? sc) && sc.Captured.Contains(c.Local))
                 {
-                    var temp = new LocalSymbol(c.Local.Name, c.Local.Type, false, c.Local.Container) { IsSynthesized = true };
-                    var all = new List<BoundStatement>(EnvPrelude(sc.Env!))
-                    {
+                    LocalSymbol temp = new(c.Local.Name, c.Local.Type, false, c.Local.Container) { IsSynthesized = true };
+                    List<BoundStatement> all =
+                    [
+                        .. EnvPrelude(sc.Env!),
                         Assign(new BoundFieldAccess(new BoundLocal(sc.Env!.Local), sc.Env.Fields[c.Local]), new BoundLocal(temp)),
                         cb,
-                    };
-                    catches.Add(new BoundCatch(temp, c.ExceptionType, new BoundBlock([sc.Env.Local], all.ToImmutableArray())));
+                    ];
+                    catches.Add(new BoundCatch(temp, c.ExceptionType, new BoundBlock([sc.Env.Local], [.. all])));
                 }
-                else catches.Add(new BoundCatch(c.Local, c.ExceptionType, cb));
+                else
+                {
+                    catches.Add(new BoundCatch(c.Local, c.ExceptionType, cb));
+                }
             }
-            var fin = n.Finally == null ? null : (BoundBlock)Visit(n.Finally)!;
+            BoundBlock? fin = n.Finally == null ? null : (BoundBlock)Visit(n.Finally)!;
             return new BoundTry(body, catches.MoveToImmutable(), fin) { Syntax = n.Syntax };
         }
 
         protected override BoundNode VisitLambda(BoundLambda n)
         {
-            var target = o._lambdaCtx[n];
+            Ctx target = o._lambdaCtx[n];
             if (!target.Rewritten)
             {
                 target.Rewritten = true;
-                var body = RewriteCtxBody(target, n.Body);
+                BoundBlock body = RewriteCtxBody(target, n.Body);
                 o._program.Bodies[target.Method!] = body;
             }
             BoundExpression? receiver = target.Kind switch

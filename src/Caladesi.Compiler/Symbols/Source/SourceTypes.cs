@@ -1,54 +1,47 @@
 using System.Collections.Immutable;
-using Caladesi.Compiler.Bound;
 using Caladesi.Compiler.Diagnostics;
 using Caladesi.Compiler.Syntax;
 
 namespace Caladesi.Compiler.Symbols.Source;
 
-public abstract class SourceNamedType : NamedTypeSymbol
+public abstract class SourceNamedType(Compilation compilation, SourceFile file, SyntaxNode? syntax, string name, Symbol? container, Accessibility accessibility) : NamedTypeSymbol
 {
     private ImmutableArray<TypeParameterSymbol> _typeParams;
     private bool _typeParamsDone;
     private ImmutableArray<Symbol> _members;
     private bool _membersBuilding;
     private Dictionary<string, ImmutableArray<Symbol>>? _byName;
-    private readonly string _name;
-    private readonly Symbol? _container;
+    private readonly string _name = name;
+    private readonly Symbol? _container = container;
 
-    protected SourceNamedType(Compilation compilation, SourceFile file, SyntaxNode? syntax, string name, Symbol? container, Accessibility accessibility)
-    {
-        Compilation = compilation;
-        File = file;
-        DeclaringSyntax = syntax;
-        _name = name;
-        _container = container;
-        Accessibility_ = accessibility;
-    }
-
-    public Compilation Compilation { get; }
-    public SourceFile File { get; }
-    public SyntaxNode? DeclaringSyntax { get; }
-    private Accessibility Accessibility_ { get; }
+    public Compilation Compilation { get; } = compilation;
+    public SourceFile File { get; } = file;
+    public SyntaxNode? DeclaringSyntax { get; } = syntax;
+    private Accessibility Accessibility_ { get; } = accessibility;
     public override string Name => _name;
     public override Symbol? ContainingSymbol => _container;
     public override bool IsFromSource => true;
     public override Accessibility DeclaredAccessibility => Accessibility_;
     protected virtual TypeParameterListSyntax? TypeParameterListSyntax => null;
     public virtual SyntaxToken? IdentifierToken => null;
-    public virtual ImmutableArray<DecoratorSyntax> DecoratorSyntaxes => ImmutableArray<DecoratorSyntax>.Empty;
+    public virtual ImmutableArray<DecoratorSyntax> DecoratorSyntaxes => [];
 
     public override ImmutableArray<SourceLocation> Locations =>
-        IdentifierToken is { } t ? [new SourceLocation(File.Tree, t.Span)] : ImmutableArray<SourceLocation>.Empty;
+        IdentifierToken is { } t ? [new SourceLocation(File.Tree, t.Span)] : [];
 
     public override ImmutableArray<TypeParameterSymbol> TypeParameters
     {
         get
         {
-            if (_typeParamsDone) return _typeParams;
+            if (_typeParamsDone)
+            {
+                return _typeParams;
+            }
+
             _typeParamsDone = true;
-            var list = TypeParameterListSyntax;
+            TypeParameterListSyntax? list = TypeParameterListSyntax;
             _typeParams = list == null || list.Parameters.Count == 0
-                ? ImmutableArray<TypeParameterSymbol>.Empty
+                ? []
                 : SourceTypeParameters.Create(Compilation, File, this, null, list);
             return _typeParams;
         }
@@ -56,14 +49,25 @@ public abstract class SourceNamedType : NamedTypeSymbol
 
     public override ImmutableArray<TypeSymbol> TypeArguments => TypeParameters.CastArray<TypeSymbol>();
 
-    protected Binder CreateBinder() => Compilation.CreateBinder(File, this, Compilation.DeclarationDiagnostics);
+    protected Binder CreateBinder()
+    {
+        return Compilation.CreateBinder(File, this, Compilation.DeclarationDiagnostics);
+    }
 
     protected abstract ImmutableArray<Symbol> BuildMembers();
 
     public override ImmutableArray<Symbol> GetMembers()
     {
-        if (!_members.IsDefault) return _members;
-        if (_membersBuilding) return ImmutableArray<Symbol>.Empty;
+        if (!_members.IsDefault)
+        {
+            return _members;
+        }
+
+        if (_membersBuilding)
+        {
+            return [];
+        }
+
         _membersBuilding = true;
         _members = BuildMembers();
         _membersBuilding = false;
@@ -74,17 +78,28 @@ public abstract class SourceNamedType : NamedTypeSymbol
     {
         if (_byName == null)
         {
-            var all = GetMembers();
-            if (_membersBuilding) return ImmutableArray<Symbol>.Empty;
-            var d = new Dictionary<string, ImmutableArray<Symbol>>(StringComparer.Ordinal);
-            foreach (var g in all.GroupBy(m => m.Name)) d[g.Key] = g.ToImmutableArray();
+            ImmutableArray<Symbol> all = GetMembers();
+            if (_membersBuilding)
+            {
+                return [];
+            }
+
+            Dictionary<string, ImmutableArray<Symbol>> d = new(StringComparer.Ordinal);
+            foreach (IGrouping<string, Symbol> g in all.GroupBy(m => m.Name))
+            {
+                d[g.Key] = [.. g];
+            }
+
             _byName = d;
         }
-        return _byName.TryGetValue(name, out var r) ? r : ImmutableArray<Symbol>.Empty;
+        return _byName.TryGetValue(name, out ImmutableArray<Symbol> r) ? r : [];
     }
 
     /// <summary>Invalidates cached members (used when synthesized members are added by later phases).</summary>
-    internal void ResetMemberCache() => _byName = null;
+    internal void ResetMemberCache()
+    {
+        _byName = null;
+    }
 }
 
 // ======================================================================= helpers for building members
@@ -95,8 +110,8 @@ internal static class MemberFactory
         Accessibility acc, bool isStatic, bool isAbstract, bool isVirtual, bool isOverride, bool isSealed, SynthesizedBodyKind kind,
         AccessorDeclarationSyntax? declaration = null)
     {
-        var name = (isGetter ? "get_" : "set_") + prop.Name;
-        var m = new SourceMethodSymbol(c, f, container, name, isGetter ? MethodKind.PropertyGet : MethodKind.PropertySet, default,
+        string name = (isGetter ? "get_" : "set_") + prop.Name;
+        SourceMethodSymbol m = new(c, f, container, name, isGetter ? MethodKind.PropertyGet : MethodKind.PropertySet, default,
             declaration, acc)
         {
             SynthesizedKind = declaration?.Body != null ? SynthesizedBodyKind.None : kind,
@@ -109,7 +124,7 @@ internal static class MemberFactory
             ParameterList = declaration?.Parameters,
             BodySyntax = declaration?.Body,
             ExplicitReturnType = isGetter ? null : c.GetSpecialType(SpecialType.Void),
-            ExplicitParameters = isGetter ? ImmutableArray<ParameterSymbol>.Empty : default,
+            ExplicitParameters = isGetter ? [] : default,
         };
         return m;
     }
@@ -117,63 +132,70 @@ internal static class MemberFactory
 
 // ======================================================================= classes
 
-public sealed class SourceClassSymbol : SourceNamedType
+public sealed class SourceClassSymbol(Compilation compilation, SourceFile file, ClassDeclarationSyntax syntax, Symbol container) : SourceNamedType(compilation, file, syntax, syntax.Identifier.Text, container, new ModifierSet(syntax.Modifiers).TypeAccessibility)
 {
-    private readonly ClassDeclarationSyntax _syntax;
-    private readonly ModifierSet _mods;
     private NamedTypeSymbol? _base;
     private bool _baseDone;
     private ImmutableArray<NamedTypeSymbol> _interfaces;
 
-    public SourceClassSymbol(Compilation compilation, SourceFile file, ClassDeclarationSyntax syntax, Symbol container)
-        : base(compilation, file, syntax, syntax.Identifier.Text, container, new ModifierSet(syntax.Modifiers).TypeAccessibility)
-    {
-        _syntax = syntax;
-        _mods = new ModifierSet(syntax.Modifiers);
-    }
-
-    public ClassDeclarationSyntax Syntax => _syntax;
-    public ModifierSet Modifiers => _mods;
-    protected override TypeParameterListSyntax? TypeParameterListSyntax => _syntax.TypeParameters;
-    public override SyntaxToken? IdentifierToken => _syntax.Identifier;
-    public override ImmutableArray<DecoratorSyntax> DecoratorSyntaxes => _syntax.Decorators.ToImmutableArray();
+    public ClassDeclarationSyntax Syntax { get; } = syntax;
+    public ModifierSet Modifiers { get; } = new ModifierSet(syntax.Modifiers);
+    protected override TypeParameterListSyntax? TypeParameterListSyntax => Syntax.TypeParameters;
+    public override SyntaxToken? IdentifierToken => Syntax.Identifier;
+    public override ImmutableArray<DecoratorSyntax> DecoratorSyntaxes => [.. Syntax.Decorators];
     public override TypeKind TypeKind => TypeKind.Class;
-    public override bool IsAbstract => _mods.IsAbstract;
-    public override bool IsSealed => _mods.IsSealed;
-    public override bool IsStatic => _mods.IsStatic;
+    public override bool IsAbstract => Modifiers.IsAbstract;
+    public override bool IsSealed => Modifiers.IsSealed;
+    public override bool IsStatic => Modifiers.IsStatic;
 
     public override NamedTypeSymbol? BaseType
     {
         get
         {
-            if (_baseDone) return _base;
-            _baseDone = true;
-            var obj = Compilation.GetSpecialType(SpecialType.Object);
-            if (_syntax.ExtendsClause is { Types.Count: > 0 } ext)
+            if (_baseDone)
             {
-                var binder = CreateBinder();
-                var t = binder.BindType(ext.Types[0]);
+                return _base;
+            }
+
+            _baseDone = true;
+            NamedTypeSymbol obj = Compilation.GetSpecialType(SpecialType.Object);
+            if (Syntax.ExtendsClause is { Types.Count: > 0 } ext)
+            {
+                Binder binder = CreateBinder();
+                TypeSymbol t = binder.BindType(ext.Types[0]);
                 if (t is NamedTypeSymbol { TypeKind: TypeKind.Class } nt && !nt.IsErrorType)
                 {
                     if (nt.IsSealed || nt.SpecialType is SpecialType.String or SpecialType.Array or SpecialType.Enum or SpecialType.ValueType)
+                    {
                         Compilation.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.CannotInheritSealed, File.FilePath, ext.Types[0].Span, nt.ToDisplayString()));
+                    }
+
                     _base = nt;
-                    for (var x = nt; x != null; x = x.BaseType)
+                    for (NamedTypeSymbol? x = nt; x != null; x = x.BaseType)
+                    {
                         if (ReferenceEquals(x.OriginalDefinition, this))
                         {
                             Compilation.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.CyclicInheritance, File.FilePath, ext.Types[0].Span, Name));
                             _base = obj;
                             break;
                         }
+                    }
                 }
                 else if (!t.IsErrorType)
                 {
                     Compilation.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.BaseMustBeClass, File.FilePath, ext.Types[0].Span, t.ToDisplayString()));
                     _base = obj;
                 }
-                else _base = obj;
+                else
+                {
+                    _base = obj;
+                }
             }
-            else _base = obj;
+            else
+            {
+                _base = obj;
+            }
+
             return _base;
         }
     }
@@ -182,34 +204,47 @@ public sealed class SourceClassSymbol : SourceNamedType
     {
         get
         {
-            if (!_interfaces.IsDefault) return _interfaces;
-            if (_syntax.ImplementsClause == null) return _interfaces = ImmutableArray<NamedTypeSymbol>.Empty;
-            var binder = CreateBinder();
-            var b = ImmutableArray.CreateBuilder<NamedTypeSymbol>();
-            foreach (var ts in _syntax.ImplementsClause.Types)
+            if (!_interfaces.IsDefault)
             {
-                var t = binder.BindType(ts);
-                if (t is NamedTypeSymbol { TypeKind: TypeKind.Interface } i) b.Add(i);
+                return _interfaces;
+            }
+
+            if (Syntax.ImplementsClause == null)
+            {
+                return _interfaces = [];
+            }
+
+            Binder binder = CreateBinder();
+            ImmutableArray<NamedTypeSymbol>.Builder b = ImmutableArray.CreateBuilder<NamedTypeSymbol>();
+            foreach (TypeSyntax ts in Syntax.ImplementsClause.Types)
+            {
+                TypeSymbol t = binder.BindType(ts);
+                if (t is NamedTypeSymbol { TypeKind: TypeKind.Interface } i)
+                {
+                    b.Add(i);
+                }
                 else if (!t.IsErrorType)
+                {
                     Compilation.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.ImplementsMustBeInterface, File.FilePath, ts.Span, t.ToDisplayString()));
+                }
             }
             return _interfaces = b.ToImmutable();
         }
     }
 
     /// <summary>Instance members with initializers, in declaration order.</summary>
-    public ImmutableArray<(Symbol Member, ExpressionSyntax Initializer)> InstanceInitializers { get; private set; } = ImmutableArray<(Symbol, ExpressionSyntax)>.Empty;
-    public ImmutableArray<(Symbol Member, ExpressionSyntax Initializer)> StaticInitializers { get; private set; } = ImmutableArray<(Symbol, ExpressionSyntax)>.Empty;
+    public ImmutableArray<(Symbol Member, ExpressionSyntax Initializer)> InstanceInitializers { get; private set; } = [];
+    public ImmutableArray<(Symbol Member, ExpressionSyntax Initializer)> StaticInitializers { get; private set; } = [];
 
     protected override ImmutableArray<Symbol> BuildMembers()
     {
-        var b = ImmutableArray.CreateBuilder<Symbol>();
-        var inst = ImmutableArray.CreateBuilder<(Symbol, ExpressionSyntax)>();
-        var stat = ImmutableArray.CreateBuilder<(Symbol, ExpressionSyntax)>();
-        var accessorGroups = new Dictionary<(string, bool), List<AccessorDeclarationSyntax>>();
-        var hasCtor = false;
+        ImmutableArray<Symbol>.Builder b = ImmutableArray.CreateBuilder<Symbol>();
+        ImmutableArray<(Symbol, ExpressionSyntax)>.Builder inst = ImmutableArray.CreateBuilder<(Symbol, ExpressionSyntax)>();
+        ImmutableArray<(Symbol, ExpressionSyntax)>.Builder stat = ImmutableArray.CreateBuilder<(Symbol, ExpressionSyntax)>();
+        Dictionary<(string, bool), List<AccessorDeclarationSyntax>> accessorGroups = [];
+        bool hasCtor = false;
 
-        foreach (var m in _syntax.Members)
+        foreach (MemberDeclarationSyntax m in Syntax.Members)
         {
             switch (m)
             {
@@ -225,36 +260,43 @@ public sealed class SourceClassSymbol : SourceNamedType
                     AddParameterProperties(b, cd);
                     break;
                 case AccessorDeclarationSyntax ad:
-                {
-                    var isStatic = new ModifierSet(ad.Modifiers).IsStatic;
-                    var key = (ad.Identifier.Text, isStatic);
-                    if (!accessorGroups.TryGetValue(key, out var l)) accessorGroups[key] = l = new List<AccessorDeclarationSyntax>();
-                    l.Add(ad);
-                    break;
-                }
+                    {
+                        bool isStatic = new ModifierSet(ad.Modifiers).IsStatic;
+                        (string Text, bool isStatic) key = (ad.Identifier.Text, isStatic);
+                        if (!accessorGroups.TryGetValue(key, out List<AccessorDeclarationSyntax>? l))
+                        {
+                            accessorGroups[key] = l = [];
+                        }
+
+                        l.Add(ad);
+                        break;
+                    }
             }
         }
 
-        foreach (var g in accessorGroups.Values) b.AddRange(CreateAccessorProperty(g));
+        foreach (List<AccessorDeclarationSyntax> g in accessorGroups.Values)
+        {
+            b.AddRange(CreateAccessorProperty(g));
+        }
 
-        var inherited = !hasCtor && !IsStatic && TypeKind == TypeKind.Class ? InheritedConstructors() : ImmutableArray<MethodSymbol>.Empty;
-        foreach (var bc in inherited)
+        ImmutableArray<MethodSymbol> inherited = !hasCtor && !IsStatic && TypeKind == TypeKind.Class ? InheritedConstructors() : [];
+        foreach (MethodSymbol bc in inherited)
         {
             b.Add(new SourceMethodSymbol(Compilation, File, this, ".ctor", MethodKind.Constructor, default, null,
-                _mods.IsAbstract ? Accessibility.Protected : bc.DeclaredAccessibility == Accessibility.Protected ? Accessibility.Protected : Accessibility.Public)
+                Modifiers.IsAbstract ? Accessibility.Protected : bc.DeclaredAccessibility == Accessibility.Protected ? Accessibility.Protected : Accessibility.Public)
             {
                 SynthesizedKind = SynthesizedBodyKind.InheritedConstructor,
                 InheritedBaseConstructor = bc,
-                ExplicitParameters = bc.Parameters.Select(p => p.WithType(p.Type, null!)).ToImmutableArray(),
+                ExplicitParameters = [.. bc.Parameters.Select(p => p.WithType(p.Type, null!))],
             });
         }
         if (!hasCtor && !IsStatic && inherited.IsEmpty)
         {
             b.Add(new SourceMethodSymbol(Compilation, File, this, ".ctor", MethodKind.Constructor, default, null,
-                _mods.IsAbstract ? Accessibility.Protected : Accessibility.Public)
+                Modifiers.IsAbstract ? Accessibility.Protected : Accessibility.Public)
             {
                 SynthesizedKind = SynthesizedBodyKind.DefaultConstructor,
-                ExplicitParameters = ImmutableArray<ParameterSymbol>.Empty,
+                ExplicitParameters = [],
             });
         }
         InstanceInitializers = inst.ToImmutable();
@@ -265,7 +307,7 @@ public sealed class SourceClassSymbol : SourceNamedType
             {
                 SynthesizedKind = SynthesizedBodyKind.StaticConstructor,
                 IsStaticFlag = true,
-                ExplicitParameters = ImmutableArray<ParameterSymbol>.Empty,
+                ExplicitParameters = [],
             });
         }
         return b.ToImmutable();
@@ -274,37 +316,47 @@ public sealed class SourceClassSymbol : SourceNamedType
     /// <summary>TypeScript semantics: a derived class without its own constructor inherits the base class constructors.</summary>
     private ImmutableArray<MethodSymbol> InheritedConstructors()
     {
-        var baseType = BaseType;
-        if (baseType == null || baseType.SpecialType is SpecialType.Object or SpecialType.ValueType or SpecialType.Enum) return ImmutableArray<MethodSymbol>.Empty;
-        var ctors = baseType.InstanceConstructors.Where(c => c.DeclaredAccessibility is Accessibility.Public or Accessibility.Protected or Accessibility.ProtectedOrInternal
-            || c.DeclaredAccessibility == Accessibility.Internal && baseType.IsFromSource).ToImmutableArray();
-        if (ctors.All(c => c.Parameters.Length == 0)) return ImmutableArray<MethodSymbol>.Empty;
-        return ctors;
+        NamedTypeSymbol? baseType = BaseType;
+        if (baseType == null || baseType.SpecialType is SpecialType.Object or SpecialType.ValueType or SpecialType.Enum)
+        {
+            return [];
+        }
+
+        ImmutableArray<MethodSymbol> ctors = [.. baseType.InstanceConstructors.Where(c => c.DeclaredAccessibility is Accessibility.Public or Accessibility.Protected or Accessibility.ProtectedOrInternal
+            || (c.DeclaredAccessibility == Accessibility.Internal && baseType.IsFromSource))];
+        return ctors.All(c => c.Parameters.Length == 0) ? [] : ctors;
     }
 
     private void AddProperty(ImmutableArray<Symbol>.Builder b, ImmutableArray<(Symbol, ExpressionSyntax)>.Builder inst,
         ImmutableArray<(Symbol, ExpressionSyntax)>.Builder stat, PropertyDeclarationSyntax p)
     {
-        var mods = new ModifierSet(p.Modifiers);
-        var name = p.Identifier.Text;
-        var isStatic = mods.IsStatic;
-        var target = isStatic ? stat : inst;
-        Func<TypeSymbol> typeOf = () => SourceMemberTypes.BindMemberType(this, p.TypeAnnotation, p.QuestionToken != null, p.Initializer?.Value);
+        ModifierSet mods = new(p.Modifiers);
+        string name = p.Identifier.Text;
+        bool isStatic = mods.IsStatic;
+        ImmutableArray<(Symbol, ExpressionSyntax)>.Builder target = isStatic ? stat : inst;
+        TypeSymbol typeOf()
+        {
+            return SourceMemberTypes.BindMemberType(this, p.TypeAnnotation, p.QuestionToken != null, p.Initializer?.Value);
+        }
 
         if (mods.IsPrivate && !mods.IsAbstract)
         {
-            var f = new SourceFieldSymbol(Compilation, File, this, name, Accessibility.Private, isStatic, mods.IsReadonly, false, p, null, _ => typeOf())
+            SourceFieldSymbol f = new(Compilation, File, this, name, Accessibility.Private, isStatic, mods.IsReadonly, false, p, null, _ => typeOf())
             { InitializerSyntax = p.Initializer?.Value };
             b.Add(f);
-            if (p.Initializer != null) target.Add((f, p.Initializer.Value));
+            if (p.Initializer != null)
+            {
+                target.Add((f, p.Initializer.Value));
+            }
+
             return;
         }
 
-        var acc = mods.MemberAccessibility;
-        var isAbstract = mods.IsAbstract;
-        var isOverride = mods.IsOverride;
-        var isVirtual = !isStatic && !isAbstract && !isOverride && !IsSealed && !mods.IsSealed && acc != Accessibility.Private;
-        var prop = new SourcePropertySymbol(Compilation, File, this, name, acc, isStatic, p, _ => typeOf())
+        Accessibility acc = mods.MemberAccessibility;
+        bool isAbstract = mods.IsAbstract;
+        bool isOverride = mods.IsOverride;
+        bool isVirtual = !isStatic && !isAbstract && !isOverride && !IsSealed && !mods.IsSealed && acc != Accessibility.Private;
+        SourcePropertySymbol prop = new(File, this, name, acc, isStatic, p, _ => typeOf())
         {
             IsAbstractFlag = isAbstract,
             IsVirtualFlag = isVirtual,
@@ -313,44 +365,54 @@ public sealed class SourceClassSymbol : SourceNamedType
             IsAutoProperty = true,
             InitializerSyntax = p.Initializer?.Value,
         };
-        var hasSetter = !mods.IsReadonly;
+        bool hasSetter = !mods.IsReadonly;
         prop.Getter = MemberFactory.Accessor(Compilation, File, this, prop, true, acc, isStatic, isAbstract, isVirtual, isOverride, mods.IsSealed && isOverride, SynthesizedBodyKind.AutoGetter);
         if (hasSetter)
+        {
             prop.Setter = MemberFactory.Accessor(Compilation, File, this, prop, false, acc, isStatic, isAbstract, isVirtual, isOverride, mods.IsSealed && isOverride, SynthesizedBodyKind.AutoSetter);
+        }
+
         if (!isAbstract)
         {
-            var backing = new SourceFieldSymbol(Compilation, File, this, "<" + name + ">k__BackingField", Accessibility.Private, isStatic, !hasSetter, false, p, null, _ => prop.Type)
+            SourceFieldSymbol backing = new(Compilation, File, this, "<" + name + ">k__BackingField", Accessibility.Private, isStatic, !hasSetter, false, p, null, _ => prop.Type)
             { IsBackingField = true };
             prop.BackingField = backing;
             b.Add(backing);
-            if (p.Initializer != null) target.Add((prop, p.Initializer.Value));
+            if (p.Initializer != null)
+            {
+                target.Add((prop, p.Initializer.Value));
+            }
         }
         b.Add(prop);
         b.Add(prop.Getter);
-        if (prop.Setter != null) b.Add(prop.Setter);
+        if (prop.Setter != null)
+        {
+            b.Add(prop.Setter);
+        }
     }
 
-    private IEnumerable<Symbol> CreateAccessorProperty(List<AccessorDeclarationSyntax> group)
+    private List<Symbol> CreateAccessorProperty(List<AccessorDeclarationSyntax> group)
     {
-        var first = group[0];
-        var mods = new ModifierSet(first.Modifiers);
-        var acc = mods.MemberAccessibility;
-        var isStatic = mods.IsStatic;
-        var getter = group.FirstOrDefault(a => a.IsGetter);
-        var setter = group.FirstOrDefault(a => !a.IsGetter);
-        var isAbstract = mods.IsAbstract;
-        var isOverride = mods.IsOverride;
-        var isVirtual = !isStatic && !isAbstract && !isOverride && !IsSealed && acc != Accessibility.Private;
-        var prop = new SourcePropertySymbol(Compilation, File, this, first.Identifier.Text, acc, isStatic, first, p =>
+        AccessorDeclarationSyntax first = group[0];
+        ModifierSet mods = new(first.Modifiers);
+        Accessibility acc = mods.MemberAccessibility;
+        bool isStatic = mods.IsStatic;
+        AccessorDeclarationSyntax? getter = group.FirstOrDefault(a => a.IsGetter);
+        AccessorDeclarationSyntax? setter = group.FirstOrDefault(a => !a.IsGetter);
+        bool isAbstract = mods.IsAbstract;
+        bool isOverride = mods.IsOverride;
+        bool isVirtual = !isStatic && !isAbstract && !isOverride && !IsSealed && acc != Accessibility.Private;
+        SourcePropertySymbol prop = new(File, this, first.Identifier.Text, acc, isStatic, first, p =>
         {
-            var binder = CreateBinder();
-            if (getter?.ReturnType != null) return binder.BindType(getter.ReturnType.Type);
-            if (setter != null && setter.Parameters.Parameters.Count > 0 && setter.Parameters.Parameters[0].TypeAnnotation is { } ta)
-                return binder.BindType(ta.Type);
-            return Compilation.GetSpecialType(SpecialType.Object);
+            Binder binder = CreateBinder();
+            return getter?.ReturnType != null
+                ? binder.BindType(getter.ReturnType.Type)
+                : setter != null && setter.Parameters.Parameters.Count > 0 && setter.Parameters.Parameters[0].TypeAnnotation is { } ta
+                ? binder.BindType(ta.Type)
+                : Compilation.GetSpecialType(SpecialType.Object);
         })
         { IsAbstractFlag = isAbstract, IsVirtualFlag = isVirtual, IsOverrideFlag = isOverride };
-        var result = new List<Symbol> { prop };
+        List<Symbol> result = [prop];
         if (getter != null)
         {
             prop.Getter = MemberFactory.Accessor(Compilation, File, this, prop, true, acc, isStatic, isAbstract, isVirtual, isOverride, false, SynthesizedBodyKind.None, getter);
@@ -366,12 +428,12 @@ public sealed class SourceClassSymbol : SourceNamedType
 
     private SourceMethodSymbol CreateMethod(MethodDeclarationSyntax md)
     {
-        var mods = new ModifierSet(md.Modifiers);
-        var isStatic = mods.IsStatic;
-        var acc = mods.MemberAccessibility;
-        var isAbstract = mods.IsAbstract;
-        var isOverride = mods.IsOverride;
-        var isVirtual = !isStatic && !isAbstract && !isOverride && !IsSealed && acc != Accessibility.Private;
+        ModifierSet mods = new(md.Modifiers);
+        bool isStatic = mods.IsStatic;
+        Accessibility acc = mods.MemberAccessibility;
+        bool isAbstract = mods.IsAbstract;
+        bool isOverride = mods.IsOverride;
+        bool isVirtual = !isStatic && !isAbstract && !isOverride && !IsSealed && acc != Accessibility.Private;
         return new SourceMethodSymbol(Compilation, File, this, md.Identifier.Text, MethodKind.Ordinary, mods, md, acc)
         {
             IsStaticFlag = isStatic,
@@ -389,7 +451,7 @@ public sealed class SourceClassSymbol : SourceNamedType
 
     private SourceMethodSymbol CreateConstructor(ConstructorDeclarationSyntax cd)
     {
-        var mods = new ModifierSet(cd.Modifiers);
+        ModifierSet mods = new(cd.Modifiers);
         return new SourceMethodSymbol(Compilation, File, this, ".ctor", MethodKind.Constructor, mods, cd, mods.MemberAccessibility)
         {
             ParameterList = cd.Parameters,
@@ -399,34 +461,52 @@ public sealed class SourceClassSymbol : SourceNamedType
 
     private void AddParameterProperties(ImmutableArray<Symbol>.Builder b, ConstructorDeclarationSyntax cd)
     {
-        foreach (var p in cd.Parameters.Parameters)
+        foreach (ParameterSyntax p in cd.Parameters.Parameters)
         {
-            var pm = new ModifierSet(p.Modifiers);
-            if (!(pm.IsPublic || pm.IsPrivate || pm.IsProtected || pm.IsInternal || pm.IsReadonly)) continue;
-            if (p.Identifier == null) continue;
-            var name = p.Identifier.Text;
-            var ps = p;
-            Func<TypeSymbol> typeOf = () => SourceMemberTypes.BindMemberType(this, ps.TypeAnnotation, ps.QuestionToken != null, ps.Initializer?.Value);
-            var acc = pm.IsPrivate ? Accessibility.Private : pm.IsProtected ? Accessibility.Protected : pm.IsInternal ? Accessibility.Internal : Accessibility.Public;
+            ModifierSet pm = new(p.Modifiers);
+            if (!(pm.IsPublic || pm.IsPrivate || pm.IsProtected || pm.IsInternal || pm.IsReadonly))
+            {
+                continue;
+            }
+
+            if (p.Identifier == null)
+            {
+                continue;
+            }
+
+            string name = p.Identifier.Text;
+            ParameterSyntax ps = p;
+            TypeSymbol typeOf()
+            {
+                return SourceMemberTypes.BindMemberType(this, ps.TypeAnnotation, ps.QuestionToken != null, ps.Initializer?.Value);
+            }
+
+            Accessibility acc = pm.IsPrivate ? Accessibility.Private : pm.IsProtected ? Accessibility.Protected : pm.IsInternal ? Accessibility.Internal : Accessibility.Public;
             if (pm.IsPrivate)
             {
                 b.Add(new SourceFieldSymbol(Compilation, File, this, name, Accessibility.Private, false, pm.IsReadonly, false, p, null, _ => typeOf()));
                 continue;
             }
-            var prop = new SourcePropertySymbol(Compilation, File, this, name, acc, false, p, _ => typeOf())
+            SourcePropertySymbol prop = new(File, this, name, acc, false, p, _ => typeOf())
             {
-                IsVirtualFlag = !IsSealed && !_mods.IsSealed,
+                IsVirtualFlag = !IsSealed && !Modifiers.IsSealed,
                 IsAutoProperty = true,
             };
             prop.Getter = MemberFactory.Accessor(Compilation, File, this, prop, true, acc, false, false, prop.IsVirtualFlag, false, false, SynthesizedBodyKind.AutoGetter);
             if (!pm.IsReadonly)
+            {
                 prop.Setter = MemberFactory.Accessor(Compilation, File, this, prop, false, acc, false, false, prop.IsVirtualFlag, false, false, SynthesizedBodyKind.AutoSetter);
-            var backing = new SourceFieldSymbol(Compilation, File, this, "<" + name + ">k__BackingField", Accessibility.Private, false, pm.IsReadonly, false, p, null, _ => prop.Type) { IsBackingField = true };
+            }
+
+            SourceFieldSymbol backing = new(Compilation, File, this, "<" + name + ">k__BackingField", Accessibility.Private, false, pm.IsReadonly, false, p, null, _ => prop.Type) { IsBackingField = true };
             prop.BackingField = backing;
             b.Add(backing);
             b.Add(prop);
             b.Add(prop.Getter);
-            if (prop.Setter != null) b.Add(prop.Setter);
+            if (prop.Setter != null)
+            {
+                b.Add(prop.Setter);
+            }
         }
     }
 }
@@ -436,38 +516,41 @@ internal static class SourceMemberTypes
     /// <summary>Binds a member's type from its annotation, or infers it from the initializer.</summary>
     public static TypeSymbol BindMemberType(SourceNamedType container, TypeAnnotationSyntax? annotation, bool optional, ExpressionSyntax? initializer)
     {
-        var c = container.Compilation;
-        var binder = c.CreateBinder(container.File, container, c.DeclarationDiagnostics);
+        Compilation c = container.Compilation;
+        Binder binder = c.CreateBinder(container.File, container, c.DeclarationDiagnostics);
         TypeSymbol t;
-        if (annotation != null) t = binder.BindType(annotation.Type);
-        else if (initializer != null) t = binder.InferVariableType(initializer);
+        if (annotation != null)
+        {
+            t = binder.BindType(annotation.Type);
+        }
+        else if (initializer != null)
+        {
+            t = binder.InferVariableType(initializer);
+        }
         else
         {
-            c.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.TypeAnnotationRequired, container.File.FilePath, annotation?.Span ?? initializer?.Span ?? default));
+            c.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.TypeAnnotationRequired, container.File.FilePath, default));
             t = ErrorTypeSymbol.Instance;
         }
-        if (optional && t is not NullableTypeSymbol && !t.IsErrorType) t = new NullableTypeSymbol(t);
+        if (optional && t is not NullableTypeSymbol && !t.IsErrorType)
+        {
+            t = new NullableTypeSymbol(t);
+        }
+
         return t;
     }
 }
 
 // ======================================================================= interfaces
 
-public sealed class SourceInterfaceSymbol : SourceNamedType
+public sealed class SourceInterfaceSymbol(Compilation compilation, SourceFile file, InterfaceDeclarationSyntax syntax, Symbol container) : SourceNamedType(compilation, file, syntax, syntax.Identifier.Text, container, new ModifierSet(syntax.Modifiers).TypeAccessibility)
 {
-    private readonly InterfaceDeclarationSyntax _syntax;
     private ImmutableArray<NamedTypeSymbol> _interfaces;
 
-    public SourceInterfaceSymbol(Compilation compilation, SourceFile file, InterfaceDeclarationSyntax syntax, Symbol container)
-        : base(compilation, file, syntax, syntax.Identifier.Text, container, new ModifierSet(syntax.Modifiers).TypeAccessibility)
-    {
-        _syntax = syntax;
-    }
-
-    public InterfaceDeclarationSyntax Syntax => _syntax;
-    protected override TypeParameterListSyntax? TypeParameterListSyntax => _syntax.TypeParameters;
-    public override SyntaxToken? IdentifierToken => _syntax.Identifier;
-    public override ImmutableArray<DecoratorSyntax> DecoratorSyntaxes => _syntax.Decorators.ToImmutableArray();
+    public InterfaceDeclarationSyntax Syntax { get; } = syntax;
+    protected override TypeParameterListSyntax? TypeParameterListSyntax => Syntax.TypeParameters;
+    public override SyntaxToken? IdentifierToken => Syntax.Identifier;
+    public override ImmutableArray<DecoratorSyntax> DecoratorSyntaxes => [.. Syntax.Decorators];
     public override TypeKind TypeKind => TypeKind.Interface;
     public override bool IsAbstract => true;
 
@@ -475,19 +558,34 @@ public sealed class SourceInterfaceSymbol : SourceNamedType
     {
         get
         {
-            if (!_interfaces.IsDefault) return _interfaces;
-            if (_syntax.ExtendsClause == null) return _interfaces = ImmutableArray<NamedTypeSymbol>.Empty;
-            _interfaces = ImmutableArray<NamedTypeSymbol>.Empty; // while binding, a cycle sees no base interfaces
-            var binder = CreateBinder();
-            var b = ImmutableArray.CreateBuilder<NamedTypeSymbol>();
-            foreach (var ts in _syntax.ExtendsClause.Types)
+            if (!_interfaces.IsDefault)
             {
-                var t = binder.BindType(ts);
+                return _interfaces;
+            }
+
+            if (Syntax.ExtendsClause == null)
+            {
+                return _interfaces = [];
+            }
+
+            _interfaces = []; // while binding, a cycle sees no base interfaces
+            Binder binder = CreateBinder();
+            ImmutableArray<NamedTypeSymbol>.Builder b = ImmutableArray.CreateBuilder<NamedTypeSymbol>();
+            foreach (TypeSyntax ts in Syntax.ExtendsClause.Types)
+            {
+                TypeSymbol t = binder.BindType(ts);
                 if (t is NamedTypeSymbol { TypeKind: TypeKind.Interface } i && ReachesSelf(i, new HashSet<NamedTypeSymbol>(ReferenceEqualityComparer.Instance)))
+                {
                     Compilation.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.CyclicInheritance, File.FilePath, ts.Span, Name));
-                else if (t is NamedTypeSymbol { TypeKind: TypeKind.Interface } i2) b.Add(i2);
+                }
+                else if (t is NamedTypeSymbol { TypeKind: TypeKind.Interface } i2)
+                {
+                    b.Add(i2);
+                }
                 else if (!t.IsErrorType)
+                {
                     Compilation.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.ImplementsMustBeInterface, File.FilePath, ts.Span, t.ToDisplayString()));
+                }
             }
             return _interfaces = b.ToImmutable();
         }
@@ -495,72 +593,98 @@ public sealed class SourceInterfaceSymbol : SourceNamedType
 
     private bool ReachesSelf(NamedTypeSymbol i, HashSet<NamedTypeSymbol> seen)
     {
-        if (ReferenceEquals(i.OriginalDefinition, this)) return true;
-        if (!seen.Add(i.OriginalDefinition)) return false;
-        foreach (var next in i.Interfaces)
-            if (ReachesSelf(next, seen)) return true;
+        if (ReferenceEquals(i.OriginalDefinition, this))
+        {
+            return true;
+        }
+
+        if (!seen.Add(i.OriginalDefinition))
+        {
+            return false;
+        }
+
+        foreach (NamedTypeSymbol next in i.Interfaces)
+        {
+            if (ReachesSelf(next, seen))
+            {
+                return true;
+            }
+        }
+
         return false;
     }
 
     protected override ImmutableArray<Symbol> BuildMembers()
     {
-        var b = ImmutableArray.CreateBuilder<Symbol>();
-        var groups = new Dictionary<string, List<AccessorDeclarationSyntax>>();
-        foreach (var m in _syntax.Members)
+        ImmutableArray<Symbol>.Builder b = ImmutableArray.CreateBuilder<Symbol>();
+        Dictionary<string, List<AccessorDeclarationSyntax>> groups = [];
+        foreach (MemberDeclarationSyntax m in Syntax.Members)
         {
             switch (m)
             {
                 case PropertyDeclarationSyntax p:
-                {
-                    var mods = new ModifierSet(p.Modifiers);
-                    var ps = p;
-                    var prop = new SourcePropertySymbol(Compilation, File, this, p.Identifier.Text, Accessibility.Public, mods.IsStatic, p,
-                        _ => SourceMemberTypes.BindMemberType(this, ps.TypeAnnotation, ps.QuestionToken != null, null))
-                    { IsAbstractFlag = true };
-                    prop.Getter = MemberFactory.Accessor(Compilation, File, this, prop, true, Accessibility.Public, false, true, true, false, false, SynthesizedBodyKind.None);
-                    if (!mods.IsReadonly)
-                        prop.Setter = MemberFactory.Accessor(Compilation, File, this, prop, false, Accessibility.Public, false, true, true, false, false, SynthesizedBodyKind.None);
-                    b.Add(prop);
-                    b.Add(prop.Getter);
-                    if (prop.Setter != null) b.Add(prop.Setter);
-                    break;
-                }
-                case MethodDeclarationSyntax md:
-                {
-                    var mods = new ModifierSet(md.Modifiers);
-                    var hasBody = md.Body != null;
-                    b.Add(new SourceMethodSymbol(Compilation, File, this, md.Identifier.Text, MethodKind.Ordinary, mods, md, Accessibility.Public)
                     {
-                        IsAbstractFlag = !hasBody,
-                        IsVirtualFlag = hasBody,
-                        IsStaticFlag = mods.IsStatic,
-                        ParameterList = md.Parameters,
-                        TypeParameterList = md.TypeParameters,
-                        ReturnAnnotation = md.ReturnType,
-                        BodySyntax = md.Body,
-                    });
-                    break;
-                }
+                        ModifierSet mods = new(p.Modifiers);
+                        PropertyDeclarationSyntax ps = p;
+                        SourcePropertySymbol prop = new(File, this, p.Identifier.Text, Accessibility.Public, mods.IsStatic, p,
+                            _ => SourceMemberTypes.BindMemberType(this, ps.TypeAnnotation, ps.QuestionToken != null, null))
+                        { IsAbstractFlag = true };
+                        prop.Getter = MemberFactory.Accessor(Compilation, File, this, prop, true, Accessibility.Public, false, true, true, false, false, SynthesizedBodyKind.None);
+                        if (!mods.IsReadonly)
+                        {
+                            prop.Setter = MemberFactory.Accessor(Compilation, File, this, prop, false, Accessibility.Public, false, true, true, false, false, SynthesizedBodyKind.None);
+                        }
+
+                        b.Add(prop);
+                        b.Add(prop.Getter);
+                        if (prop.Setter != null)
+                        {
+                            b.Add(prop.Setter);
+                        }
+
+                        break;
+                    }
+                case MethodDeclarationSyntax md:
+                    {
+                        ModifierSet mods = new(md.Modifiers);
+                        bool hasBody = md.Body != null;
+                        b.Add(new SourceMethodSymbol(Compilation, File, this, md.Identifier.Text, MethodKind.Ordinary, mods, md, Accessibility.Public)
+                        {
+                            IsAbstractFlag = !hasBody,
+                            IsVirtualFlag = hasBody,
+                            IsStaticFlag = mods.IsStatic,
+                            ParameterList = md.Parameters,
+                            TypeParameterList = md.TypeParameters,
+                            ReturnAnnotation = md.ReturnType,
+                            BodySyntax = md.Body,
+                        });
+                        break;
+                    }
                 case AccessorDeclarationSyntax ad:
-                {
-                    if (!groups.TryGetValue(ad.Identifier.Text, out var l)) groups[ad.Identifier.Text] = l = new List<AccessorDeclarationSyntax>();
-                    l.Add(ad);
-                    break;
-                }
+                    {
+                        if (!groups.TryGetValue(ad.Identifier.Text, out List<AccessorDeclarationSyntax>? l))
+                        {
+                            groups[ad.Identifier.Text] = l = [];
+                        }
+
+                        l.Add(ad);
+                        break;
+                    }
             }
         }
-        foreach (var g in groups.Values)
+        foreach (List<AccessorDeclarationSyntax> g in groups.Values)
         {
-            var getter = g.FirstOrDefault(a => a.IsGetter);
-            var setter = g.FirstOrDefault(a => !a.IsGetter);
-            var first = g[0];
-            var prop = new SourcePropertySymbol(Compilation, File, this, first.Identifier.Text, Accessibility.Public, false, first, _ =>
+            AccessorDeclarationSyntax? getter = g.FirstOrDefault(a => a.IsGetter);
+            AccessorDeclarationSyntax? setter = g.FirstOrDefault(a => !a.IsGetter);
+            AccessorDeclarationSyntax first = g[0];
+            SourcePropertySymbol prop = new(File, this, first.Identifier.Text, Accessibility.Public, false, first, _ =>
             {
-                var binder = CreateBinder();
-                if (getter?.ReturnType != null) return binder.BindType(getter.ReturnType.Type);
-                if (setter != null && setter.Parameters.Parameters.Count > 0 && setter.Parameters.Parameters[0].TypeAnnotation is { } ta)
-                    return binder.BindType(ta.Type);
-                return Compilation.GetSpecialType(SpecialType.Object);
+                Binder binder = CreateBinder();
+                return getter?.ReturnType != null
+                    ? binder.BindType(getter.ReturnType.Type)
+                    : setter != null && setter.Parameters.Parameters.Count > 0 && setter.Parameters.Parameters[0].TypeAnnotation is { } ta
+                    ? binder.BindType(ta.Type)
+                    : Compilation.GetSpecialType(SpecialType.Object);
             })
             { IsAbstractFlag = true };
             if (getter != null) { prop.Getter = MemberFactory.Accessor(Compilation, File, this, prop, true, Accessibility.Public, false, true, true, false, false, SynthesizedBodyKind.None); b.Add(prop.Getter); }
@@ -573,19 +697,11 @@ public sealed class SourceInterfaceSymbol : SourceNamedType
 
 // ======================================================================= enums
 
-public sealed class SourceEnumSymbol : SourceNamedType
+public sealed class SourceEnumSymbol(Compilation compilation, SourceFile file, EnumDeclarationSyntax syntax, Symbol container) : SourceNamedType(compilation, file, syntax, syntax.Identifier.Text, container, new ModifierSet(syntax.Modifiers).TypeAccessibility)
 {
-    private readonly EnumDeclarationSyntax _syntax;
-
-    public SourceEnumSymbol(Compilation compilation, SourceFile file, EnumDeclarationSyntax syntax, Symbol container)
-        : base(compilation, file, syntax, syntax.Identifier.Text, container, new ModifierSet(syntax.Modifiers).TypeAccessibility)
-    {
-        _syntax = syntax;
-    }
-
-    public EnumDeclarationSyntax Syntax => _syntax;
-    public override SyntaxToken? IdentifierToken => _syntax.Identifier;
-    public override ImmutableArray<DecoratorSyntax> DecoratorSyntaxes => _syntax.Decorators.ToImmutableArray();
+    public EnumDeclarationSyntax Syntax { get; } = syntax;
+    public override SyntaxToken? IdentifierToken => Syntax.Identifier;
+    public override ImmutableArray<DecoratorSyntax> DecoratorSyntaxes => [.. Syntax.Decorators];
     public override TypeKind TypeKind => TypeKind.Enum;
     public override bool IsSealed => true;
     public override NamedTypeSymbol? BaseType => Compilation.GetSpecialType(SpecialType.Enum);
@@ -593,32 +709,35 @@ public sealed class SourceEnumSymbol : SourceNamedType
 
     protected override ImmutableArray<Symbol> BuildMembers()
     {
-        var b = ImmutableArray.CreateBuilder<Symbol>();
+        ImmutableArray<Symbol>.Builder b = ImmutableArray.CreateBuilder<Symbol>();
         // value__ is implicit at emit; members are constants
         long next = 0;
-        var members = _syntax.Members;
-        var previous = new List<SourceFieldSymbol>();
-        for (var i = 0; i < members.Count; i++)
+        SeparatedSyntaxList<EnumMemberSyntax> members = Syntax.Members;
+        List<SourceFieldSymbol> previous = [];
+        for (int i = 0; i < members.Count; i++)
         {
-            var m = members[i];
-            var idx = i;
-            var prev = previous.ToArray();
-            var syntax = m;
-            var field = new SourceFieldSymbol(Compilation, File, this, m.Identifier.ValueText, Accessibility.Public, true, true, true, m, this)
+            EnumMemberSyntax m = members[i];
+            int idx = i;
+            SourceFieldSymbol[] prev = [.. previous];
+            EnumMemberSyntax syntax = m;
+            SourceFieldSymbol field = new(Compilation, File, this, m.Identifier.ValueText, Accessibility.Public, true, true, true, m, this)
             {
                 IsEnumMember = true,
                 ConstantFactory = f =>
                 {
                     if (syntax.Initializer != null)
                     {
-                        var binder = CreateBinder();
-                        var v = binder.EvaluateEnumInitializer(this, syntax.Initializer.Value, prev);
-                        if (v is { } cv && cv.Value is int iv) { return new ConstantValue(iv); }
-                        return new ConstantValue(0);
+                        Binder binder = CreateBinder();
+                        ConstantValue? v = binder.EvaluateEnumInitializer(this, syntax.Initializer.Value, prev);
+                        return v is { } cv && cv.Value is int iv ? new ConstantValue(iv) : new ConstantValue(0);
                     }
                     // auto-increment from the previous member
-                    if (prev.Length == 0) return new ConstantValue(0);
-                    var pv = prev[^1].ConstantValue;
+                    if (prev.Length == 0)
+                    {
+                        return new ConstantValue(0);
+                    }
+
+                    ConstantValue? pv = prev[^1].ConstantValue;
                     return new ConstantValue(pv is { Value: int p } ? p + 1 : 0);
                 },
             };
@@ -632,44 +751,36 @@ public sealed class SourceEnumSymbol : SourceNamedType
 
 // ======================================================================= type aliases
 
-public sealed class TypeAliasSymbol : Symbol
+public sealed class TypeAliasSymbol(Compilation compilation, SourceFile file, TypeAliasDeclarationSyntax syntax) : Symbol
 {
-    private readonly Compilation _compilation;
-    private readonly SourceFile _file;
-    private readonly TypeAliasDeclarationSyntax _syntax;
-    private ImmutableArray<TypeParameterSymbol> _typeParams;
+    private readonly Compilation _compilation = compilation;
     private bool _typeParamsDone;
-    private TypeSymbol? _target;
     private bool _inProgress;
 
-    public TypeAliasSymbol(Compilation compilation, SourceFile file, TypeAliasDeclarationSyntax syntax)
-    {
-        _compilation = compilation;
-        _file = file;
-        _syntax = syntax;
-        IsExported = new ModifierSet(syntax.Modifiers).IsExport;
-    }
-
     public override SymbolKind Kind => SymbolKind.Alias;
-    public override string Name => _syntax.Identifier.Text;
-    public SourceFile File => _file;
-    public TypeAliasDeclarationSyntax Syntax => _syntax;
-    public bool IsExported { get; }
+    public override string Name => Syntax.Identifier.Text;
+    public SourceFile File { get; } = file;
+    public TypeAliasDeclarationSyntax Syntax { get; } = syntax;
+    public bool IsExported { get; } = new ModifierSet(syntax.Modifiers).IsExport;
     public override bool IsFromSource => true;
     public override Accessibility DeclaredAccessibility => IsExported ? Accessibility.Public : Accessibility.Internal;
-    public override ImmutableArray<SourceLocation> Locations => [new SourceLocation(_file.Tree, _syntax.Identifier.Span)];
+    public override ImmutableArray<SourceLocation> Locations => [new SourceLocation(File.Tree, Syntax.Identifier.Span)];
 
     public ImmutableArray<TypeParameterSymbol> TypeParameters
     {
         get
         {
-            if (_typeParamsDone) return _typeParams;
+            if (_typeParamsDone)
+            {
+                return field;
+            }
+
             _typeParamsDone = true;
-            var list = _syntax.TypeParameters;
-            _typeParams = list == null || list.Parameters.Count == 0
-                ? ImmutableArray<TypeParameterSymbol>.Empty
-                : SourceTypeParameters.Create(_compilation, _file, this, null, list);
-            return _typeParams;
+            TypeParameterListSyntax? list = Syntax.TypeParameters;
+            field = list == null || list.Parameters.Count == 0
+                ? []
+                : SourceTypeParameters.Create(_compilation, File, this, null, list);
+            return field;
         }
     }
 
@@ -678,17 +789,21 @@ public sealed class TypeAliasSymbol : Symbol
     {
         get
         {
-            if (_target != null) return _target;
+            if (field != null)
+            {
+                return field;
+            }
+
             if (_inProgress)
             {
-                _compilation.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.CircularAlias, _file.FilePath, _syntax.Identifier.Span, Name));
-                return _target = ErrorTypeSymbol.Instance;
+                _compilation.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.CircularAlias, File.FilePath, Syntax.Identifier.Span, Name));
+                return field = ErrorTypeSymbol.Instance;
             }
             _inProgress = true;
-            var binder = _compilation.CreateBinder(_file, this, _compilation.DeclarationDiagnostics);
-            _target = binder.BindType(_syntax.Type);
+            Binder binder = _compilation.CreateBinder(File, this, _compilation.DeclarationDiagnostics);
+            field = binder.BindType(Syntax.Type);
             _inProgress = false;
-            return _target;
+            return field;
         }
     }
 }

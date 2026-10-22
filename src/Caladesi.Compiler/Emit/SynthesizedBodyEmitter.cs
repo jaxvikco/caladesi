@@ -1,37 +1,29 @@
 using System.Collections.Immutable;
 using System.Reflection.Metadata;
+using System.Reflection.Metadata.Ecma335;
 using Caladesi.Compiler.Symbols;
 using Caladesi.Compiler.Symbols.Source;
 
 namespace Caladesi.Compiler.Emit;
 
 /// <summary>Emits the IL for compiler-synthesized members: auto accessors, record members and union members.</summary>
-internal sealed class SynthesizedBodyEmitter
+internal sealed class SynthesizedBodyEmitter(EmitModule module, MethodSymbol method, ILBuilder il)
 {
-    private readonly EmitModule _m;
-    private readonly MethodSymbol _method;
-    private readonly ILBuilder _il;
-    private readonly SynthesizedBodyKind _kind;
-    private readonly NamedTypeSymbol _type;
-
-    public SynthesizedBodyEmitter(EmitModule module, MethodSymbol method, ILBuilder il)
+    private readonly EmitModule _m = module;
+    private readonly MethodSymbol _method = method;
+    private readonly ILBuilder _il = il;
+    private readonly SynthesizedBodyKind _kind = method switch
     {
-        _m = module;
-        _method = method;
-        _il = il;
-        _type = (NamedTypeSymbol)method.ContainingSymbol!;
-        _kind = method switch
-        {
-            SourceMethodSymbol s => s.SynthesizedKind,
-            SynthesizedMethodSymbol y => y.SynthesizedKind,
-            _ => SynthesizedBodyKind.None,
-        };
-    }
+        SourceMethodSymbol s => s.SynthesizedKind,
+        SynthesizedMethodSymbol y => y.SynthesizedKind,
+        _ => SynthesizedBodyKind.None,
+    };
+    private readonly NamedTypeSymbol _type = (NamedTypeSymbol)method.ContainingSymbol!;
 
     private Compilation C => _m.Compilation;
     private bool IsStruct => _type.TypeKind == TypeKind.Struct;
     private NamedTypeSymbol Self => _type.IsGenericType ? _type.Construct(_type.TypeArguments) : _type;
-    private ImmutableArray<SourcePropertySymbol> Props => _type.GetMembers().OfType<SourcePropertySymbol>().Where(p => p.BackingField != null).ToImmutableArray();
+    private ImmutableArray<SourcePropertySymbol> Props => [.. _type.GetMembers().OfType<SourcePropertySymbol>().Where(p => p.BackingField != null)];
 
     public void Emit()
     {
@@ -63,36 +55,53 @@ internal sealed class SynthesizedBodyEmitter
 
     // ------------------------------------------------------------------ helpers
 
-    private MethodSymbol Find(NamedTypeSymbol t, string name, int paramCount, bool isStatic) =>
-        t.GetMembers(name).OfType<MethodSymbol>().First(x => x.Parameters.Length == paramCount && x.IsStatic == isStatic);
+    private static MethodSymbol Find(NamedTypeSymbol t, string name, int paramCount, bool isStatic)
+    {
+        return t.GetMembers(name).OfType<MethodSymbol>().First(x => x.Parameters.Length == paramCount && x.IsStatic == isStatic);
+    }
 
     private void CallBaseCtor()
     {
-        if (IsStruct) return;
+        if (IsStruct)
+        {
+            return;
+        }
+
         _il.Ldarg(0);
-        var b = _type.BaseType!;
-        var ctor = b.InstanceConstructors.First(c => c.Parameters.Length == 0);
+        NamedTypeSymbol b = _type.BaseType!;
+        MethodSymbol ctor = b.InstanceConstructors.First(c => c.Parameters.Length == 0);
         _il.Call(ILOpCode.Call, _m.GetMethodEntity(ctor), 1, 0);
     }
 
-    private FieldSymbol Backing(SourcePropertySymbol p) => p.BackingField!;
+    private static SourceFieldSymbol Backing(SourcePropertySymbol p)
+    {
+        return p.BackingField!;
+    }
 
-    private void LoadField(FieldSymbol f) => _il.Token(ILOpCode.Ldfld, _m.GetFieldEntity(f), 0);
+    private void LoadField(FieldSymbol f)
+    {
+        _il.Token(ILOpCode.Ldfld, _m.GetFieldEntity(f), 0);
+    }
 
-    private TypeSymbol FieldClr(SourcePropertySymbol p) => _m.ClrType(p.Type);
+    private TypeSymbol FieldClr(SourcePropertySymbol p)
+    {
+        return _m.ClrType(p.Type);
+    }
 
-    private NamedTypeSymbol EqComparer(TypeSymbol t) =>
-        C.GetWellKnownType("System.Collections.Generic.EqualityComparer`1")!.Construct(t);
+    private NamedTypeSymbol EqComparer(TypeSymbol t)
+    {
+        return C.GetWellKnownType("System.Collections.Generic.EqualityComparer`1")!.Construct(t);
+    }
 
     /// <summary>Stack: a, b -> bool, using EqualityComparer&lt;T&gt;.Default.Equals.</summary>
     private void EmitEqualsOfType(TypeSymbol t, LocalSlot a, LocalSlot b)
     {
-        var cmp = EqComparer(t);
-        var getDefault = cmp.GetMembers("get_Default").OfType<MethodSymbol>().First();
+        NamedTypeSymbol cmp = EqComparer(t);
+        MethodSymbol getDefault = cmp.GetMembers("get_Default").OfType<MethodSymbol>().First();
         _il.Call(ILOpCode.Call, _m.GetMethodEntity(getDefault), 0, 1);
         _il.Ldloc(a.Index);
         _il.Ldloc(b.Index);
-        var eq = cmp.GetMembers("Equals").OfType<MethodSymbol>().First(x => x.Parameters.Length == 2);
+        MethodSymbol eq = cmp.GetMembers("Equals").OfType<MethodSymbol>().First(x => x.Parameters.Length == 2);
         _il.Call(ILOpCode.Callvirt, _m.GetMethodEntity(eq), 3, 1);
     }
 
@@ -102,15 +111,18 @@ internal sealed class SynthesizedBodyEmitter
 
     private void AutoGetter()
     {
-        var f = Backing(AssocProp!);
-        if (f.IsStatic) _il.Token(ILOpCode.Ldsfld, _m.GetFieldEntity(f), 1);
+        FieldSymbol f = Backing(AssocProp!);
+        if (f.IsStatic)
+        {
+            _il.Token(ILOpCode.Ldsfld, _m.GetFieldEntity(f), 1);
+        }
         else { _il.Ldarg(0); LoadField(f); }
         _il.Op(ILOpCode.Ret, 0);
     }
 
     private void AutoSetter()
     {
-        var f = Backing(AssocProp!);
+        FieldSymbol f = Backing(AssocProp!);
         if (f.IsStatic) { _il.Ldarg(0); _il.Token(ILOpCode.Stsfld, _m.GetFieldEntity(f), -1); }
         else { _il.Ldarg(0); _il.Ldarg(1); _il.Token(ILOpCode.Stfld, _m.GetFieldEntity(f), -2); }
         _il.Op(ILOpCode.Ret, 0);
@@ -121,8 +133,8 @@ internal sealed class SynthesizedBodyEmitter
     private void RecordCtor()
     {
         CallBaseCtor();
-        var props = Props;
-        for (var i = 0; i < props.Length; i++)
+        ImmutableArray<SourcePropertySymbol> props = Props;
+        for (int i = 0; i < props.Length; i++)
         {
             _il.Ldarg(0);
             _il.Ldarg(i + 1);
@@ -134,7 +146,7 @@ internal sealed class SynthesizedBodyEmitter
     private void RecordCopyCtor()
     {
         CallBaseCtor();
-        foreach (var p in Props)
+        foreach (SourcePropertySymbol p in Props)
         {
             _il.Ldarg(0);
             _il.Ldarg(1);
@@ -147,7 +159,7 @@ internal sealed class SynthesizedBodyEmitter
     private void RecordClone()
     {
         _il.Ldarg(0);
-        var copy = _type.InstanceConstructors.OfType<SourceMethodSymbol>().First(c => c.SynthesizedKind == SynthesizedBodyKind.RecordCopyConstructor);
+        SourceMethodSymbol copy = _type.InstanceConstructors.OfType<SourceMethodSymbol>().First(c => c.SynthesizedKind == SynthesizedBodyKind.RecordCopyConstructor);
         _il.Call(ILOpCode.Newobj, _m.GetMethodEntity(copy), 1, 1);
         _il.Op(ILOpCode.Ret, 0);
     }
@@ -155,26 +167,26 @@ internal sealed class SynthesizedBodyEmitter
     private void EqualityContract()
     {
         _il.Token(ILOpCode.Ldtoken, _m.GetTypeEntity(Self), 1);
-        var typeT = C.GetSpecialType(SpecialType.Type);
+        NamedTypeSymbol typeT = C.GetSpecialType(SpecialType.Type);
         _il.Call(ILOpCode.Call, _m.GetMethodEntity(Find(typeT, "GetTypeFromHandle", 1, true)), 1, 1);
         _il.Op(ILOpCode.Ret, 0);
     }
 
     private void RecordEquals()
     {
-        var props = Props;
-        var f = _il.NewLabel();
+        ImmutableArray<SourcePropertySymbol> props = Props;
+        LabelHandle f = _il.NewLabel();
         if (!IsStruct)
         {
             _il.Ldarg(1);
             _il.Branch(ILOpCode.Brfalse, f);
         }
-        var la = _il.NewLocal(_m.ClrType(C.GetSpecialType(SpecialType.Object)));
-        foreach (var p in props)
+        LocalSlot la = _il.NewLocal(_m.ClrType(C.GetSpecialType(SpecialType.Object)));
+        foreach (SourcePropertySymbol p in props)
         {
-            var t = FieldClr(p);
-            var a = _il.NewLocal(t);
-            var b = _il.NewLocal(t);
+            TypeSymbol t = FieldClr(p);
+            LocalSlot a = _il.NewLocal(t);
+            LocalSlot b = _il.NewLocal(t);
             _il.Ldarg(0); LoadField(Backing(p)); _il.Stloc(a.Index);
             _il.Ldarg(1); LoadField(Backing(p)); _il.Stloc(b.Index);
             EmitEqualsOfType(t, a, b);
@@ -189,13 +201,15 @@ internal sealed class SynthesizedBodyEmitter
         _il.Op(ILOpCode.Ret, -1);
     }
 
-    private MethodSymbol TypedEquals() =>
-        _type.GetMembers("Equals").OfType<SourceMethodSymbol>().First(x => x.SynthesizedKind == SynthesizedBodyKind.RecordEquals);
+    private SourceMethodSymbol TypedEquals()
+    {
+        return _type.GetMembers("Equals").OfType<SourceMethodSymbol>().First(x => x.SynthesizedKind == SynthesizedBodyKind.RecordEquals);
+    }
 
     private void RecordEqualsObject()
     {
-        var f = _il.NewLabel();
-        var self = _m.GetTypeEntity(Self);
+        LabelHandle f = _il.NewLabel();
+        EntityHandle self = _m.GetTypeEntity(Self);
         if (IsStruct)
         {
             _il.Ldarg(1);
@@ -222,20 +236,20 @@ internal sealed class SynthesizedBodyEmitter
 
     private void RecordHash()
     {
-        var h = _il.NewLocal(C.GetSpecialType(SpecialType.Int32));
+        LocalSlot h = _il.NewLocal(C.GetSpecialType(SpecialType.Int32));
         _il.LdcI4(0);
         _il.Stloc(h.Index);
-        foreach (var p in Props)
+        foreach (SourcePropertySymbol p in Props)
         {
-            var t = FieldClr(p);
-            var cmp = EqComparer(t);
+            TypeSymbol t = FieldClr(p);
+            NamedTypeSymbol cmp = EqComparer(t);
             _il.Ldloc(h.Index);
             _il.LdcI4(-1521134295);
             _il.Op(ILOpCode.Mul, -1);
             _il.Call(ILOpCode.Call, _m.GetMethodEntity(cmp.GetMembers("get_Default").OfType<MethodSymbol>().First()), 0, 1);
             _il.Ldarg(0);
             LoadField(Backing(p));
-            var gh = cmp.GetMembers("GetHashCode").OfType<MethodSymbol>().First(x => x.Parameters.Length == 1);
+            MethodSymbol gh = cmp.GetMembers("GetHashCode").OfType<MethodSymbol>().First(x => x.Parameters.Length == 1);
             _il.Call(ILOpCode.Callvirt, _m.GetMethodEntity(gh), 2, 1);
             _il.Op(ILOpCode.Add, -1);
             _il.Stloc(h.Index);
@@ -246,19 +260,19 @@ internal sealed class SynthesizedBodyEmitter
 
     private void RecordToString()
     {
-        var props = Props;
-        var strT = C.GetSpecialType(SpecialType.String);
+        ImmutableArray<SourcePropertySymbol> props = Props;
+        NamedTypeSymbol strT = C.GetSpecialType(SpecialType.String);
         if (props.Length == 0)
         {
             _il.LdStr(_m.Metadata.GetOrAddUserString(_type.Name + " { }"));
             _il.Op(ILOpCode.Ret, -1);
             return;
         }
-        var objT = C.GetSpecialType(SpecialType.Object);
-        var n = props.Length * 2 + 1;
+        NamedTypeSymbol objT = C.GetSpecialType(SpecialType.Object);
+        int n = (props.Length * 2) + 1;
         _il.LdcI4(n);
         _il.Token(ILOpCode.Newarr, _m.GetTypeEntity(objT), 0);
-        var idx = 0;
+        int idx = 0;
         void Str(string s)
         {
             _il.Op(ILOpCode.Dup, 1);
@@ -266,26 +280,30 @@ internal sealed class SynthesizedBodyEmitter
             _il.LdStr(_m.Metadata.GetOrAddUserString(s));
             _il.Op(ILOpCode.Stelem_ref, -3);
         }
-        for (var i = 0; i < props.Length; i++)
+        for (int i = 0; i < props.Length; i++)
         {
             Str((i == 0 ? _type.Name + " { " : ", ") + props[i].Name + " = ");
             _il.Op(ILOpCode.Dup, 1);
             _il.LdcI4(idx++);
             _il.Ldarg(0);
             LoadField(Backing(props[i]));
-            var t = FieldClr(props[i]);
-            if (!(t.IsReferenceType && t is not TypeParameterSymbol)) _il.Token(ILOpCode.Box, _m.GetTypeEntity(t), 0);
+            TypeSymbol t = FieldClr(props[i]);
+            if (!(t.IsReferenceType && t is not TypeParameterSymbol))
+            {
+                _il.Token(ILOpCode.Box, _m.GetTypeEntity(t), 0);
+            }
+
             _il.Op(ILOpCode.Stelem_ref, -3);
         }
         Str(" }");
-        var concat = strT.GetMembers("Concat").OfType<MethodSymbol>().First(x => x.IsStatic && x.Parameters.Length == 1 && x.Parameters[0].Type is ArrayTypeSymbol);
+        MethodSymbol concat = strT.GetMembers("Concat").OfType<MethodSymbol>().First(x => x.IsStatic && x.Parameters.Length == 1 && x.Parameters[0].Type is ArrayTypeSymbol);
         _il.Call(ILOpCode.Call, _m.GetMethodEntity(concat), 1, 1);
         _il.Op(ILOpCode.Ret, 0);
     }
 
     private void RecordOpEquals()
     {
-        var t = Self;
+        NamedTypeSymbol t = Self;
         if (IsStruct)
         {
             _il.Ldarga(0);
@@ -294,8 +312,8 @@ internal sealed class SynthesizedBodyEmitter
             _il.Op(ILOpCode.Ret, 0);
             return;
         }
-        var yes = _il.NewLabel();
-        var no = _il.NewLabel();
+        LabelHandle yes = _il.NewLabel();
+        LabelHandle no = _il.NewLabel();
         _il.Ldarg(0);
         _il.Ldarg(1);
         _il.Branch(ILOpCode.Beq, yes);
@@ -318,7 +336,7 @@ internal sealed class SynthesizedBodyEmitter
 
     private void RecordOpNotEquals()
     {
-        var eq = _type.GetMembers("op_Equality").OfType<MethodSymbol>().First();
+        MethodSymbol eq = _type.GetMembers("op_Equality").OfType<MethodSymbol>().First();
         _il.Ldarg(0);
         _il.Ldarg(1);
         _il.Call(ILOpCode.Call, _m.GetMethodEntity(eq), 2, 1);
@@ -334,21 +352,25 @@ internal sealed class SynthesizedBodyEmitter
 
     private void UnionCtor()
     {
-        var idx = ((SourceMethodSymbol)_method).UnionCaseIndex;
+        int idx = ((SourceMethodSymbol)_method).UnionCaseIndex;
         _il.Ldarg(0);
         _il.LdcI4(idx + 1);
         _il.Token(ILOpCode.Stfld, _m.GetFieldEntity(Tag), -2);
         _il.Ldarg(0);
         _il.Ldarg(1);
-        var t = _m.ClrType(_method.Parameters[0].Type);
-        if (!(t.IsReferenceType && t is not TypeParameterSymbol)) _il.Token(ILOpCode.Box, _m.GetTypeEntity(t), 0);
+        TypeSymbol t = _m.ClrType(_method.Parameters[0].Type);
+        if (!(t.IsReferenceType && t is not TypeParameterSymbol))
+        {
+            _il.Token(ILOpCode.Box, _m.GetTypeEntity(t), 0);
+        }
+
         _il.Token(ILOpCode.Stfld, _m.GetFieldEntity(Value), -2);
         _il.Op(ILOpCode.Ret, 0);
     }
 
     private void UnionImplicit()
     {
-        var ctor = _type.InstanceConstructors.OfType<SourceMethodSymbol>().First(c => c.UnionCaseIndex == ((SourceMethodSymbol)_method).UnionCaseIndex);
+        SourceMethodSymbol ctor = _type.InstanceConstructors.OfType<SourceMethodSymbol>().First(c => c.UnionCaseIndex == ((SourceMethodSymbol)_method).UnionCaseIndex);
         _il.Ldarg(0);
         _il.Call(ILOpCode.Newobj, _m.GetMethodEntity(ctor), 1, 1);
         _il.Op(ILOpCode.Ret, 0);
@@ -356,8 +378,8 @@ internal sealed class SynthesizedBodyEmitter
 
     private void UnionToString()
     {
-        var objT = C.GetSpecialType(SpecialType.Object);
-        var notNull = _il.NewLabel();
+        NamedTypeSymbol objT = C.GetSpecialType(SpecialType.Object);
+        LabelHandle notNull = _il.NewLabel();
         _il.Ldarg(0);
         LoadField(Value);
         _il.Op(ILOpCode.Dup, 1);
@@ -373,10 +395,10 @@ internal sealed class SynthesizedBodyEmitter
 
     private void UnionEqualsObject()
     {
-        var no = _il.NewLabel();
-        var objT = C.GetSpecialType(SpecialType.Object);
-        var self = _m.GetTypeEntity(Self);
-        var o = _il.NewLocal(Self);
+        LabelHandle no = _il.NewLabel();
+        NamedTypeSymbol objT = C.GetSpecialType(SpecialType.Object);
+        EntityHandle self = _m.GetTypeEntity(Self);
+        LocalSlot o = _il.NewLocal(Self);
         _il.Ldarg(1);
         _il.Token(ILOpCode.Isinst, self, 0);
         _il.Branch(ILOpCode.Brfalse, no);
@@ -392,7 +414,7 @@ internal sealed class SynthesizedBodyEmitter
         LoadField(Value);
         _il.Ldloca(o.Index);
         LoadField(Value);
-        var eq = objT.GetMembers("Equals").OfType<MethodSymbol>().First(x => x.IsStatic && x.Parameters.Length == 2);
+        MethodSymbol eq = objT.GetMembers("Equals").OfType<MethodSymbol>().First(x => x.IsStatic && x.Parameters.Length == 2);
         _il.Call(ILOpCode.Call, _m.GetMethodEntity(eq), 2, 1);
         _il.Op(ILOpCode.Ret, 0);
         _il.Mark(no);
@@ -403,8 +425,8 @@ internal sealed class SynthesizedBodyEmitter
 
     private void UnionHash()
     {
-        var objT = C.GetSpecialType(SpecialType.Object);
-        var isNull = _il.NewLabel();
+        NamedTypeSymbol objT = C.GetSpecialType(SpecialType.Object);
+        LabelHandle isNull = _il.NewLabel();
         _il.Ldarg(0);
         LoadField(Tag);
         _il.Ldarg(0);

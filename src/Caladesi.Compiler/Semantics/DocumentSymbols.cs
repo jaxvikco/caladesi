@@ -1,5 +1,4 @@
 using Caladesi.Compiler.Syntax;
-using Caladesi.Compiler.Text;
 
 namespace Caladesi.Compiler.Semantics;
 
@@ -8,12 +7,16 @@ public static class DocumentOutline
 {
     public static IReadOnlyList<DocumentSymbolInfo> Compute(SyntaxTree tree)
     {
-        var result = new List<DocumentSymbolInfo>();
-        foreach (var s in tree.Root.Statements) AddStatement(s, result);
+        ArgumentNullException.ThrowIfNull(tree);
+        List<DocumentSymbolInfo> result = [];
+        foreach (StatementSyntax s in tree.Root.Statements)
+        {
+            AddStatement(s, result);
+        }
+
         return result;
     }
 
-    private static TextSpan Sel(SyntaxToken? t, SyntaxNode n) => t is { IsMissing: false } ? t.Span : n.Span;
 
     private static void AddStatement(StatementSyntax s, List<DocumentSymbolInfo> into)
     {
@@ -30,30 +33,37 @@ public static class DocumentOutline
                 break;
             case EnumDeclarationSyntax e when !e.Identifier.IsMissing:
                 into.Add(new(e.Identifier.Text, null, DocumentSymbolKind.Enum, e.Span, e.Identifier.Span,
-                    e.Members.Where(m => !m.Identifier.IsMissing).Select(m => new DocumentSymbolInfo(m.Identifier.Text, null, DocumentSymbolKind.EnumMember, m.Span, m.Identifier.Span, [])).ToList()));
+                    [.. e.Members.Where(m => !m.Identifier.IsMissing).Select(m => new DocumentSymbolInfo(m.Identifier.Text, null, DocumentSymbolKind.EnumMember, m.Span, m.Identifier.Span, []))]));
                 break;
             case TypeAliasDeclarationSyntax t when !t.Identifier.IsMissing:
-            {
-                var isObject = t.Type is ObjectTypeSyntax;
-                var children = t.Type is ObjectTypeSyntax o ? Members(o.Members) : [];
-                into.Add(new(t.Identifier.Text, null, isObject ? DocumentSymbolKind.Struct : DocumentSymbolKind.TypeAlias, t.Span, t.Identifier.Span, children));
-                break;
-            }
+                {
+                    bool isObject = t.Type is ObjectTypeSyntax;
+                    List<DocumentSymbolInfo> children = t.Type is ObjectTypeSyntax o ? Members(o.Members) : [];
+                    into.Add(new(t.Identifier.Text, null, isObject ? DocumentSymbolKind.Struct : DocumentSymbolKind.TypeAlias, t.Span, t.Identifier.Span, children));
+                    break;
+                }
             case VariableStatementSyntax v:
-                foreach (var d in v.Declaration.Declarators)
+                foreach (VariableDeclaratorSyntax d in v.Declaration.Declarators)
+                {
                     if (d.Identifier is { IsMissing: false } id)
+                    {
                         into.Add(new(id.Text, null, v.Declaration.IsConst ? DocumentSymbolKind.Constant : DocumentSymbolKind.Variable, d.Span, id.Span, []));
+                    }
+                }
+
                 break;
         }
     }
 
-    private static string Detail(ParameterListSyntax ps, TypeAnnotationSyntax? ret) =>
-        "(" + string.Join(", ", ps.Parameters.Select(p => p.Identifier?.Text ?? "_")) + ")" + (ret == null ? "" : ": " + ret.Type.ToFullString().Trim());
+    private static string Detail(ParameterListSyntax ps, TypeAnnotationSyntax? ret)
+    {
+        return "(" + string.Join(", ", ps.Parameters.Select(p => p.Identifier?.Text ?? "_")) + ")" + (ret == null ? "" : ": " + ret.Type.ToFullString().Trim());
+    }
 
     private static List<DocumentSymbolInfo> Members(SyntaxList<MemberDeclarationSyntax> members)
     {
-        var list = new List<DocumentSymbolInfo>();
-        foreach (var m in members)
+        List<DocumentSymbolInfo> list = [];
+        foreach (MemberDeclarationSyntax m in members)
         {
             switch (m)
             {
@@ -77,5 +87,8 @@ public static class DocumentOutline
 
 public sealed partial class SemanticModel
 {
-    public IReadOnlyList<DocumentSymbolInfo> GetDocumentSymbols() => DocumentOutline.Compute(Tree);
+    public IReadOnlyList<DocumentSymbolInfo> GetDocumentSymbols()
+    {
+        return DocumentOutline.Compute(Tree);
+    }
 }

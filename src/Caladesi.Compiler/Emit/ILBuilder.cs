@@ -1,8 +1,6 @@
-using System.Collections.Immutable;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using Caladesi.Compiler.Symbols;
-using Caladesi.Compiler.Text;
 
 namespace Caladesi.Compiler.Emit;
 
@@ -18,8 +16,7 @@ internal sealed class LocalSlot(TypeSymbol type, string? name, int index)
 /// <summary>Thin wrapper over <see cref="InstructionEncoder"/> that tracks stack depth, locals and sequence points.</summary>
 internal sealed class ILBuilder
 {
-    private readonly Dictionary<LabelHandle, int> _labelDepth = new();
-    private int _depth;
+    private readonly Dictionary<LabelHandle, int> _labelDepth = [];
     private int _max;
 
     public ILBuilder()
@@ -32,24 +29,31 @@ internal sealed class ILBuilder
     public BlobBuilder Code { get; }
     public ControlFlowBuilder ControlFlow { get; }
     public InstructionEncoder Encoder { get; }
-    public List<LocalSlot> Locals { get; } = new();
-    public List<SequencePoint> SequencePoints { get; } = new();
+    public List<LocalSlot> Locals { get; } = [];
+    public List<SequencePoint> SequencePoints { get; } = [];
     public int MaxStack => _max + 4;
     public int Offset => Encoder.Offset;
-    public int CurrentDepth => _depth;
+    public int CurrentDepth { get; private set; }
 
     public LocalSlot NewLocal(TypeSymbol type, string? name = null)
     {
-        var l = new LocalSlot(type, name, Locals.Count);
+        LocalSlot l = new(type, name, Locals.Count);
         Locals.Add(l);
         return l;
     }
 
     private void Adjust(int delta)
     {
-        _depth += delta;
-        if (_depth < 0) _depth = 0;
-        if (_depth > _max) _max = _depth;
+        CurrentDepth += delta;
+        if (CurrentDepth < 0)
+        {
+            CurrentDepth = 0;
+        }
+
+        if (CurrentDepth > _max)
+        {
+            _max = CurrentDepth;
+        }
     }
 
     public void Op(ILOpCode op, int delta)
@@ -58,7 +62,10 @@ internal sealed class ILBuilder
         Adjust(delta);
         if (op is ILOpCode.Br or ILOpCode.Ret or ILOpCode.Throw or ILOpCode.Rethrow or ILOpCode.Leave or ILOpCode.Endfinally or ILOpCode.Endfilter)
         {
-            if (op == ILOpCode.Ret) _depth = 0;
+            if (op == ILOpCode.Ret)
+            {
+                CurrentDepth = 0;
+            }
         }
     }
 
@@ -123,32 +130,56 @@ internal sealed class ILBuilder
     }
     public void Starg(int i) { Encoder.StoreArgument(i); Adjust(-1); }
 
-    public LabelHandle NewLabel() => Encoder.DefineLabel();
+    public LabelHandle NewLabel()
+    {
+        return Encoder.DefineLabel();
+    }
 
     public void Mark(LabelHandle l)
     {
         Encoder.MarkLabel(l);
-        if (_labelDepth.TryGetValue(l, out var d) && d > _depth) _depth = d;
+        if (_labelDepth.TryGetValue(l, out int d) && d > CurrentDepth)
+        {
+            CurrentDepth = d;
+        }
     }
 
     public void Branch(ILOpCode op, LabelHandle target)
     {
-        var pops = op switch
+        int pops = op switch
         {
             ILOpCode.Br or ILOpCode.Leave => 0,
             ILOpCode.Brtrue or ILOpCode.Brfalse => 1,
             _ => 2,
         };
         Adjust(-pops);
-        if (!_labelDepth.TryGetValue(target, out var d) || d < _depth) _labelDepth[target] = _depth;
+        if (!_labelDepth.TryGetValue(target, out int d) || d < CurrentDepth)
+        {
+            _labelDepth[target] = CurrentDepth;
+        }
+
         Encoder.Branch(op, target);
-        if (op is ILOpCode.Br or ILOpCode.Leave) _depth = 0;
+        if (op is ILOpCode.Br or ILOpCode.Leave)
+        {
+            CurrentDepth = 0;
+        }
     }
 
-    public void ResetDepth(int depth = 0) { _depth = depth; if (_depth > _max) _max = _depth; }
+    public void ResetDepth(int depth = 0)
+    {
+        CurrentDepth = depth; if (CurrentDepth > _max)
+        {
+            _max = CurrentDepth;
+        }
+    }
 
-    public void MarkSequencePoint(int startLine, int startCol, int endLine, int endCol) =>
+    public void MarkSequencePoint(int startLine, int startCol, int endLine, int endCol)
+    {
         SequencePoints.Add(new SequencePoint(Offset, startLine, startCol, endLine, endCol, false));
+    }
 
-    public void MarkHidden() => SequencePoints.Add(new SequencePoint(Offset, 0xFEEFEE, 0, 0xFEEFEE, 0, true));
+    public void MarkHidden()
+    {
+        SequencePoints.Add(new SequencePoint(Offset, 0xFEEFEE, 0, 0xFEEFEE, 0, true));
+    }
 }

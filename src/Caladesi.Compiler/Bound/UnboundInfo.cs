@@ -1,6 +1,5 @@
 using System.Collections.Immutable;
 using Caladesi.Compiler.Symbols;
-using Caladesi.Compiler.Syntax;
 
 namespace Caladesi.Compiler.Bound;
 
@@ -34,22 +33,14 @@ public sealed class CollectionInfo
     public TypeSymbol? NaturalElementType { get; init; }
 }
 
-public sealed class LambdaSymbol : MethodSymbol
+public sealed class LambdaSymbol(Symbol container, string name, bool isAsync, bool isIterator) : MethodSymbol
 {
-    private ImmutableArray<ParameterSymbol> _parameters = ImmutableArray<ParameterSymbol>.Empty;
+    private ImmutableArray<ParameterSymbol> _parameters = [];
 
-    public LambdaSymbol(Symbol container, string name, bool isAsync, bool isIterator)
-    {
-        Container = container;
-        Name_ = name;
-        IsAsyncLambda = isAsync;
-        IsIteratorLambda = isIterator;
-    }
-
-    public Symbol Container { get; }
-    private string Name_ { get; }
-    public bool IsAsyncLambda { get; }
-    public bool IsIteratorLambda { get; }
+    public Symbol Container { get; } = container;
+    private string Name_ { get; } = name;
+    public bool IsAsyncLambda { get; } = isAsync;
+    public bool IsIteratorLambda { get; } = isIterator;
     public TypeSymbol? ReturnTypeValue { get; set; }
     public override string Name => Name_;
     public override Symbol? ContainingSymbol => Container;
@@ -59,6 +50,10 @@ public sealed class LambdaSymbol : MethodSymbol
     public override bool IsAsync => IsAsyncLambda;
     public override bool IsIterator => IsIteratorLambda;
     public override Accessibility DeclaredAccessibility => Accessibility.Private;
-    public void SetParameters(ImmutableArray<ParameterSymbol> p) => _parameters = p;
+    public void SetParameters(ImmutableArray<ParameterSymbol> p)
+    {
+        _parameters = p;
+    }
+
     public bool CapturesThis { get; set; }
 }

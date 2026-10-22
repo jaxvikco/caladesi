@@ -4,10 +4,12 @@ using Caladesi.Compiler.Symbols.Source;
 
 namespace Caladesi.Compiler;
 
+#pragma warning disable CA1724 // the name is part of the public compiler API
 public sealed partial class Compilation
+#pragma warning restore CA1724
 {
     private readonly Dictionary<string, SynthesizedAnonymousRecord> _anonymousRecords = new(StringComparer.Ordinal);
-    private readonly List<SynthesizedAnonymousRecord> _anonymousRecordList = new();
+    private readonly List<SynthesizedAnonymousRecord> _anonymousRecordList = [];
 
     internal IReadOnlyList<SynthesizedAnonymousRecord> AnonymousRecords => _anonymousRecordList;
 
@@ -15,14 +17,14 @@ public sealed partial class Compilation
     internal NamedTypeSymbol GetAnonymousRecord(IReadOnlyList<string> names, IReadOnlyList<TypeSymbol> types)
     {
         EnsureDeclarations();
-        var key = string.Join("|", names);
+        string key = string.Join("|", names);
         SynthesizedAnonymousRecord def;
         lock (_lock)
         {
-            if (!_anonymousRecords.TryGetValue(key, out var existing))
+            if (!_anonymousRecords.TryGetValue(key, out SynthesizedAnonymousRecord? existing))
             {
-                var file = _files[SyntaxTrees[0]];
-                existing = new SynthesizedAnonymousRecord(this, file, "<>f__AnonymousType" + _anonymousRecordList.Count, names.ToImmutableArray());
+                SourceFile file = _files[SyntaxTrees[0]];
+                existing = new SynthesizedAnonymousRecord(this, file, "<>f__AnonymousType" + _anonymousRecordList.Count, [.. names]);
                 _anonymousRecords[key] = existing;
                 _anonymousRecordList.Add(existing);
             }
