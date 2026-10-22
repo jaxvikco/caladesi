@@ -109,4 +109,12 @@ public class ReviewParserTests
             Assert.IsTrue(tree.Diagnostics.Any(d => d.Id == Descriptors.ExportDefaultNotSupported.Id), src);
         }
     }
+
+    [TestMethod]
+    public void Item38_FormatterKeepsTrailingWhitespaceInsideAMultiLineTemplateLiteral()
+    {
+        const string Source = "const s = `abc  \n  def   \nghi`;   \nconst t = 1;\n";
+        string formatted = Formatting.Formatter.Format(SyntaxTree.ParseText(Source, "t.cala"));
+        Assert.AreEqual("const s = `abc  \n  def   \nghi`;\nconst t = 1;\n", formatted);
+    }
 }
