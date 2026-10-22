@@ -169,7 +169,7 @@ public class ProjectTests
         Directory.CreateDirectory(dir);
         File.WriteAllText(Path.Combine(dir, "app.calaproj"), "<Project><this is not xml");
         var file = Path.Combine(dir, "main.cala");
-        File.WriteAllText(file, "const a = 1;\nif (a == 1) { }\n");
+        File.WriteAllText(file, "const a = 1;\nlet b: any = a;\n");
         var uri = TestClient.Uri(file);
 
         using var client = new TestClient(env.ServerOptions());
@@ -179,8 +179,8 @@ public class ProjectTests
         var message = client.WaitForNotification("window/showMessage", p => p.GetProperty("message").GetString()!.Contains("standalone", StringComparison.Ordinal));
         StringAssert.Contains(message.GetProperty("message").GetString(), "app.calaproj");
         var diagnostics = client.WaitForDiagnostics(uri, d => d.GetArrayLength() > 0);
-        Assert.AreEqual("CAL0023", diagnostics.GetProperty("diagnostics")[0].GetProperty("code").GetString());
-        var hover = await client.Request("textDocument/hover", TestClient.Position(uri, 1, 5));
+        Assert.AreEqual("CAL0201", diagnostics.GetProperty("diagnostics")[0].GetProperty("code").GetString());
+        var hover = await client.Request("textDocument/hover", TestClient.Position(uri, 1, 13));
         Assert.AreEqual(JsonValueKind.Object, hover.ValueKind);
         await client.Shutdown();
     }

@@ -53,7 +53,7 @@ public class EmitTypesTests
         type Point = { x: int; y: int };
         const p = new Point(1, 2);
         const q: Point = { x: 1, y: 2 };
-        Console.WriteLine(p === q);
+        Console.WriteLine(p == q);
         Console.WriteLine(p);
         const r = { ...p, x: 5 };
         Console.WriteLine(r.x + r.y);
@@ -70,7 +70,7 @@ public class EmitTypesTests
     [TestMethod]
     public void StringLiteralUnionEnum() => Check("""
         type Dir = "up" | "down";
-        function f(d: Dir): int { return d === "up" ? 1 : -1; }
+        function f(d: Dir): int { return d == "up" ? 1 : -1; }
         Console.WriteLine(f("up"));
         Console.WriteLine(f("down"));
         """, "1\n-1\n");

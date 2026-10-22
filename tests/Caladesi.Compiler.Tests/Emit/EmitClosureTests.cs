@@ -12,7 +12,7 @@ public class EmitClosureTests
     [TestMethod]
     public void NonCapturingLambdaWithLinq() => Check("""
         const xs = [1, 2, 3, 4];
-        Console.WriteLine(xs.Where(x => x % 2 === 0).Select(x => x * 10).Sum());
+        Console.WriteLine(xs.Where(x => x % 2 == 0).Select(x => x * 10).Sum());
         """, "60\n");
 
     [TestMethod]

@@ -27,7 +27,7 @@ public enum SyntaxKind
     OpenBraceToken, CloseBraceToken, OpenParenToken, CloseParenToken, OpenBracketToken, CloseBracketToken,
     DotToken, DotDotDotToken, SemicolonToken, CommaToken, ColonToken, QuestionToken, QuestionDotToken,
     LessThanToken, GreaterThanToken, LessThanEqualsToken, LessThanLessThanToken, LessThanLessThanEqualsToken,
-    EqualsEqualsToken, ExclamationEqualsToken, EqualsEqualsEqualsToken, ExclamationEqualsEqualsToken,
+    EqualsEqualsToken, ExclamationEqualsToken,
     EqualsGreaterThanToken, // =>
     PlusToken, MinusToken, AsteriskToken, AsteriskAsteriskToken, SlashToken, PercentToken,
     PlusPlusToken, MinusMinusToken,

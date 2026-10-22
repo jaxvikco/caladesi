@@ -89,18 +89,18 @@ public class ServerTests
     public async Task DidOpenPublishesErrorAndFixClearsIt()
     {
         using var client = await Started();
-        var text = "const a = 1;\nif (a == 1) { Console.WriteLine(\"x\"); }\n";
+        var text = "const a = 1;\nlet b: any = a;\n";
         client.Open(Uri, text);
         var published = client.WaitForDiagnostics(Uri, d => d.GetArrayLength() > 0);
         var diagnostic = published.GetProperty("diagnostics")[0];
-        Assert.AreEqual("CAL0023", diagnostic.GetProperty("code").GetString());
+        Assert.AreEqual("CAL0201", diagnostic.GetProperty("code").GetString());
         Assert.AreEqual(1, diagnostic.GetProperty("severity").GetInt32());
         Assert.AreEqual("caladesi", diagnostic.GetProperty("source").GetString());
         Assert.AreEqual(1, diagnostic.GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
-        Assert.AreEqual("==", Slice(text, diagnostic.GetProperty("range")));
+        Assert.AreEqual("any", Slice(text, diagnostic.GetProperty("range")));
 
         var mark = client.Mark();
-        client.Change(Uri, text.Replace("==", "==="), 2);
+        client.Change(Uri, text.Replace("any", "int"), 2);
         var cleared = client.WaitForDiagnostics(Uri, d => d.GetArrayLength() == 0, mark);
         Assert.AreEqual(2, cleared.GetProperty("version").GetInt32());
         await client.Shutdown();
@@ -110,12 +110,12 @@ public class ServerTests
     public async Task IncrementalChangeIsApplied()
     {
         using var client = await Started();
-        client.Open(Uri, "const a = 1;\nif (a === 1) { }\n");
+        client.Open(Uri, "const a = 1;\nlet b: int = a;\n");
         await client.Request("textDocument/documentSymbol", $$$"""{"textDocument":{"uri":"{{{Uri}}}"}}""");
         var mark = client.Mark();
-        client.Notify("textDocument/didChange", $$$"""{"textDocument":{"uri":"{{{Uri}}}","version":2},"contentChanges":[{"range":{"start":{"line":1,"character":6},"end":{"line":1,"character":9}},"text":"=="}]}""");
+        client.Notify("textDocument/didChange", $$$"""{"textDocument":{"uri":"{{{Uri}}}","version":2},"contentChanges":[{"range":{"start":{"line":1,"character":7},"end":{"line":1,"character":10}},"text":"any"}]}""");
         var published = client.WaitForDiagnostics(Uri, d => d.GetArrayLength() > 0, mark);
-        Assert.AreEqual("CAL0023", published.GetProperty("diagnostics")[0].GetProperty("code").GetString());
+        Assert.AreEqual("CAL0201", published.GetProperty("diagnostics")[0].GetProperty("code").GetString());
         await client.Shutdown();
     }
 
@@ -137,7 +137,7 @@ public class ServerTests
     [TestMethod]
     public async Task CloseClearsDiagnosticsOfLooseFile()
     {
-        using var client = await Started("const a = 1;\nif (a == 1) { }\n");
+        using var client = await Started("const a = 1;\nlet b: any = a;\n");
         client.WaitForDiagnostics(Uri, d => d.GetArrayLength() > 0);
         var mark = client.Mark();
         client.Notify("textDocument/didClose", $$$"""{"textDocument":{"uri":"{{{Uri}}}"}}""");

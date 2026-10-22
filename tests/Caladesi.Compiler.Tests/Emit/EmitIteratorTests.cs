@@ -29,7 +29,7 @@ public class EmitIteratorTests
             Console.WriteLine("cleanup");
           }
         }
-        for (const s of gen()) { Console.WriteLine(s); if (s === "b") break; }
+        for (const s of gen()) { Console.WriteLine(s); if (s == "b") break; }
         """, "a\nb\ncleanup\n");
 
     [TestMethod]

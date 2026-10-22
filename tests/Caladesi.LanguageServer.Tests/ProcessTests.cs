@@ -70,9 +70,9 @@ public class ProcessTests
             Write(input, """{"jsonrpc":"2.0","method":"initialized","params":{}}""");
 
             const string uri = "file:///virtual/process.cala";
-            Write(input, $$$$"""{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"{{{{uri}}}}","languageId":"caladesi","version":1,"text":"const a = 1;\nif (a == 1) { }\n"}}}""");
+            Write(input, $$$$"""{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"{{{{uri}}}}","languageId":"caladesi","version":1,"text":"const a = 1;\nlet b: any = a;\n"}}}""");
             var diagnostics = ReadUntil(output, m => m.TryGetProperty("method", out var method) && method.GetString() == "textDocument/publishDiagnostics");
-            Assert.AreEqual("CAL0023", diagnostics.GetProperty("params").GetProperty("diagnostics")[0].GetProperty("code").GetString());
+            Assert.AreEqual("CAL0201", diagnostics.GetProperty("params").GetProperty("diagnostics")[0].GetProperty("code").GetString());
 
             Write(input, $$$$"""{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"{{{{uri}}}}"},"position":{"line":0,"character":6}}}""");
             var hover = ReadUntil(output, m => m.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Number && id.GetInt32() == 2);

@@ -43,8 +43,8 @@ public static class SyntaxFacts
         P(SyntaxKind.QuestionDotToken, "?."); P(SyntaxKind.LessThanToken, "<"); P(SyntaxKind.GreaterThanToken, ">");
         P(SyntaxKind.LessThanEqualsToken, "<="); P(SyntaxKind.LessThanLessThanToken, "<<");
         P(SyntaxKind.LessThanLessThanEqualsToken, "<<="); P(SyntaxKind.EqualsEqualsToken, "==");
-        P(SyntaxKind.ExclamationEqualsToken, "!="); P(SyntaxKind.EqualsEqualsEqualsToken, "===");
-        P(SyntaxKind.ExclamationEqualsEqualsToken, "!=="); P(SyntaxKind.EqualsGreaterThanToken, "=>");
+        P(SyntaxKind.ExclamationEqualsToken, "!=");
+        P(SyntaxKind.EqualsGreaterThanToken, "=>");
         P(SyntaxKind.PlusToken, "+"); P(SyntaxKind.MinusToken, "-"); P(SyntaxKind.AsteriskToken, "*");
         P(SyntaxKind.AsteriskAsteriskToken, "**"); P(SyntaxKind.SlashToken, "/"); P(SyntaxKind.PercentToken, "%");
         P(SyntaxKind.PlusPlusToken, "++"); P(SyntaxKind.MinusMinusToken, "--"); P(SyntaxKind.AmpersandToken, "&");
@@ -107,8 +107,7 @@ public static class SyntaxFacts
         SyntaxKind.BarToken => 4,
         SyntaxKind.CaretToken => 5,
         SyntaxKind.AmpersandToken => 6,
-        SyntaxKind.EqualsEqualsToken or SyntaxKind.ExclamationEqualsToken or SyntaxKind.EqualsEqualsEqualsToken
-            or SyntaxKind.ExclamationEqualsEqualsToken => 7,
+        SyntaxKind.EqualsEqualsToken or SyntaxKind.ExclamationEqualsToken => 7,
         SyntaxKind.LessThanToken or SyntaxKind.GreaterThanToken or SyntaxKind.LessThanEqualsToken
             or SyntaxKind.GreaterThanEqualsToken or SyntaxKind.InstanceOfKeyword or SyntaxKind.AsKeyword
             or SyntaxKind.SatisfiesKeyword => 8,

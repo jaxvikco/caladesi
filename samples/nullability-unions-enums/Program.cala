@@ -1,5 +1,5 @@
 function len(s: string | null): int {
-  if (s === null) return -1;
+  if (s == null) return -1;
   return s.Length;
 }
 function first(xs: string[] | null): string | null { return xs?.[0] ?? null; }
@@ -17,7 +17,7 @@ Console.WriteLine(n ?? 5);
 n = 3;
 Console.WriteLine(n! + 1);
 const m: int | null = n;
-if (m !== null) Console.WriteLine(m + 100);
+if (m != null) Console.WriteLine(m + 100);
 
 class Node { next: Node | null = null; value = 0; constructor(v: int) { this.value = v; } }
 const head = new Node(1);

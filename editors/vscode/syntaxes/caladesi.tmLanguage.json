@@ -823,7 +823,7 @@
         },
         {
           "name": "keyword.operator.comparison.caladesi",
-          "match": "===|!==|==|!=|<=|>=|<|>"
+          "match": "==|!=|<=|>=|<|>"
         },
         {
           "name": "keyword.operator.logical.caladesi",

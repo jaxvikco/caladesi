@@ -34,8 +34,8 @@ public sealed partial class Binder
         SyntaxKind.AmpersandToken or SyntaxKind.AmpersandEqualsToken => BinaryOperatorKind.And,
         SyntaxKind.BarToken or SyntaxKind.BarEqualsToken => BinaryOperatorKind.Or,
         SyntaxKind.CaretToken or SyntaxKind.CaretEqualsToken => BinaryOperatorKind.Xor,
-        SyntaxKind.EqualsEqualsEqualsToken => BinaryOperatorKind.Equal,
-        SyntaxKind.ExclamationEqualsEqualsToken => BinaryOperatorKind.NotEqual,
+        SyntaxKind.EqualsEqualsToken => BinaryOperatorKind.Equal,
+        SyntaxKind.ExclamationEqualsToken => BinaryOperatorKind.NotEqual,
         SyntaxKind.LessThanToken => BinaryOperatorKind.LessThan,
         SyntaxKind.LessThanEqualsToken => BinaryOperatorKind.LessThanOrEqual,
         SyntaxKind.GreaterThanToken => BinaryOperatorKind.GreaterThan,
@@ -50,15 +50,6 @@ public sealed partial class Binder
         var opKind = b.OperatorKind;
         switch (opKind)
         {
-            case SyntaxKind.EqualsEqualsToken or SyntaxKind.ExclamationEqualsToken:
-            {
-                var good = opKind == SyntaxKind.EqualsEqualsToken ? "===" : "!==";
-                ReportWithFix(Descriptors.LooseEqualityNotSupported, b.OperatorToken.Span, new FixIt("Replace with '" + good + "'", b.OperatorToken.Span, good), b.OperatorToken.Text, good);
-                // recover by treating it as the strict operator
-                var l0 = BindValue(b.Left);
-                var r0 = BindValue(b.Right);
-                return BindEquality(b, l0, r0, opKind == SyntaxKind.EqualsEqualsToken ? BinaryOperatorKind.Equal : BinaryOperatorKind.NotEqual);
-            }
             case SyntaxKind.AmpersandAmpersandToken or SyntaxKind.BarBarToken:
                 return BindLogical(b, opKind == SyntaxKind.AmpersandAmpersandToken);
             case SyntaxKind.QuestionQuestionToken:
@@ -70,8 +61,8 @@ public sealed partial class Binder
         right = BindValue(b.Right);
         if (left is BoundBadExpression || right is BoundBadExpression) return Bad(b, left, right);
 
-        if (opKind is SyntaxKind.EqualsEqualsEqualsToken or SyntaxKind.ExclamationEqualsEqualsToken)
-            return BindEquality(b, left, right, opKind == SyntaxKind.EqualsEqualsEqualsToken ? BinaryOperatorKind.Equal : BinaryOperatorKind.NotEqual);
+        if (opKind is SyntaxKind.EqualsEqualsToken or SyntaxKind.ExclamationEqualsToken)
+            return BindEquality(b, left, right, opKind == SyntaxKind.EqualsEqualsToken ? BinaryOperatorKind.Equal : BinaryOperatorKind.NotEqual);
         if (opKind == SyntaxKind.AsteriskAsteriskToken) return BindPower(b, left, right);
         var kind = ToBinaryKind(opKind);
         if (kind == null)
