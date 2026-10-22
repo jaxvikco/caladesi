@@ -541,7 +541,35 @@ public sealed class SourcePropertySymbol(SourceFile file, NamedTypeSymbol contai
             _ => Declaration.Span,
         })];
 
-    public override TypeSymbol Type => _type ??= _typeFactory!(this);
+    private bool _typeInProgress;
+
+    public override TypeSymbol Type
+    {
+        get
+        {
+            if (_type != null)
+            {
+                return _type;
+            }
+
+            if (_typeInProgress)
+            {
+                // an inferred type that depends on itself (`static a = C.a`), as for fields
+                if (_container is SourceNamedType owner)
+                {
+                    owner.Compilation.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.RecursiveInference, File.FilePath, Declaration?.Span ?? default, Name));
+                }
+
+                return _type = ErrorTypeSymbol.Instance;
+            }
+
+            _typeInProgress = true;
+            _type = _typeFactory!(this);
+            _typeInProgress = false;
+            return _type;
+        }
+    }
+
     internal void SetType(TypeSymbol t)
     {
         _type = t;

@@ -400,8 +400,15 @@ internal sealed partial class MethodBodyEmitter
         }
         int pops = args.Length + (isInstance ? 1 : 0);
         TypeSymbol rtn = m.ReturnType;
-        int pushes = rtn.IsVoid ? 0 : 1;
+        int pushes = rtn.ReturnsNothing ? 0 : 1;
         _il.Call(op, _m.GetMethodEntity(m), pops, pushes);
+        if (rtn.IsNeverType)
+        {
+            // the callee never returns: end the flow so the verifier does not expect a result
+            _il.Op(ILOpCode.Ldnull, 1);
+            _il.Op(ILOpCode.Throw, -1);
+        }
+
         if (m.ReturnsByRef && pushes == 1)
         {
             _il.Token(ILOpCode.Ldobj, _m.GetTypeEntity(rtn), 0);

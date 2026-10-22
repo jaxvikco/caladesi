@@ -622,9 +622,10 @@ public sealed class Lexer(SourceText source, string path, DiagnosticBag diagnost
                 {
                     int close = _text.IndexOf('}', _pos);
                     if (close > 0 && int.TryParse(_text.AsSpan(_pos + 1, close - _pos - 1), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int cp)
-                        && cp <= 0x10FFFF)
+                        && cp is >= 0 and <= 0x10FFFF)
                     {
-                        _ = sb.Append(char.ConvertFromUtf32(cp));
+                        // like the 4-digit form, a lone surrogate is a valid UTF-16 code unit in a string
+                        _ = cp <= 0xFFFF ? sb.Append((char)cp) : sb.Append(char.ConvertFromUtf32(cp));
                         _pos = close + 1;
                     }
                     else

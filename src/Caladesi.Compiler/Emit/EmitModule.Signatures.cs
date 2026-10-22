@@ -254,7 +254,7 @@ internal sealed partial class EmitModule(Compilation compilation)
         MethodSignatureEncoder enc = new BlobEncoder(bb).MethodSignature(SignatureCallingConvention.Default, def.Arity, isInstanceMethod: !def.IsStatic);
         enc.Parameters(def.Parameters.Length, out ReturnTypeEncoder ret, out ParametersEncoder ps);
         TypeSymbol rt = def.ReturnType;
-        if (rt.IsVoid)
+        if (rt.ReturnsNothing)
         {
             ret.Void();
         }

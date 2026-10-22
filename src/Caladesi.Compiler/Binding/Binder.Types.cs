@@ -197,7 +197,7 @@ public sealed partial class Binder
             Report(Descriptors.TooManyParameters, at);
             return ErrorType;
         }
-        if (returnType.IsVoid)
+        if (returnType.ReturnsNothing)
         {
             if (parameters.Length == 0)
             {

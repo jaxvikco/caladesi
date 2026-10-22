@@ -547,12 +547,27 @@ public sealed partial class Binder
 
         // duplicate keys
         HashSet<string> seen = [];
+        bool hasDuplicate = false;
         foreach (LiteralMember m in members)
         {
             if (!m.IsSpread && !seen.Add(m.Name))
             {
                 Report(Descriptors.DuplicateObjectLiteralKey, m.NameNode, m.Name);
+                hasDuplicate = true;
             }
+        }
+
+        if (hasDuplicate)
+        {
+            foreach (LiteralMember m in members)
+            {
+                if (!m.IsSpread)
+                {
+                    _ = BindLiteralMemberValue(m, null);
+                }
+            }
+
+            return Bad(syntax);
         }
 
         BoundExpression result;

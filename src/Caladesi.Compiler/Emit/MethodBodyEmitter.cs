@@ -41,7 +41,7 @@ internal sealed partial class MethodBodyEmitter
         _il = il;
         _file = file;
         _isStatic = method.IsStatic;
-        _hasReturnValue = !method.ReturnType.IsVoid && method.MethodKind != MethodKind.Constructor && method.MethodKind != MethodKind.StaticConstructor;
+        _hasReturnValue = !method.ReturnType.ReturnsNothing && method.MethodKind != MethodKind.Constructor && method.MethodKind != MethodKind.StaticConstructor;
         _thisIsByRef = method.ContainingType?.IsValueType == true;
         int offset = _isStatic ? 0 : 1;
         foreach (ParameterSymbol p in method.Parameters)

@@ -34,6 +34,24 @@ public sealed partial class Binder
         return e;
     }
 
+    /// <summary>Gives a target-typed placeholder (collection literal, lambda) its natural type when it is used as a receiver, indexed value or callee.</summary>
+    private BoundExpression BindNaturalType(BoundExpression e, SyntaxNode syntax)
+    {
+        if (e is not BoundUnbound u)
+        {
+            return e;
+        }
+
+        BoundExpression bound = u.BindToType(null);
+        if (bound is BoundUnbound)
+        {
+            Report(Descriptors.CannotInferType, syntax);
+            return Bad(syntax, bound);
+        }
+
+        return bound;
+    }
+
     /// <summary>Binds an expression that must produce a value (not a type, namespace, or module).</summary>
     internal BoundExpression BindValue(ExpressionSyntax syntax, TypeSymbol? target = null)
     {

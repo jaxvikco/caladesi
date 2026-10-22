@@ -19,7 +19,7 @@ public sealed partial class Binder
             return BindBaseMemberAccess(ma);
         }
 
-        BoundExpression left = BindExpression(ma.Expression);
+        BoundExpression left = BindNaturalType(BindExpression(ma.Expression), ma.Expression);
         if (left is BoundBadExpression || (left.HasErrors && left.Type != null && left is not BoundTypeExpression))
         {
             return Bad(ma, left);
@@ -312,7 +312,7 @@ public sealed partial class Binder
 
     private BoundExpression BindElementAccess(ElementAccessExpressionSyntax ea)
     {
-        BoundExpression left = BindValue(ea.Expression);
+        BoundExpression left = BindNaturalType(BindValue(ea.Expression), ea.Expression);
         if (left is BoundBadExpression)
         {
             return Bad(ea, left);

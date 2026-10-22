@@ -210,4 +210,52 @@ public class ReviewRegressionTests
         Console.WriteLine(new S().CanRead);
         """, "True\n");
     }
+
+    [TestMethod]
+    public void Item19a_FunctionReturningNeverCompilesAndThrows()
+    {
+        Check("""
+        function thrower(): never { throw new Exception("t"); }
+        Console.WriteLine(1);
+        try { thrower(); } catch (e) { Console.WriteLine("caught"); }
+        """, "1\ncaught\n");
+    }
+
+    [TestMethod]
+    public void Item19b_LambdaReturningNeverCompilesAndThrows()
+    {
+        Check("""
+        const f = (): never => throw new Exception("x");
+        function useNever(x: int | null): int { return x ?? throw new Exception("t"); }
+        Console.WriteLine(useNever(3));
+        try { f(); } catch (e) { Console.WriteLine("caught"); }
+        """, "3\ncaught\n");
+    }
+
+    [TestMethod]
+    public void Item19d_IndexingACollectionLiteral()
+    {
+        Check("Console.WriteLine([1, 2][0]);", "1\n");
+    }
+
+    [TestMethod]
+    public void Item19e_MemberOfACollectionLiteral()
+    {
+        Check("Console.WriteLine([1, 2].Length);", "2\n");
+    }
+
+    [TestMethod]
+    public void Item19f_ImmediatelyInvokedLambda()
+    {
+        Check("Console.WriteLine(((y: int) => y * 2)(4));", "8\n");
+    }
+
+    [TestMethod]
+    public void Item19i_LoneSurrogateBraceEscape()
+    {
+        Check("""
+        const s = "\u{D800}";
+        Console.WriteLine(s.Length);
+        """, "1\n");
+    }
 }

@@ -275,4 +275,37 @@ public class BinderTests
         AssertError("function f(x: bool): int { outer: { if (x) break outer; return 1; } }", Descriptors.NotAllPathsReturn);
         AssertClean("function f(x: bool): int { outer: { if (x) break outer; return 1; } return 2; }", OutputKind.DynamicallyLinkedLibrary);
     }
+
+    [TestMethod]
+    public void Item19c_AwaitUsingInNonAsyncFunction_IsReported()
+    {
+        AssertError("""
+            class AsyncRes implements IAsyncDisposable { DisposeAsync(): ValueTask { return ValueTask.CompletedTask; } }
+            function f(): void { await using x = new AsyncRes(); }
+            """, Descriptors.AwaitOutsideAsync);
+    }
+
+    [TestMethod]
+    public void Item19g_DuplicateObjectLiteralKeysAreReportedNotThrown()
+    {
+        AssertError("""
+            type Point = { x: int; y: int };
+            const p: Point = { x: 1, x: 2, y: 3 };
+            """, Descriptors.DuplicateObjectLiteralKey, OutputKind.ConsoleApplication);
+        AssertError("const o = { x: 1, x: 2 };\nConsole.WriteLine(o.x);", Descriptors.DuplicateObjectLiteralKey, OutputKind.ConsoleApplication);
+    }
+
+    [TestMethod]
+    public void Item19j_SelfReferentialStaticPropertyIsReportedNotOverflowed()
+    {
+        AssertError("class C { static a = C.a; }", Descriptors.RecursiveInference);
+    }
+
+    [TestMethod]
+    public void Item19k_DeeplyNestedParenthesesAreReportedNotOverflowed()
+    {
+        string source = "const x = " + new string('(', 20000) + "1" + new string(')', 20000) + ";";
+        AssertError(source, Descriptors.NestingTooDeep, OutputKind.ConsoleApplication);
+        Assert.AreEqual(source, Compiler.Syntax.SyntaxTree.ParseText(source, "/proj/main.cala").Root.ToFullString());
+    }
 }

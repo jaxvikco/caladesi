@@ -421,6 +421,11 @@ public sealed partial class Binder
     {
         VariableDeclarationListSyntax decl = us.Declaration;
         bool isAsync = decl.AwaitKeyword != null;
+        if (isAsync && !_isAsyncContext)
+        {
+            Report(Descriptors.AwaitOutsideAsync, decl.AwaitKeyword!.Span);
+        }
+
         ImmutableArray<BoundStatement>.Builder inits = ImmutableArray.CreateBuilder<BoundStatement>();
         List<LocalSymbol> locals = [];
         foreach (VariableDeclaratorSyntax d in decl.Declarators)

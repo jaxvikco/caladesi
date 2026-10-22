@@ -46,7 +46,7 @@ public sealed partial class Binder
             _ = BindArguments(inv.Arguments.Arguments);
             return Bad(inv);
         }
-        BoundExpression callee = BindExpression(calleeSyntax);
+        BoundExpression callee = BindNaturalType(BindExpression(calleeSyntax), calleeSyntax);
         if (callee is BoundBadExpression)
         {
             _ = BindArguments(inv.Arguments.Arguments);

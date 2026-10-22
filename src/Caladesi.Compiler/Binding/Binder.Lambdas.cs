@@ -140,7 +140,7 @@ public sealed partial class Binder
         }
 
         int n = ps.Length;
-        if (ret.IsVoid)
+        if (ret.ReturnsNothing)
         {
             NamedTypeSymbol? action = Compilation.GetWellKnownType(n == 0 ? "System.Action" : "System.Action`" + n);
             return n == 0 ? action : action?.Construct(ps);

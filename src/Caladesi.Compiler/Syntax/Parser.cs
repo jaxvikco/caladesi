@@ -18,6 +18,40 @@ public sealed partial class Parser(string path, List<SyntaxToken> tokens, Diagno
     private readonly DiagnosticBag _diagnostics = diagnostics;
     private int _i;
     private int _speculating;
+    private int _depth;
+    private bool _nestingReported;
+    private bool _tooDeep;
+
+    /// <summary>Deepest nesting of expressions, statements and types the parser follows before giving up (it recurses once per level).</summary>
+    private const int MaxNesting = 256;
+
+    /// <summary>Counts one level of nesting; false (after one diagnostic) when the limit is passed, in which case the caller must return without recursing.</summary>
+    private bool EnterNesting()
+    {
+        if (_depth >= MaxNesting)
+        {
+            if (!_nestingReported)
+            {
+                _nestingReported = true;
+                ReportAtCurrent(Descriptors.NestingTooDeep);
+            }
+
+            _tooDeep = true; // unwinding reports one error per level otherwise
+            SkipRemainingTokens();
+            return false;
+        }
+
+        _depth++;
+        return true;
+    }
+
+    private void ExitNesting()
+    {
+        if (--_depth == 0)
+        {
+            _tooDeep = false;
+        }
+    }
 
     // ------------------------------------------------------------------ token access
 
@@ -82,6 +116,7 @@ public sealed partial class Parser(string path, List<SyntaxToken> tokens, Diagno
     private void Report(DiagnosticDescriptor d, TextSpan span, params object?[] args)
     {
         if (_speculating > 0) { _specErrors++; return; }
+        if (_tooDeep) { return; }
         _diagnostics.Add(Diagnostic.Create(d, _path, span, args));
     }
 
@@ -103,6 +138,30 @@ public sealed partial class Parser(string path, List<SyntaxToken> tokens, Diagno
         SyntaxToken next = _tokens[_i + 1];
         _tokens[_i + 1] = new SyntaxToken(next.Kind, next.Text, skipped.FullStart, [new SyntaxTrivia(SyntaxKind.SkippedTokensTrivia, skipped.ToFullString()), .. next.LeadingTrivia], next.TrailingTrivia, next.Value, next.IsMissingToken);
         _i++;
+    }
+
+    /// <summary>Gives up on the rest of the file: its text is kept as skipped trivia on the end-of-file token so the tree still round-trips.</summary>
+    private void SkipRemainingTokens()
+    {
+        int eof = _tokens.Count - 1;
+        if (_i >= eof)
+        {
+            return;
+        }
+
+        if (_speculating == 0)
+        {
+            System.Text.StringBuilder text = new();
+            for (int k = _i; k < eof; k++)
+            {
+                _ = text.Append(_tokens[k].ToFullString());
+            }
+
+            SyntaxToken end = _tokens[eof];
+            _tokens[eof] = new SyntaxToken(end.Kind, end.Text, _tokens[_i].FullStart, [new SyntaxTrivia(SyntaxKind.SkippedTokensTrivia, text.ToString()), .. end.LeadingTrivia], end.TrailingTrivia, end.Value, end.IsMissingToken);
+        }
+
+        _i = eof;
     }
 
     /// <summary>Folds a token that has no place in the tree into the leading trivia of <paramref name="next"/>.</summary>

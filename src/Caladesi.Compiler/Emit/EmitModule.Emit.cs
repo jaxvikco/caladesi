@@ -598,7 +598,7 @@ internal sealed partial class EmitModule
             _ = ret.CustomModifiers().AddModifier(GetTypeDefOrRef(iei), isOptional: false);
         }
 
-        if (rt.IsVoid)
+        if (rt.ReturnsNothing)
         {
             ret.Void();
         }

@@ -40,6 +40,9 @@ public abstract class TypeSymbol : Symbol
     public bool IsNullType => TypeKind == TypeKind.Null;
     public bool IsNeverType => TypeKind == TypeKind.Never;
 
+    /// <summary>Nothing is returned at run time: a `never` function is a void method that does not return.</summary>
+    public bool ReturnsNothing => IsVoid || IsNeverType;
+
     /// <summary>All interfaces implemented by this type (including inherited), de-duplicated.</summary>
     public ImmutableArray<NamedTypeSymbol> AllInterfaces
     {

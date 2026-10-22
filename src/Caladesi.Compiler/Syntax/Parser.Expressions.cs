@@ -64,6 +64,17 @@ public sealed partial class Parser
 
     private ExpressionSyntax ParseAssignmentExpression()
     {
+        if (!EnterNesting())
+        {
+            return new MissingExpressionSyntax(Missing(SyntaxKind.IdentifierToken));
+        }
+
+        try { return ParseAssignmentExpressionCore(); }
+        finally { ExitNesting(); }
+    }
+
+    private ExpressionSyntax ParseAssignmentExpressionCore()
+    {
         if (Kind == SyntaxKind.YieldKeyword)
         {
             return ParseYield();
