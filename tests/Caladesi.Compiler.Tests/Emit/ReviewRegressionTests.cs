@@ -127,4 +127,32 @@ public class ReviewRegressionTests
         Console.WriteLine(`${local.X} ${local.Y}`);
         """, "2 2 5\n3 4\n");
     }
+
+    [TestMethod]
+    public void Item08_IntConvertsToUnionDoubleCase()
+    {
+        Check("""
+        type Num = double | string;
+        function f(x: int): Num { return x; }
+        Console.WriteLine(f(3));
+        """, "3\n");
+    }
+
+    [TestMethod]
+    public void Item09_DoubleToDecimalKeepsFraction()
+    {
+        Check("""
+        function toDec(x: double): decimal { return x as decimal; }
+        Console.WriteLine(toDec(3.75));
+        """, "3.75\n");
+    }
+
+    [TestMethod]
+    public void Item10_DoubleToUlongIsUnsigned()
+    {
+        Check("""
+        function f(x: double): ulong { return x as ulong; }
+        Console.WriteLine(f(1e19));
+        """, "10000000000000000000\n");
+    }
 }
