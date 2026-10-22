@@ -26,7 +26,7 @@ public static class SyntaxFacts
         ["satisfies"] = SyntaxKind.SatisfiesKeyword, ["sealed"] = SyntaxKind.SealedKeyword, ["set"] = SyntaxKind.SetKeyword,
         ["static"] = SyntaxKind.StaticKeyword, ["struct"] = SyntaxKind.StructKeyword, ["type"] = SyntaxKind.TypeKeyword,
         ["using"] = SyntaxKind.UsingKeyword,
-        ["constructor"] = SyntaxKind.ConstructorKeyword, ["operator"] = SyntaxKind.OperatorKeyword, ["is"] = SyntaxKind.IsKeyword,
+        ["constructor"] = SyntaxKind.ConstructorKeyword,
     };
 
     private static readonly Dictionary<SyntaxKind, string> s_texts = BuildTexts();
