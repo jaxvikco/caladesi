@@ -81,5 +81,14 @@ Each entry records a choice that is not obvious from the language specification,
 * **`calac` ships as a framework-dependent app inside the SDK package** and is started through the `dotnet` host by the
   `CaladesiCompile` ToolTask, so the SDK is RID independent.
 * **`Caladesi.Runtime` is an implicit package reference** (like FSharp.Core); it holds the union types and attributes.
-* **Language server:** hand-rolled JSON-RPC over stdio, System.Text.Json source generation only, one `Compilation` per project
+* **Language server:** hand-rolled JSON-RPC over stdio, `JsonDocument`/`Utf8JsonWriter` only (no reflection-based serialization), one `Compilation` per project
   loaded through `dotnet msbuild -getProperty/-getItem`.
+* **Language server threading:** one reader thread parses framed JSON-RPC messages; a single worker thread handles them in
+  arrival order, so the compiler (not thread safe) is only used from that thread. Diagnostics run after the queue has been quiet
+  for 150 ms, which coalesces bursts of edits; requests never wait for diagnostics and always see the latest text because the
+  `Compilation` is rebuilt lazily from the open-document overlay (only changed files are re-parsed).
+* **Language server projects:** the nearest `*.calaproj` (up to the workspace root) is evaluated with
+  `dotnet msbuild -getProperty -getItem -target:ResolveAssemblyReferences,FindReferenceAssembliesForReferences`
+  (an unrestored project is restored once). Files without a project, or whose project fails to load, are analysed standalone against
+  the targeting pack and `Caladesi.Runtime.dll` next to the server. Project references are not built; only package and framework
+  references are visible.

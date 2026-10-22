@@ -8,5 +8,16 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Caladesi.Compiler\Caladesi.Compiler.csproj" />
+    <!-- Not referenced as code: Caladesi.Runtime.dll is only a reference assembly for files that have no project. It is placed next to the server. -->
+    <ProjectReference Include="..\Caladesi.Runtime\Caladesi.Runtime.csproj" ReferenceOutputAssembly="false" OutputItemType="CaladesiRuntimeAssembly" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Caladesi.LanguageServer.Tests" />
+  </ItemGroup>
+  <Target Name="CopyCaladesiRuntimeToOutput" AfterTargets="Build">
+    <Copy SourceFiles="@(CaladesiRuntimeAssembly)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="CopyCaladesiRuntimeToPublish" AfterTargets="Publish">
+    <Copy SourceFiles="@(CaladesiRuntimeAssembly)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+  </Target>
 </Project>

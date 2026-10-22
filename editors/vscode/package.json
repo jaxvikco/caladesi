@@ -55,7 +55,19 @@
           "type": "string",
           "default": "",
           "scope": "machine-overridable",
-          "markdownDescription": "Path to the `cala-ls` language server executable. When empty, the extension looks for a bundled `server/cala-ls` and then for `cala-ls` on the `PATH`."
+          "markdownDescription": "Path to the Caladesi language server: a native `cala-ls` executable, or `cala-ls.dll` (run with `dotnet`). When empty, the extension looks for `server/cala-ls` inside the extension, then `cala-ls` on the `PATH`, then the development build in `src/Caladesi.LanguageServer/bin`."
+        },
+        "caladesi.server.dotnetPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "The `dotnet` executable used to run a server `.dll` and, by the server itself, to evaluate `.calaproj` files. Empty: `dotnet` from `DOTNET_ROOT` or the `PATH`."
+        },
+        "caladesi.server.runtimePath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "Path to `Caladesi.Runtime.dll` (or its folder), used for `.cala` files that do not belong to an `.calaproj`. Empty: next to the server."
         },
         "caladesi.trace.server": {
           "type": "string",
@@ -101,16 +113,16 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "vscode:prepublish": "npm run compile",
-    "package": "vsce package --allow-missing-repository"
-  },
-  "dependencies": {
-    "vscode-languageclient": "^9.0.1"
+    "bundle": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=node18 --minify",
+    "vscode:prepublish": "npm run bundle",
+    "package": "npm run compile && vsce package --no-dependencies --allow-missing-repository --out caladesi.vsix"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
     "@types/vscode": "^1.90.0",
     "@vscode/vsce": "^3.0.0",
-    "typescript": "^5.5.0"
+    "esbuild": "^0.25.0",
+    "typescript": "^5.5.0",
+    "vscode-languageclient": "^9.0.1"
   }
 }

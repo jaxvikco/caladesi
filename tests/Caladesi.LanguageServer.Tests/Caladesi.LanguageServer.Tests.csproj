@@ -8,5 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Caladesi.Compiler\Caladesi.Compiler.csproj" />
+    <ProjectReference Include="..\..\src\Caladesi.LanguageServer\Caladesi.LanguageServer.csproj" />
+    <ProjectReference Include="..\..\src\Caladesi.Runtime\Caladesi.Runtime.csproj" />
   </ItemGroup>
 </Project>
