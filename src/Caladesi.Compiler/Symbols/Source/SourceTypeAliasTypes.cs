@@ -287,12 +287,16 @@ public sealed class SourceUnionSymbol : SourceNamedType
                 var t = binder.BindType(s);
                 if (t.IsErrorType) continue;
                 if (t.IsVoid) continue;
-                if (b.Any(x => x.Equals(t)))
+                // a union member that is itself a union contributes its cases
+                foreach (var c in t is NamedTypeSymbol { IsUnionType: true } inner && !ReferenceEquals(inner, this) ? inner.UnionCases : [t])
                 {
-                    Compilation.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.DuplicateUnionCase, File.FilePath, s.Span, t.ToDisplayString()));
-                    continue;
+                    if (b.Any(x => x.Equals(c)))
+                    {
+                        Compilation.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.DuplicateUnionCase, File.FilePath, s.Span, c.ToDisplayString()));
+                        continue;
+                    }
+                    b.Add(c);
                 }
-                b.Add(t);
             }
             _casesBuilding = false;
             _cases = b.ToImmutable();

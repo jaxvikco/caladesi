@@ -55,6 +55,8 @@ Flow: `dotnet build <entry>` (full output shown on failure), then `dotnet run --
 
 ## Current samples
 
-`hello`, `arithmetic`, `control-flow`, `errors-loose-equality` (CAL0023), `library-reference` (Exe → Caladesi library via
-`ProjectReference`), `csharp-reference` (Caladesi exe → C# library), `csharp-consumes-caladesi` (C# exe → Caladesi library),
-`mstest-basic` (ignored until the compiler implements `-testentry`).
+One folder per language area (`classes`, `generics`, `collections`, `nullability-unions-enums`, `unions-inheritance-generics`,
+`expressions-and-statements`, `operators-and-members`, `out-parameters`, `constraints-and-destructuring`, `decorators`,
+`async-await`, `iterators`, `closures`, `imports`, `interop-interfaces`, `main-exit-code`), project-level scenarios
+(`library-reference`, `csharp-reference`, `csharp-consumes-caladesi`, `nuget-package`, `mstest-basic`) and diagnostics
+(`errors-*`). Single-file samples are also run in memory by `Caladesi.Compiler.Tests` (`SampleProgramTests`).

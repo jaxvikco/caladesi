@@ -261,7 +261,7 @@ public sealed partial class Binder
         {
             if (t.IsNullType) { hasNull = true; return; }
             if (t is NullableTypeSymbol n) { hasNull = true; Add(n.Underlying); return; }
-            if (t is NamedTypeSymbol { IsAnonymousUnion: true } un && !t.IsErrorType)
+            if (t is NamedTypeSymbol { IsUnionType: true } un && !t.IsErrorType)
             {
                 foreach (var c in un.UnionCases) Add(c);
                 return;

@@ -1,0 +1,50 @@
+class Settings { name = ""; size = 0; tags: string[] = []; }
+const s: Settings = { name: "x", size: 3 };
+Console.WriteLine(s.name + s.size);
+
+class Circle { constructor(public r: int) {} }
+class Square { constructor(public s: int) {} }
+type Shape = Circle | Square | null;
+function describe(sh: Shape): string {
+  if (sh === null) return "none";
+  if (sh instanceof Circle) return "circle " + sh.r;
+  return "square " + sh.s;
+}
+Console.WriteLine(describe(null) + "," + describe(new Circle(2)) + "," + describe(new Square(3)));
+
+type Num = int | long;
+type NumOrStr = Num | string;
+function show(x: NumOrStr): string { return x instanceof string ? "str" : "num"; }
+Console.WriteLine(show("s") + show(5));
+
+type Callback = (x: int) => void;
+function run(cb: Callback): void { cb(5); }
+run(x => Console.WriteLine("cb " + x));
+
+type Maybe<T> = T | null;
+function orDefault<T>(m: Maybe<T>, d: T): T { return m ?? d; }
+Console.WriteLine(orDefault<string>(null, "dflt"));
+
+class Animal { speak(): string { return "..."; } }
+class Dog extends Animal { override speak(): string { return "woof"; } }
+class Puppy extends Dog { override speak(): string { return super.speak() + "!"; } }
+const animals: Animal[] = [new Animal(), new Dog(), new Puppy()];
+Console.WriteLine(animals.Select(a => a.speak()).Aggregate((a, b) => a + " " + b));
+
+class Temp {
+  private _c: double = 0;
+  get celsius(): double { return this._c; }
+  set celsius(v: double) { this._c = v; }
+  get fahrenheit(): double { return this._c * 9 / 5 + 32; }
+  static fromF(f: double): Temp { const t = new Temp(); t.celsius = (f - 32) * 5 / 9; return t; }
+}
+Console.WriteLine(Temp.fromF(212).celsius);
+Console.WriteLine(new Temp().fahrenheit);
+function isNull<T>(x: T | null): boolean { return x === null; }
+function firstOr<T>(xs: T[], d: T): T { return xs.Length > 0 ? xs[0] : d; }
+function nn<T>(x: T | null): T { if (x === null) throw new Exception("null"); return x; }
+Console.WriteLine(isNull<string>(null));
+Console.WriteLine(isNull<string>("a"));
+Console.WriteLine(isNull<int>(5));
+Console.WriteLine(firstOr<int>([], 9));
+Console.WriteLine(nn<string>("ok"));
