@@ -216,6 +216,7 @@ public sealed partial class Binder
         TypeSymbol? savedDeclared = _declaredReturn;
         List<BoundExpression>? savedReturns = _returnExprs;
         bool savedBare = _sawBareReturn;
+        bool savedInCatch = _inCatch;
         bool savedAsync = _isAsyncContext;
         bool savedIter = _isIteratorContext;
         TypeSymbol? savedYield = _yieldType;
@@ -242,6 +243,7 @@ public sealed partial class Binder
             DropMutableNarrowings();
             InvalidateAssignedIn(body);
             _inConstructor = false; _inStaticConstructor = false; _inInitializer = false;
+            _inCatch = false;
             _function = sym;
             _isAsyncContext = isAsync;
             _isIteratorContext = isGenerator;
@@ -358,6 +360,7 @@ public sealed partial class Binder
             _yieldExprs = savedYieldExprs;
             _narrow = savedNarrow;
             (_inConstructor, _inStaticConstructor, _inInitializer) = savedCtor;
+            _inCatch = savedInCatch;
         }
     }
 

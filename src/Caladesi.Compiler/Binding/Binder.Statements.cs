@@ -935,8 +935,32 @@ public sealed partial class Binder
 
     // ------------------------------------------------------------------ return / throw / break / continue
 
+    /// <summary>True when a jump from the current position to <paramref name="target"/> (or out of the function when null) leaves a finally block.</summary>
+    private bool LeavesFinally(Scope? target)
+    {
+        for (Scope? s = _scope; s != null && s != target; s = s.Parent)
+        {
+            if (s.Kind == ScopeKind.Finally)
+            {
+                return true;
+            }
+
+            if (s.Kind is ScopeKind.Lambda or ScopeKind.Method)
+            {
+                break;
+            }
+        }
+
+        return false;
+    }
+
     private BoundStatement BindReturn(ReturnStatementSyntax rs)
     {
+        if (LeavesFinally(null))
+        {
+            Report(Descriptors.JumpOutOfFinally, rs, "return");
+        }
+
         if (_isIteratorContext)
         {
             if (rs.Expression != null)
@@ -998,16 +1022,25 @@ public sealed partial class Binder
 
             if (bs.Label != null)
             {
-                if (s.LabelName == bs.Label.Text && s.BreakLabel != null) { s.BreakUsed = true; return new BoundGoto(s.BreakLabel) { Syntax = bs }; }
+                if (s.LabelName == bs.Label.Text && s.BreakLabel != null) { s.BreakUsed = true; ReportJumpOutOfFinally(s, bs, "break"); return new BoundGoto(s.BreakLabel) { Syntax = bs }; }
             }
             else if (s.Kind is ScopeKind.Loop or ScopeKind.Switch && s.BreakLabel != null)
             {
                 s.BreakUsed = true;
+                ReportJumpOutOfFinally(s, bs, "break");
                 return new BoundGoto(s.BreakLabel) { Syntax = bs };
             }
         }
         Report(bs.Label != null ? Descriptors.LabelNotFound : Descriptors.BreakOutsideLoop, bs, bs.Label?.Text);
         return new BoundNoOp { Syntax = bs };
+    }
+
+    private void ReportJumpOutOfFinally(Scope target, StatementSyntax jump, string keyword)
+    {
+        if (LeavesFinally(target))
+        {
+            Report(Descriptors.JumpOutOfFinally, jump, keyword);
+        }
     }
 
     private BoundStatement BindContinue(ContinueStatementSyntax cs)
@@ -1021,6 +1054,7 @@ public sealed partial class Binder
 
             if (s.Kind == ScopeKind.Loop && s.ContinueLabel != null && (cs.Label == null || s.LabelName == cs.Label.Text))
             {
+                ReportJumpOutOfFinally(s, cs, "continue");
                 return new BoundGoto(s.ContinueLabel) { Syntax = cs };
             }
         }
@@ -1089,7 +1123,9 @@ public sealed partial class Binder
         BoundBlock? fin = null;
         if (tr.Finally != null)
         {
+            _ = PushScope(ScopeKind.Finally);
             fin = (BoundBlock)BindStatement(tr.Finally.Block);
+            PopScope();
             _narrow = saved;
             InvalidateAssignedIn(tr);
         }

@@ -131,7 +131,7 @@ public sealed partial class Binder
 
     // ------------------------------------------------------------------ scopes
 
-    internal enum ScopeKind { Method, Block, Loop, Switch, Lambda }
+    internal enum ScopeKind { Method, Block, Loop, Switch, Lambda, Finally }
 
     internal sealed class Scope(Scope? parent, ScopeKind kind)
     {

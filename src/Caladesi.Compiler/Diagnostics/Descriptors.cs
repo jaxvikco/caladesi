@@ -189,5 +189,6 @@ public static class Descriptors
     public static readonly DiagnosticDescriptor RefStructModuleVariable = E(326, "Variable '{0}' cannot have the ref struct type '{1}' because top-level variables are static fields.");
     public static readonly DiagnosticDescriptor PropertyWriteOnly = E(324, "Property '{0}' has no getter and cannot be read.");
     public static readonly DiagnosticDescriptor YieldNotAllowedHere = E(318, "'yield' is only allowed in a generator function.");
+    public static readonly DiagnosticDescriptor JumpOutOfFinally = E(327, "A '{0}' statement cannot leave a 'finally' block.");
     public static readonly DiagnosticDescriptor NoEntryPoint = E(170, "Program does not contain an entry point; add top-level statements or a 'main' function.");
 }

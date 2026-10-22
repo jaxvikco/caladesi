@@ -128,4 +128,29 @@ public class BinderTests
         function len(s: string | null): int { return s.Length; }
         """, Descriptors.PossiblyNull);
     }
+
+    [TestMethod]
+    public void Item03a_ReturnInFinally_IsReported()
+    {
+        AssertError("function f(): int { try { return 1; } finally { return 2; } }\nConsole.WriteLine(f());", Descriptors.JumpOutOfFinally, OutputKind.ConsoleApplication);
+    }
+
+    [TestMethod]
+    public void Item03b_BreakAndContinueInFinally_AreReported()
+    {
+        AssertError("function f(): int { let n = 0; while (true) { try { n++; } finally { break; } } return n; }\nConsole.WriteLine(f());", Descriptors.JumpOutOfFinally, OutputKind.ConsoleApplication);
+        AssertError("function f(): int { let n = 0; while (n < 3) { try { n++; } finally { continue; } } return n; }\nConsole.WriteLine(f());", Descriptors.JumpOutOfFinally, OutputKind.ConsoleApplication);
+    }
+
+    [TestMethod]
+    public void Item03c_JumpsInsideFinally_AreAllowed()
+    {
+        AssertClean("function f(): int { let n = 0; try { n++; } finally { for (let i = 0; i < 3; i++) { if (i == 1) continue; if (i == 2) break; n++; } const g = (): int => { return 1; }; n += g(); } return n; }\nConsole.WriteLine(f());");
+    }
+
+    [TestMethod]
+    public void Item04_RethrowInLambdaInsideCatch_IsReported()
+    {
+        AssertError("function f(): void { throw new Exception(\"x\"); }\ntry { f(); } catch (e) { const g = () => { throw; }; g(); }", Descriptors.RethrowOutsideCatch, OutputKind.ConsoleApplication);
+    }
 }
