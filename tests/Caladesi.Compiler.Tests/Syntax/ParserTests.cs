@@ -8,11 +8,11 @@ public class ParserTests
     internal static readonly string[] ValidSamples =
     [
         "import { List, Dictionary } from \"System.Collections.Generic\";\nimport * as IO from \"System.IO\";\nimport \"System.Linq\";\nimport type { Foo } from './foo';",
-        "const x = 1;\nlet y: number = 2.5, z = 10L;\nconst s = `a ${x + 1} b ${ {a: 1}.a } c`;",
+        "const x = 1;\nlet y: double = 2.5, z = 10L;\nconst s = `a ${x + 1} b ${ {a: 1}.a } c`;",
         "export function add(a: int, b: int = 2, ...rest: int[]): int { return a + b; }",
-        "export async function* gen<T extends IComparable<T> & new()>(xs: T[]): AsyncGenerator<T> { for await (const x of xs) yield x; }",
-        "type Point = { x: number; y: number; z?: int; readonly w: string };\nstruct type P2 = { x: int, y: int }\ntype Id = string;\ntype Dir = 'up' | 'down';\ntype Shape = Circle | Square | null;",
-        "export class Foo<in T, out U> extends Bar<T> implements IBaz, IQux { private readonly n: int = 0x1F_FF; static count = 0; constructor(public a: int, private b: string) { super(a); } override toString(): string { return this.n as string; } get area(): number { return 1; } set area(v: number) { } abstract go(): void; async run(): Task { await Task.Delay(1); } }",
+        "export async function* gen<T extends IComparable<T> & new()>(xs: T[]): IAsyncEnumerable<T> { for await (const x of xs) yield x; }",
+        "type Point = { x: double; y: double; z?: int; readonly w: string };\nstruct type P2 = { x: int, y: int }\ntype Id = string;\ntype Dir = 'up' | 'down';\ntype Shape = Circle | Square | null;",
+        "export class Foo<in T, out U> extends Bar<T> implements IBaz, IQux { private readonly n: int = 0x1F_FF; static count = 0; constructor(public a: int, private b: string) { super(a); } override toString(): string { return this.n as string; } get area(): double { return 1; } set area(v: double) { } abstract go(): void; async run(): Task { await Task.Delay(1); } }",
         "@Obsolete(\"x\") export interface I<T> extends J { name: string; run(x: int): void; get value(): int; }",
         "enum Color { Red, Green = 2, Blue }",
         "const f = (a: int, b) => a + b; const g = async x => await x; const h = <T>(x: T): T => x; const k = () => { return 1; };",
@@ -25,7 +25,7 @@ public class ParserTests
         "const o = { a: 1, 'b': 2, c, ...d }; const arr = [1, 2, ...rest]; const r = a ?? b; a ??= 1; const n = a?.b?.[0]!.c; const e = 2 ** 3 ** 2;",
         "const v = x satisfies Foo; const w = y instanceof Bar; const q = cond ? 1 : 2; function f(this s: string): int { return 1; }",
         "// comment\n/* block */ let a = 1; // trailing\n/// doc\nlet b = 2;",
-        "type F = (a: int) => string; type G = <T>(x: T) => T; let ro: readonly int[] = []; let ro2: ReadonlyArray<int>; let nn: string | null; let nn2: string?; let nn3: int?[];",
+        "type F = (a: int) => string; type G = <T>(x: T) => T; let ro: readonly int[] = []; let ro2: IReadOnlyList<int>; let nn: string | null; let nn2: string?; let nn3: int?[];",
     ];
 
     [TestMethod]

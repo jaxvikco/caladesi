@@ -25,7 +25,7 @@ public static class Descriptors
     public static readonly DiagnosticDescriptor ModifierNotAllowed = E(19, "Modifier '{0}' is not valid on this declaration.");
     public static readonly DiagnosticDescriptor DuplicateModifier = E(20, "Duplicate modifier '{0}'.");
     public static readonly DiagnosticDescriptor ForInNotSupported = E(21, "'for...in' is not supported; use 'for...of' over the keys, e.g. 'for (const k of dict.Keys)'.");
-    public static readonly DiagnosticDescriptor AnyNotSupported = E(24, "'any' is not supported; use a specific type, 'unknown' or 'object'.");
+    public static readonly DiagnosticDescriptor AnyNotSupported = E(24, "'any' is not supported; use a specific type or 'object'.");
     public static readonly DiagnosticDescriptor UndefinedNotSupported = E(25, "'undefined' is not supported; use 'null'.");
     public static readonly DiagnosticDescriptor ExportDefaultNotSupported = E(26, "'export default' is not supported; use a named export.");
     public static readonly DiagnosticDescriptor FeatureNotSupported = E(28, "{0} is not supported.");
@@ -62,7 +62,7 @@ public static class Descriptors
 
     // ---- Binding (0200-0399)
     public static readonly DiagnosticDescriptor AmbiguousCall = E(200, "The call to '{0}' is ambiguous between '{1}' and '{2}'.");
-    public static readonly DiagnosticDescriptor AnyNotAllowed = E(201, "'any' is not supported; use a specific type, 'unknown' or 'object'.");
+    public static readonly DiagnosticDescriptor AnyNotAllowed = E(201, "'any' is not supported; use a specific type or 'object'.");
     public static readonly DiagnosticDescriptor ArgumentNotAssignable = E(202, "Argument of type '{0}' is not assignable to parameter of type '{1}'.");
     public static readonly DiagnosticDescriptor AwaitOutsideAsync = E(203, "'await' is only allowed in async functions and top-level code of executable projects.");
     public static readonly DiagnosticDescriptor BadOperands = E(204, "Operator '{0}' cannot be applied to operands of type '{1}' and '{2}'.");

@@ -15,7 +15,7 @@ function spanLen(): int { const sp: Span<int> = [1, 2, 3]; return sp.Length; }
 Console.WriteLine(spanLen());
 const d: Dictionary<string, int> = { one: 1, two: 2 };
 Console.WriteLine(d["two"]);
-const rec: Record<string, int> = { x: 1 };
+const rec: Dictionary<string, int> = { x: 1 };
 Console.WriteLine(rec.Count);
 const ia: ImmutableArray<int> = [1, 2, 3];
 Console.WriteLine(ia.Length);

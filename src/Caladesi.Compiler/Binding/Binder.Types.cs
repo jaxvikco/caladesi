@@ -15,11 +15,10 @@ public sealed partial class Binder
     {
         switch (name)
         {
-            case "number" or "double": return Special(SpecialType.Double);
+            case "double": return Special(SpecialType.Double);
             case "string": return Special(SpecialType.String);
-            case "boolean": return Special(SpecialType.Boolean);
+            case "bool": return Special(SpecialType.Boolean);
             case "object": return Special(SpecialType.Object);
-            case "unknown": return new NullableTypeSymbol(Special(SpecialType.Object));
             case "never": return NeverTypeSymbol.Instance;
             case "bigint": return Special(SpecialType.BigInteger);
             case "int": return Special(SpecialType.Int32);
@@ -38,29 +37,6 @@ public sealed partial class Binder
         }
         return null;
     }
-
-    private TypeSymbol? PredefinedGenericType(string name, ImmutableArray<TypeSymbol> args, SyntaxNode syntax)
-    {
-        NamedTypeSymbol? Construct(string metadataName, int arity)
-        {
-            if (args.Length != arity) return null;
-            var t = _c.GetWellKnownType(metadataName);
-            return t == null ? null : t.Construct(args);
-        }
-
-        switch (name)
-        {
-            case "Record": return Construct("System.Collections.Generic.Dictionary`2", 2);
-            case "ReadonlyArray": return Construct("System.Collections.Generic.IReadOnlyList`1", 1);
-            case "Iterable" or "IterableIterator" or "Generator": return Construct("System.Collections.Generic.IEnumerable`1", 1);
-            case "AsyncIterable" or "AsyncIterableIterator" or "AsyncGenerator": return Construct("System.Collections.Generic.IAsyncEnumerable`1", 1);
-            case "Array" when args.Length == 1: return _c.CreateArrayType(args[0]);
-        }
-        return null;
-    }
-
-    private static readonly HashSet<string> s_predefinedGenericNames =
-        ["Record", "ReadonlyArray", "Iterable", "IterableIterator", "Generator", "AsyncIterable", "AsyncIterableIterator", "AsyncGenerator", "Array"];
 
     // ------------------------------------------------------------------ BindType
 
@@ -359,11 +335,6 @@ public sealed partial class Binder
             if (p != null) return p;
             if (name == "any") { Report(Descriptors.AnyNotAllowed, span); return ErrorType; }
             if (name == "undefined") { Report(Descriptors.UndefinedNotAllowed, span); return ErrorType; }
-        }
-        else if (s_predefinedGenericNames.Contains(name))
-        {
-            var pg = PredefinedGenericType(name, args, syntax);
-            if (pg != null) return pg;
         }
         Report(Descriptors.NameNotFound, span, name);
         return ErrorType;

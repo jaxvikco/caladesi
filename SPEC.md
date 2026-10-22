@@ -39,24 +39,19 @@ import type { Point } from "./geometry";              // erased; identical to a 
 
 | Caladesi | CLR |
 |---|---|
-| `number` | `double` |
 | `int long short byte sbyte uint ulong ushort float double decimal nint nuint char` | the same .NET primitive |
-| `string` `boolean` `void` `object` | `string` `bool` `void` `object` |
-| `unknown` | `object` |
+| `string` `bool` `void` `object` | the same .NET types |
 | `bigint` | `System.Numerics.BigInteger` |
 | `never` | the bottom type |
 | `T[]` | CLR array |
-| `readonly T[]`, `ReadonlyArray<T>` | `IReadOnlyList<T>` |
+| `readonly T[]` | `IReadOnlyList<T>` |
 | `[A, B]` | `ValueTuple<A, B>` |
 | `(a: A) => R` / `() => void` | `Func<A, R>` / `Action` |
-| `Record<K, V>` | `Dictionary<K, V>` |
-| `Iterable<T>`, `Generator<T>` | `IEnumerable<T>` |
-| `AsyncIterable<T>` | `IAsyncEnumerable<T>` |
 | `type Id = string` | erased alias |
 
 * Numeric literals: integers infer `int` (then `long`, then `ulong` if they do not fit), decimal literals infer `double`.
   Suffixes: `10L`, `1.5f`, `1.5m`, `10n` (bigint), `10u`, `10UL`. A one-character string literal converts to `char`.
-* `any` (`CAL0201`) and `undefined` (`CAL0311`) are errors; use `unknown`/`object` and `null`.
+* `any` (`CAL0201`) and `undefined` (`CAL0311`) are errors; use `object` and `null`.
 * **Strict nullability.** `T | null` or `T?` for reference types (tracked through nullable metadata) and `Nullable<T>` for value
   types. Operators `?.`, `??`, `??=`, `!`. `T | null` is not assignable to `T` (`CAL0283`); `null` is not assignable to `T`
   (`CAL0278`). Null checks, `instanceof`, and `switch` narrow variables, parameters, fields and properties (also top-level
@@ -176,8 +171,8 @@ A call may omit the trailing `out` parameters of a .NET method; the call then ev
 method returns `void`) followed by the out values:
 
 ```ts
-const [ok, value] = int.TryParse("42");                  // [boolean, int]
-const [found, item] = dictionary.TryGetValue("key");     // [boolean, V]
+const [ok, value] = int.TryParse("42");                  // [bool, int]
+const [found, item] = dictionary.TryGetValue("key");     // [bool, V]
 ```
 
 `ref` parameters are not supported from Caladesi source.
@@ -191,7 +186,7 @@ const [found, item] = dictionary.TryGetValue("key");     // [boolean, V]
 ```ts
 async function load(): Task<string> { await Task.Delay(1); return "x"; }
 function* count(n: int): IEnumerable<int> { for (let i = 0; i < n; i++) yield i; }
-async function* ticks(): AsyncIterable<int> { await Task.Delay(1); yield 1; }
+async function* ticks(): IAsyncEnumerable<int> { await Task.Delay(1); yield 1; }
 for await (const t of ticks()) { … }
 ```
 

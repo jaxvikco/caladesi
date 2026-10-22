@@ -50,7 +50,7 @@ public class BinderTests
     public void Variables_Arithmetic_Functions() => AssertClean("""
         function add(a: int, b: int): int { return a + b; }
         const x = add(1, 2) * 3;
-        let y: number = x / 2;
+        let y: double = x / 2;
         let s = `x=${x} y=${y}`;
         Console.WriteLine(s);
         """);

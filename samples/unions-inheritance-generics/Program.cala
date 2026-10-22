@@ -40,7 +40,7 @@ class Temp {
 }
 Console.WriteLine(Temp.fromF(212).celsius);
 Console.WriteLine(new Temp().fahrenheit);
-function isNull<T>(x: T | null): boolean { return x == null; }
+function isNull<T>(x: T | null): bool { return x == null; }
 function firstOr<T>(xs: T[], d: T): T { return xs.Length > 0 ? xs[0] : d; }
 function nn<T>(x: T | null): T { if (x == null) throw new Exception("null"); return x; }
 Console.WriteLine(isNull<string>(null));

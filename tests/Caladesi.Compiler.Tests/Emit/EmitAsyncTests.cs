@@ -99,7 +99,7 @@ public class EmitAsyncTests
 
     [TestMethod]
     public void AsyncGeneratorAndForAwait() => Check("""
-        async function* numbers(n: int): AsyncIterable<int> {
+        async function* numbers(n: int): IAsyncEnumerable<int> {
           for (let i = 0; i < n; i++) {
             await Task.Delay(1);
             yield i * 10;
@@ -112,7 +112,7 @@ public class EmitAsyncTests
 
     [TestMethod]
     public void AsyncGeneratorFinallyRunsOnEarlyExit() => Check("""
-        async function* gen(): AsyncIterable<string> {
+        async function* gen(): IAsyncEnumerable<string> {
           try {
             yield "a";
             yield "b";
