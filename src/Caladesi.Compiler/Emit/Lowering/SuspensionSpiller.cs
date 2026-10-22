@@ -372,7 +372,7 @@ internal sealed class SuspensionSpiller
             case BoundConditionalAccess ca when !Has(ca.WhenNotNull):
                 return new BoundConditionalAccess(SpillExpr(ca.Receiver, prefix), ca.Placeholder, ca.WhenNotNull, ca.Type) { Syntax = ca.Syntax };
         }
-        throw new NotSupportedException("await is not supported inside this kind of expression: " + e.GetType().Name);
+        throw new LoweringNotSupportedException("'await' is not supported inside this kind of expression (" + e.GetType().Name.Replace("Bound", "") + ")", e.Syntax);
     }
 
     private BoundExpression SpillAssignment(BoundAssignment asg, List<BoundStatement> prefix)
@@ -398,4 +398,10 @@ internal sealed class SuspensionSpiller
 
     private BoundExpression Stabilize(BoundExpression e, List<BoundStatement> prefix) =>
         IsStable(e) && !Has(e) ? e : ToTemp(e, prefix);
+}
+
+/// <summary>Thrown by lowering for constructs it cannot rewrite; reported as CAL0325.</summary>
+internal sealed class LoweringNotSupportedException(string message, Caladesi.Compiler.Syntax.SyntaxNode? syntax) : Exception(message)
+{
+    public Caladesi.Compiler.Syntax.SyntaxNode? Syntax { get; } = syntax;
 }

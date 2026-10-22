@@ -19,6 +19,31 @@ public class BinderTests
     }
 
     [TestMethod]
+    public void LibraryFileWithOnlyAVariable_ReportsInitializerErrors() =>
+        AssertError("export const a: string = 5;", Descriptors.NotAssignable);
+
+    [TestMethod]
+    public void RefStructTopLevelVariable_IsRejected() =>
+        AssertError("const s: Span<int> = new Span<int>([1, 2]);\nConsole.WriteLine(s.Length);", Descriptors.RefStructModuleVariable, OutputKind.ConsoleApplication);
+
+    [TestMethod]
+    public void AwaitInsideConditionalAccess_IsReportedNotThrown()
+    {
+        var comp = TestCompiler.Create("""
+            class P { name = "x"; echo(s: string): string { return s + this.name; } }
+            async function g(): Task<string> { return "a"; }
+            async function main(): Task {
+              const p: P | null = new P();
+              Console.WriteLine(p?.echo(await g()));
+            }
+            """, OutputKind.ConsoleApplication, "/proj/main.cala");
+        using var pe = new MemoryStream();
+        var result = comp.Emit(pe, null, null);
+        Assert.IsFalse(result.Success);
+        Assert.IsTrue(result.Diagnostics.Any(x => x.Id == Descriptors.UnsupportedConstruct.Id), TestCompiler.Format(result.Diagnostics));
+    }
+
+    [TestMethod]
     public void HelloWorld() => AssertClean("Console.WriteLine('hello');");
 
     [TestMethod]

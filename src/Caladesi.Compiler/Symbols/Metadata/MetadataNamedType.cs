@@ -67,6 +67,9 @@ public sealed class MetadataNamedType : NamedTypeSymbol
     internal TypeDefinitionHandle Handle => _handle;
     internal MetadataReader Reader => _assembly.Reader;
 
+    internal bool IsByRefLike => TypeKind == TypeKind.Struct
+        && MetadataHelpers.FindAttribute(Reader, _def.GetCustomAttributes(), "System.Runtime.CompilerServices", "IsByRefLikeAttribute") != null;
+
     public override string Name => _name;
     public override int OwnArity => _ownArity;
     public string Namespace => _namespace;

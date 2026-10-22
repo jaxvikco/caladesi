@@ -49,7 +49,13 @@ internal sealed partial class EmitModule
             return new EmitResult(false, diagnostics);
 
         _bodies = new MethodBodyStreamEncoder(_ilStream);
-        _program = Lowerer.Lower(Compilation);
+        try { _program = Lowerer.Lower(Compilation); }
+        catch (Lowering.LoweringNotSupportedException ex)
+        {
+            var file = ex.Syntax?.SyntaxTree?.FilePath;
+            var d = Diagnostic.Create(Descriptors.UnsupportedConstruct, file, ex.Syntax?.Span ?? default, ex.Message);
+            return new EmitResult(false, diagnostics.Add(d));
+        }
         // lowering may bind more code and discover more errors
         diagnostics = Compilation.GetDiagnostics();
 
