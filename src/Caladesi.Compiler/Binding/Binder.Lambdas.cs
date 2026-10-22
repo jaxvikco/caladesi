@@ -233,7 +233,7 @@ public sealed partial class Binder
             }
             sym.SetParameters(ps.MoveToImmutable());
 
-            _ = PushScope(Binder.ScopeKind.Lambda);
+            _ = PushScope(ScopeKind.Lambda);
             foreach (ParameterSymbol p in sym.Parameters)
             {
                 DeclareSymbol(p.Name, p, p.DeclaringSyntax);

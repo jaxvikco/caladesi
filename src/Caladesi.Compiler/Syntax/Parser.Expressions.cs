@@ -508,7 +508,7 @@ public sealed partial class Parser
     private ObjectLiteralExpressionSyntax ParseObjectLiteral()
     {
         SyntaxToken open = Eat();
-        SyntaxNode members = ParseSeparatedList<SyntaxNode>(ParseObjectLiteralMember, () => Kind == SyntaxKind.CloseBraceToken);
+        SyntaxNode members = ParseSeparatedList(ParseObjectLiteralMember, () => Kind == SyntaxKind.CloseBraceToken);
         SyntaxToken close = Expect(SyntaxKind.CloseBraceToken);
         return new ObjectLiteralExpressionSyntax(open, members, close);
     }

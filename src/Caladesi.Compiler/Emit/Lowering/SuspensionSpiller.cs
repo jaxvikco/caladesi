@@ -499,7 +499,7 @@ internal sealed class SuspensionSpiller(SuspensionFinder finder, Func<TypeSymbol
 /// <summary>Thrown by lowering for constructs it cannot rewrite; reported as CAL0325.</summary>
 public sealed class LoweringNotSupportedException : Exception
 {
-    public Caladesi.Compiler.Syntax.SyntaxNode? Syntax { get; }
+    public Syntax.SyntaxNode? Syntax { get; }
 
     public LoweringNotSupportedException()
     {
@@ -515,7 +515,7 @@ public sealed class LoweringNotSupportedException : Exception
     {
     }
 
-    public LoweringNotSupportedException(string message, Caladesi.Compiler.Syntax.SyntaxNode? syntax)
+    public LoweringNotSupportedException(string message, Syntax.SyntaxNode? syntax)
         : base(message)
     {
         Syntax = syntax;

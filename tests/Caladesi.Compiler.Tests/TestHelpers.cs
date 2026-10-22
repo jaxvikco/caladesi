@@ -10,7 +10,7 @@ internal static class TestCompiler
     private static readonly Lazy<ReferenceSet> s_refs = new(() =>
     {
         List<string> paths = [.. TestReferences.Paths];
-        paths.Add(typeof(Caladesi.Runtime.CaladesiUnionAttribute).Assembly.Location);
+        paths.Add(typeof(Runtime.CaladesiUnionAttribute).Assembly.Location);
         return ReferenceSet.Create(paths);
     });
 

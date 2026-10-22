@@ -133,7 +133,7 @@ public sealed partial class Binder
 
     internal enum ScopeKind { Method, Block, Loop, Switch, Lambda }
 
-    internal sealed class Scope(Binder.Scope? parent, Binder.ScopeKind kind)
+    internal sealed class Scope(Scope? parent, ScopeKind kind)
     {
         public Scope? Parent { get; } = parent;
         public ScopeKind Kind { get; } = kind;

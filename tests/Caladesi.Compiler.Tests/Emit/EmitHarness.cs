@@ -25,7 +25,7 @@ internal static class EmitHarness
         EmitResult result = comp.Emit(pe, pdb, "Test.pdb");
         if (!result.Success)
         {
-            throw new InvalidOperationException("Compilation failed:\n" + TestCompiler.Format(result.Diagnostics.Where(d => d.EffectiveSeverity == Caladesi.Compiler.Diagnostics.DiagnosticSeverity.Error)));
+            throw new InvalidOperationException("Compilation failed:\n" + TestCompiler.Format(result.Diagnostics.Where(d => d.EffectiveSeverity == Diagnostics.DiagnosticSeverity.Error)));
         }
 
         byte[] image = pe.ToArray();

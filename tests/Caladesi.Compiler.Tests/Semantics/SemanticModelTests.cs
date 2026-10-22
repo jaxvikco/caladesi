@@ -143,9 +143,9 @@ public class SemanticModelTests
     public void FormatterReindentsAndIsIdempotent()
     {
         string source = "function f(a: int): int {\nif (a > 0) {\n      return a;   \n}\n\n\n\nreturn -a;\n}\nconst t = `x\n  y`;";
-        SyntaxTree tree = Caladesi.Compiler.Syntax.SyntaxTree.ParseText(source);
+        SyntaxTree tree = SyntaxTree.ParseText(source);
         string once = Formatter.Format(tree);
         Assert.AreEqual("function f(a: int): int {\n  if (a > 0) {\n    return a;\n  }\n\n  return -a;\n}\nconst t = `x\n  y`;\n", once);
-        Assert.AreEqual(once, Formatter.Format(Caladesi.Compiler.Syntax.SyntaxTree.ParseText(once)));
+        Assert.AreEqual(once, Formatter.Format(SyntaxTree.ParseText(once)));
     }
 }

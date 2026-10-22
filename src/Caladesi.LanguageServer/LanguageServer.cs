@@ -580,7 +580,7 @@ internal sealed partial class LanguageServer
             string newText = change.Get("text").GetString() ?? "";
             if (change.Get("range") is { } range)
             {
-                SourceText source = Caladesi.Compiler.Text.SourceText.From(text);
+                SourceText source = SourceText.From(text);
                 LinePosition start = ReadPosition(range.Get("start"));
                 LinePosition end = ReadPosition(range.Get("end"));
                 int from = source.GetPosition(start);

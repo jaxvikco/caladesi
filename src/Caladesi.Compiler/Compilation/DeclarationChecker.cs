@@ -107,7 +107,7 @@ internal sealed class DeclarationChecker(Compilation compilation)
         }
     }
 
-    private void Report(DiagnosticDescriptor d, SourceNamedType type, Text.TextSpan span, params object?[] args)
+    private void Report(DiagnosticDescriptor d, SourceNamedType type, TextSpan span, params object?[] args)
     {
         _bag.Add(Diagnostic.Create(d, type.File.FilePath, span, args));
     }

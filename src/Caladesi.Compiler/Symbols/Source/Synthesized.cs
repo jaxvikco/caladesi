@@ -45,7 +45,7 @@ public sealed class SynthesizedMethodSymbol(Symbol container, string name, Metho
     public MethodSymbol? SourceMethod { get; init; }
     public SynthesizedBodyKind SynthesizedKind { get; init; }
     /// <summary>For a method generated from a lambda or local function: the lambda it came from.</summary>
-    public Caladesi.Compiler.Bound.LambdaSymbol? LambdaOrigin { get; init; }
+    public Bound.LambdaSymbol? LambdaOrigin { get; init; }
     public bool IsAsyncMethod { get; init; }
     public bool IsIteratorMethod { get; init; }
     public Symbol? Associated { get; init; }

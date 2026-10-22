@@ -71,10 +71,10 @@ public class ServerTests
     [TestMethod]
     public void LegendMatchesCompilerEnums()
     {
-        string[] names = Enum.GetNames<Caladesi.Compiler.Semantics.SemanticTokenType>();
+        string[] names = Enum.GetNames<Compiler.Semantics.SemanticTokenType>();
         Assert.HasCount(14, names);
         Assert.AreEqual("Namespace,Type,Class,Enum,Interface,Struct,TypeParameter,Parameter,Variable,Property,EnumMember,Function,Method,Decorator", string.Join(',', names));
-        int[] modifiers = [.. Enum.GetValues<Caladesi.Compiler.Semantics.SemanticTokenModifiers>().Where(m => m != Caladesi.Compiler.Semantics.SemanticTokenModifiers.None).Select(m => (int)m)];
+        int[] modifiers = [.. Enum.GetValues<Compiler.Semantics.SemanticTokenModifiers>().Where(m => m != Compiler.Semantics.SemanticTokenModifiers.None).Select(m => (int)m)];
         CollectionAssert.AreEqual(s_modifierFlags, modifiers);
     }
 

@@ -25,7 +25,7 @@ public sealed class FileScope(SourceFile file)
     private List<ImportDiagnostic>? _importDiagnostics;
     private bool _importsResolved;
 
-    private readonly record struct ImportDiagnostic(DiagnosticDescriptor Descriptor, Text.TextSpan Span, object?[] Args);
+    private readonly record struct ImportDiagnostic(DiagnosticDescriptor Descriptor, TextSpan Span, object?[] Args);
 
     private Compilation Compilation => _file.Compilation;
 

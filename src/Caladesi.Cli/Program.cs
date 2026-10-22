@@ -70,7 +70,7 @@ static int Run(string[] args)
     }
 
     DiagnosticBag refDiags = new();
-    ReferenceSet references = Caladesi.Compiler.Symbols.Metadata.ReferenceSet.Create(options.References, refDiags);
+    ReferenceSet references = ReferenceSet.Create(options.References, refDiags);
     Compilation compilation = Compilation.Create(options.ToCompilationOptions(), trees, references);
 
     using MemoryStream pe = new();
