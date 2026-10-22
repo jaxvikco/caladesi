@@ -91,10 +91,10 @@ public class ParserTests
     }
 
     [TestMethod]
-    public void ForIn_And_Var_ReportErrors()
+    public void ForIn_And_ExportDefault_ReportErrors()
     {
-        var tree = SyntaxTree.ParseText("var a = 1; for (const k in o) { }", "t.cala");
-        CollectionAssert.IsSubsetOf(new[] { "CAL0022", "CAL0021" }, tree.Diagnostics.Select(d => d.Id).ToArray());
+        var tree = SyntaxTree.ParseText("export default function f() { } for (const k in o) { }", "t.cala");
+        CollectionAssert.IsSubsetOf(new[] { "CAL0026", "CAL0021" }, tree.Diagnostics.Select(d => d.Id).ToArray());
     }
 
     [TestMethod]

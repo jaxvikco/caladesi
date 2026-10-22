@@ -501,7 +501,7 @@ public sealed partial class Binder
         var opKind = pu.OperatorToken.Kind;
         if (opKind is SyntaxKind.PlusPlusToken or SyntaxKind.MinusMinusToken)
             return BindIncrementDecrement(pu.Operand, opKind == SyntaxKind.PlusPlusToken, isPrefix: true, valueUsed: true, pu);
-        if (opKind is SyntaxKind.DeleteKeyword or SyntaxKind.VoidKeyword)
+        if (opKind == SyntaxKind.VoidKeyword)
         {
             BindValue(pu.Operand);
             return Bad(pu);

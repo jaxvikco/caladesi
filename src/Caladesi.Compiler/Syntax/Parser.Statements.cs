@@ -116,7 +116,7 @@ public sealed partial class Parser
         {
             // empty initializer
         }
-        else if (Kind is SyntaxKind.LetKeyword or SyntaxKind.ConstKeyword or SyntaxKind.VarKeyword
+        else if (Kind is SyntaxKind.LetKeyword or SyntaxKind.ConstKeyword
                  || (Kind == SyntaxKind.UsingKeyword && SyntaxFacts.IsIdentifierLike(PeekKind(1))))
         {
             init = ParseVariableDeclarationList(forHeader: true);
@@ -271,9 +271,7 @@ public sealed partial class Parser
     {
         SyntaxToken? awaitKw = null;
         if (Kind == SyntaxKind.AwaitKeyword && PeekKind(1) == SyntaxKind.UsingKeyword) awaitKw = Eat();
-        var kw = Eat(); // let / const / var / using
-        if (kw.Kind == SyntaxKind.VarKeyword)
-            Report(Descriptors.VarNotSupported, kw.Span);
+        var kw = Eat(); // let / const / using
         var items = new List<SyntaxElement>();
         while (true)
         {

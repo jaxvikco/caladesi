@@ -12,7 +12,7 @@ public sealed partial class Parser
     {
         switch (Kind)
         {
-            case SyntaxKind.LetKeyword or SyntaxKind.ConstKeyword or SyntaxKind.VarKeyword:
+            case SyntaxKind.LetKeyword or SyntaxKind.ConstKeyword:
             case SyntaxKind.FunctionKeyword or SyntaxKind.ClassKeyword or SyntaxKind.InterfaceKeyword or SyntaxKind.EnumKeyword:
                 return true;
             case SyntaxKind.UsingKeyword:
@@ -21,8 +21,6 @@ public sealed partial class Parser
                 return PeekKind(1) == SyntaxKind.UsingKeyword && SyntaxFacts.IsIdentifierLike(PeekKind(2));
             case SyntaxKind.TypeKeyword:
                 return IsTypeAliasStart(_i);
-            case SyntaxKind.NamespaceKeyword or SyntaxKind.ModuleKeyword:
-                return SyntaxFacts.IsIdentifierLike(PeekKind(1)) && PeekKind(2) == SyntaxKind.OpenBraceToken;
         }
         if (!IsDeclModifier(Kind)) return false;
         // modifiers followed by a declaration keyword
@@ -33,8 +31,7 @@ public sealed partial class Parser
         switch (k)
         {
             case SyntaxKind.FunctionKeyword or SyntaxKind.ClassKeyword or SyntaxKind.InterfaceKeyword or SyntaxKind.EnumKeyword
-                or SyntaxKind.LetKeyword or SyntaxKind.ConstKeyword or SyntaxKind.VarKeyword or SyntaxKind.DefaultKeyword
-                or SyntaxKind.NamespaceKeyword or SyntaxKind.ModuleKeyword:
+                or SyntaxKind.LetKeyword or SyntaxKind.ConstKeyword or SyntaxKind.DefaultKeyword:
                 return true;
             case SyntaxKind.UsingKeyword:
                 return true;
@@ -93,7 +90,7 @@ public sealed partial class Parser
             case SyntaxKind.InterfaceKeyword: return ParseInterfaceDeclaration(decorators, modifiers);
             case SyntaxKind.EnumKeyword: return ParseEnumDeclaration(decorators, modifiers);
             case SyntaxKind.TypeKeyword: return ParseTypeAlias(decorators, modifiers);
-            case SyntaxKind.LetKeyword or SyntaxKind.ConstKeyword or SyntaxKind.VarKeyword or SyntaxKind.UsingKeyword:
+            case SyntaxKind.LetKeyword or SyntaxKind.ConstKeyword or SyntaxKind.UsingKeyword:
             case SyntaxKind.AwaitKeyword when PeekKind(1) == SyntaxKind.UsingKeyword:
             {
                 var decl = ParseVariableDeclarationList();
@@ -104,13 +101,6 @@ public sealed partial class Parser
                 Report(Descriptors.ExportDefaultNotSupported, Current.Span);
                 SkipCurrent();
                 return ParseStatement();
-            }
-            case SyntaxKind.NamespaceKeyword or SyntaxKind.ModuleKeyword:
-            {
-                Report(Descriptors.NamespaceNotSupported, Current.Span);
-                SkipCurrent();
-                SkipCurrent();
-                return ParseBlock();
             }
             case SyntaxKind.OpenBraceToken or SyntaxKind.AsteriskToken when modifiers.SlotCount > 0:
                 ReportAtCurrent(Descriptors.FeatureNotSupported, "Re-exports and export lists");

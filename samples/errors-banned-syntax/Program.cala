@@ -1,7 +1,5 @@
-var a = 1;
 let b: any = 1;
 let c = undefined;
 for (const k in [1]) {}
-namespace N {}
 export default function f() {}
 Console.WriteLine(1);

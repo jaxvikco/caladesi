@@ -8,7 +8,7 @@ Diagnostics have stable codes `CAL0001…`. Messages quoted below are abbreviate
 
 ## 1. Files, namespaces, modules
 
-* There are no `namespace` declarations (`CAL0027`). The namespace of a file is the project's `RootNamespace` plus the
+* There are no `namespace` declarations. The namespace of a file is the project's `RootNamespace` plus the
   folder path of the file relative to the project directory, each folder name PascalCased
   (`geo/shapes.cala` in root namespace `App` → namespace `App.Geo`).
 * `export` makes a declaration public. Without it a declaration is `internal`. `export default` does not exist (`CAL0026`).
@@ -72,7 +72,6 @@ import type { Point } from "./geometry";              // erased; identical to a 
 ```ts
 let counter = 0;            // mutable
 const limit = 10;           // immutable (`CAL0207` on assignment)
-var x = 1;                  // error CAL0022
 ```
 
 ### Functions
@@ -216,7 +215,7 @@ be omitted. A trailing object literal assigns attribute properties/fields. Argum
 
 ## 7. Unsupported on purpose
 
-`var`, `any`, `undefined`, `==`/`!=`, `for…in`, `export default`, `namespace`, intersection types other than generic
+`var`, `any`, `undefined`, `==`/`!=`, `for…in`, `export default`, `namespace`, `delete`, `declare`, intersection types other than generic
 constraints, object type literals outside type aliases, `async` constructors.
 
 ## 8. Tooling

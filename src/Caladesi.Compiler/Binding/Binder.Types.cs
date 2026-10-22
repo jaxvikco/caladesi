@@ -359,7 +359,6 @@ public sealed partial class Binder
             if (p != null) return p;
             if (name == "any") { Report(Descriptors.AnyNotAllowed, span); return ErrorType; }
             if (name == "undefined") { Report(Descriptors.UndefinedNotAllowed, span); return ErrorType; }
-            if (name == "var") { Report(Descriptors.VarNotAllowed, span); return ErrorType; }
         }
         else if (s_predefinedGenericNames.Contains(name))
         {
