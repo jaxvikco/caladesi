@@ -8,6 +8,9 @@
     <Project Path="src/Caladesi.Sdk/Caladesi.Sdk.csproj" />
     <Project Path="src/Caladesi.Templates/Caladesi.Templates.csproj" />
   </Folder>
+  <Folder Name="/playground/">
+    <Project Path="playground/Playground.calaproj" Type="13B669BE-BB05-4DDF-9536-439F39A36129" />
+  </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Caladesi.Compiler.Tests/Caladesi.Compiler.Tests.csproj" />
     <Project Path="tests/Caladesi.E2E/Caladesi.E2E.csproj" />

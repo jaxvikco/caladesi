@@ -1,0 +1,27 @@
+<Project>
+  <!--
+    A scratch Caladesi app for trying compiler changes as an end user would. Instead of the packed
+    Caladesi.Sdk package it imports the SDK from src/ and compiles with the calac and build task
+    assemblies built from this repo, so running it with dotnet run always uses the latest compiler.
+  -->
+  <Import Project="$(MSBuildThisFileDirectory)../src/Caladesi.Sdk/Sdk/Sdk.props" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <CaladesiCompilerPath>$(CaladesiRepoRoot)src/Caladesi.Cli/bin/$(Configuration)/net10.0/calac.dll</CaladesiCompilerPath>
+    <CaladesiTasksAssembly>$(CaladesiRepoRoot)src/Caladesi.Build.Tasks/bin/$(Configuration)/net10.0/Caladesi.Build.Tasks.dll</CaladesiTasksAssembly>
+    <CaladesiImplicitRuntimeReference>false</CaladesiImplicitRuntimeReference>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Build the compiler and build task before this project; only the runtime is an actual reference. -->
+    <ProjectReference Include="../src/Caladesi.Cli/Caladesi.Cli.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../src/Caladesi.Build.Tasks/Caladesi.Build.Tasks.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../src/Caladesi.Runtime/Caladesi.Runtime.csproj" />
+    <!-- calac.dll stays the same when only Caladesi.Compiler changes; recompile when any compiler assembly does. -->
+    <CustomAdditionalCompileInputs Include="$(CaladesiRepoRoot)src/Caladesi.Cli/bin/$(Configuration)/net10.0/*.dll" />
+  </ItemGroup>
+
+  <Import Project="$(MSBuildThisFileDirectory)../src/Caladesi.Sdk/Sdk/Sdk.targets" />
+</Project>
