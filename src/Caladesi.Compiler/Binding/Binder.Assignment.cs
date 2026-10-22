@@ -71,6 +71,11 @@ public sealed partial class Binder
             case BoundPropertyAccess pa:
             {
                 var prop = pa.Property;
+                if (forCompound && prop.GetMethod == null)
+                {
+                    Report(Descriptors.PropertyWriteOnly, syntax, prop.Name);
+                    return Bad(syntax, target);
+                }
                 if (prop.SetMethod == null)
                 {
                     // auto property assigned in its own constructor: write the backing field
