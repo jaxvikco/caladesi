@@ -370,4 +370,10 @@ public class BinderTests
             }
             """, OutputKind.DynamicallyLinkedLibrary);
     }
+
+    [TestMethod]
+    public void Item28b_ConcatenatingNullableNonStringStillReportsNull()
+    {
+        AssertError("function j(a: string, b: int | null): string { return a + b; }", Descriptors.PossiblyNull);
+    }
 }

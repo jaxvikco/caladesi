@@ -160,10 +160,11 @@ public sealed partial class Binder
         if (cv.Exists) { resultType = underlying; }
         else
         {
-            TypeSymbol? common = BestCommonType([UnwrapForCommon(left), right], b);
+            // the result is never null, so the common type is that of the unwrapped left operand and the right one (`int | null ?? long` is `long`)
+            TypeSymbol? common = BestCommonType([UnwrapNullableValueIfNeeded(left), right], b);
             if (common == null) { Report(Descriptors.NoBestCommonType, b, lt.ToDisplayString(), rt.ToDisplayString()); return Bad(b, left, right); }
             resultType = common;
-            left = ConvertImplicit(UnwrapNullableValueIfNeeded(left), resultType, b.Left);
+            left = ConvertImplicit(left, lt is NullableTypeSymbol ? new NullableTypeSymbol(common) : common, b.Left);
         }
         if (lt is not NullableTypeSymbol && lt.IsValueType)
         {
@@ -180,7 +181,7 @@ public sealed partial class Binder
 
     private static BoundExpression UnwrapNullableValueIfNeeded(BoundExpression e)
     {
-        return e;
+        return e.Type is NullableTypeSymbol n ? new BoundConversion(e, ConversionKind.FromNullable, n.Underlying) { Syntax = e.Syntax } : e;
     }
 
     // ------------------------------------------------------------------ arithmetic / comparison
@@ -286,18 +287,15 @@ public sealed partial class Binder
         bool isComparison = kind is >= BinaryOperatorKind.LessThan and <= BinaryOperatorKind.GreaterThanOrEqual;
 
         // string concatenation
-        if (kind == BinaryOperatorKind.Add && (lt.SpecialType == SpecialType.String || rt.SpecialType == SpecialType.String))
+        if (kind == BinaryOperatorKind.Add && (lt.StripNullable().SpecialType == SpecialType.String || rt.StripNullable().SpecialType == SpecialType.String))
         {
             if (lt.IsVoid || rt.IsVoid) { ReportBadOperands(syntax, kind, lt, rt); return Bad(syntax, left, right); }
-#pragma warning disable CA1508 // flow analysis cannot see that nullable-string operands reach here
-            if (lt is NullableTypeSymbol { Underlying.SpecialType: SpecialType.String } || rt is NullableTypeSymbol { Underlying.SpecialType: SpecialType.String } || lt.IsNullType || rt.IsNullType)
-#pragma warning restore CA1508
+            // null concatenates as empty (C# semantics), but only for an explicit `string | null` operand
+            BoundExpression? offender = lt is NullableTypeSymbol { Underlying.SpecialType: not SpecialType.String } ? left
+                : rt is NullableTypeSymbol { Underlying.SpecialType: not SpecialType.String } ? right : null;
+            if (offender != null)
             {
-                // allowed: null concatenates as empty (C# semantics) but only for explicit string | null
-            }
-            else if (lt is NullableTypeSymbol || rt is NullableTypeSymbol)
-            {
-                ReportPossiblyNullOperand(left, right, syntax);
+                Report(Descriptors.PossiblyNull, offender.Syntax ?? syntax, offender.Syntax?.ToFullString().Trim() ?? "expression");
                 return Bad(syntax, left, right);
             }
             BoundExpression l2 = lt.StripNullable().SpecialType == SpecialType.String ? left : left;

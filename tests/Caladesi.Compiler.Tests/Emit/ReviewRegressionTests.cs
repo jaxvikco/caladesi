@@ -337,4 +337,24 @@ public class ReviewRegressionTests
         Console.WriteLine(s2.Length);
         """, "1\n2\n");
     }
+
+    [TestMethod]
+    public void Item28a_CoalesceOfNullableIntAndLongIsLong()
+    {
+        Check("""
+        function f(x: int | null, y: long): long { return x ?? y; }
+        Console.WriteLine(f(null, 5L));
+        Console.WriteLine(f(3, 5L));
+        """, "5\n3\n");
+    }
+
+    [TestMethod]
+    public void Item28b_ConcatenatingTwoNullableStrings()
+    {
+        Check("""
+        function j(a: string | null, b: string | null): string { return a + b; }
+        Console.WriteLine(j(null, "b"));
+        Console.WriteLine(j("a", null) + "|");
+        """, "b\na|\n");
+    }
 }
