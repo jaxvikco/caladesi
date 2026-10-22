@@ -1,0 +1,4 @@
+function main(args: string[]): int {
+  Console.WriteLine("args: " + string.Join(",", args));
+  return 3;
+}

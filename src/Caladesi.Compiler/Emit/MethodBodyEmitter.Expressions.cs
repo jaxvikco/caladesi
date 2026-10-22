@@ -604,9 +604,9 @@ internal sealed partial class MethodBodyEmitter
             return;
         }
         EmitExpression(subject, true);
-        if (EmitModule.IsValueTypeLike(_m.ClrType(t)) || t is TypeParameterSymbol)
+        if (EmitModule.IsValueTypeLike(_m.ClrType(t)) || t.StripNullable() is TypeParameterSymbol)
         {
-            _il.Token(ILOpCode.Box, _m.GetTypeEntity(t), 0);
+            _il.Token(ILOpCode.Box, _m.GetTypeEntity(t.StripNullable()), 0);
         }
         _il.Op(ILOpCode.Ldnull, 1);
         _il.Op(ILOpCode.Ceq, -1);
@@ -667,6 +667,7 @@ internal sealed partial class MethodBodyEmitter
         {
             EmitExpression(co.Left, true);
             _il.Op(ILOpCode.Dup, 1);
+            if (lt.StripNullable() is TypeParameterSymbol) _il.Token(ILOpCode.Box, _m.GetTypeEntity(lt.StripNullable()), 0);
             _il.Branch(ILOpCode.Brtrue, end);
             _il.Op(ILOpCode.Pop, -1);
             EmitExpression(co.Right, true);
