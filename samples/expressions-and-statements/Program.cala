@@ -24,8 +24,8 @@ Console.WriteLine(over(1) + over("s"));
 
 outer: for (let i = 0; i < 3; i++) {
   for (let j = 0; j < 3; j++) {
-    if (j === 2) continue outer;
-    if (i === 2) break outer;
+    if (j == 2) continue outer;
+    if (i == 2) break outer;
     Console.WriteLine(`${i}${j}`);
   }
 }
@@ -48,7 +48,7 @@ const { a: aa, b: bb } = { a: 1, b: "two" };
 Console.WriteLine(aa + bb);
 const tpl = `x=${1 + 1}, y=${"s"}`;
 Console.WriteLine(tpl);
-Console.WriteLine(1 === 1 ? "eq" : "ne");
+Console.WriteLine(1 == 1 ? "eq" : "ne");
 let u = 5;
 u += 7;
 Console.WriteLine(u);

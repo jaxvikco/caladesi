@@ -43,4 +43,4 @@ Console.WriteLine(fact(5));
 Console.WriteLine(twice<string>("ab", (a, b) => a + b));
 Console.WriteLine(mapAll([1, 2, 3], x => x * 2).Length);
 const xs = [1, 2, 3, 4];
-Console.WriteLine(xs.Where(x => x % 2 === 0).Select(x => x * 10).Sum());
+Console.WriteLine(xs.Where(x => x % 2 == 0).Select(x => x * 10).Sum());

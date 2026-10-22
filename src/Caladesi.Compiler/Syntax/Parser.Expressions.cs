@@ -229,7 +229,7 @@ public sealed partial class Parser
     private static bool CanFollowTypeArgumentsInExpression(SyntaxKind k) => k is SyntaxKind.OpenParenToken or SyntaxKind.CloseParenToken
         or SyntaxKind.CloseBracketToken or SyntaxKind.ColonToken or SyntaxKind.SemicolonToken or SyntaxKind.CommaToken
         or SyntaxKind.DotToken or SyntaxKind.QuestionDotToken or SyntaxKind.QuestionToken or SyntaxKind.EqualsEqualsToken
-        or SyntaxKind.EqualsEqualsEqualsToken or SyntaxKind.ExclamationEqualsToken or SyntaxKind.ExclamationEqualsEqualsToken
+        or SyntaxKind.ExclamationEqualsToken
         or SyntaxKind.AmpersandAmpersandToken or SyntaxKind.BarBarToken or SyntaxKind.QuestionQuestionToken
         or SyntaxKind.CloseBraceToken or SyntaxKind.EndOfFileToken or SyntaxKind.EqualsToken;
 

@@ -25,7 +25,6 @@ public static class Descriptors
     public static readonly DiagnosticDescriptor ModifierNotAllowed = E(19, "Modifier '{0}' is not valid on this declaration.");
     public static readonly DiagnosticDescriptor DuplicateModifier = E(20, "Duplicate modifier '{0}'.");
     public static readonly DiagnosticDescriptor ForInNotSupported = E(21, "'for...in' is not supported; use 'for...of' over the keys, e.g. 'for (const k of dict.Keys)'.");
-    public static readonly DiagnosticDescriptor LooseEqualityNotSupported = E(23, "'{0}' is not supported; use '{1}'.");
     public static readonly DiagnosticDescriptor AnyNotSupported = E(24, "'any' is not supported; use a specific type, 'unknown' or 'object'.");
     public static readonly DiagnosticDescriptor UndefinedNotSupported = E(25, "'undefined' is not supported; use 'null'.");
     public static readonly DiagnosticDescriptor ExportDefaultNotSupported = E(26, "'export default' is not supported; use a named export.");

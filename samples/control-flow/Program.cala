@@ -8,7 +8,7 @@ function describe(n: int): string {
 
 let sum = 0;
 for (let i = 0; i < 5; i++) {
-  if (i === 3) continue;
+  if (i == 3) continue;
   sum += i;
 }
 Console.WriteLine(sum);

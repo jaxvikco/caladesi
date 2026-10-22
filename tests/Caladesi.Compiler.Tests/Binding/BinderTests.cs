@@ -58,7 +58,7 @@ public class BinderTests
     [TestMethod]
     public void Linq_Lambdas_Infer() => AssertClean("""
         const xs = [1, 2, 3, 4];
-        const ys = xs.Where(x => x % 2 === 0).Select(x => x * 10).ToList();
+        const ys = xs.Where(x => x % 2 == 0).Select(x => x * 10).ToList();
         const total = xs.Sum();
         Console.WriteLine(ys.Count + total);
         """);
@@ -80,20 +80,12 @@ public class BinderTests
     public void Type_Mismatch_Error() => AssertError("function f() { let x: int = 'a'; }", Descriptors.NotAssignable);
 
     [TestMethod]
-    public void LooseEquality_HasFix()
-    {
-        var d = TestCompiler.Diagnose("function f() { const a = 1 == 2; }", OutputKind.DynamicallyLinkedLibrary);
-        var e = d.First(x => x.Id == "CAL0023");
-        Assert.AreEqual("===", e.FixIt!.NewText);
-    }
-
-    [TestMethod]
     public void NullStrictness() => AssertError("function f() { let s: string = null; }", Descriptors.NullNotAssignable);
 
     [TestMethod]
     public void Narrowing_Allows_Deref() => AssertClean("""
         function len(s: string | null): int {
-            if (s === null) return 0;
+            if (s == null) return 0;
             return s.Length;
         }
         Console.WriteLine(len('abc'));

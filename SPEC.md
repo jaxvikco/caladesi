@@ -64,8 +64,7 @@ import type { Point } from "./geometry";              // erased; identical to a 
 * Tuples support array-style destructuring and constant indexing: `const [a, b] = t; t[0]`.
 * Conversions: numeric widening is implicit; narrowing needs `as`. `as T` is a checked cast, `x satisfies T` a compile-time check.
   `/` between integers is integer division. `**` is `Math.Pow` (`BigInteger.Pow` for bigint). `>>>` is an unsigned shift.
-* `===` and `!==` are the equality operators (`op_Equality` when defined, else value/reference equality). `==` and `!=`
-  are errors with a fix-it (`CAL0023`).
+* `==` and `!=` are the equality operators (`op_Equality` when defined, else value/reference equality). There is no `===`/`!==`.
 
 ## 4. Declarations
 
@@ -129,7 +128,7 @@ const v = new Vec(1.5, 2);
 ```
 
 * Optional properties `x?: T` are nullable and default to `null`; `readonly` properties are init-only.
-* Records have value equality (`===`), `ToString`, `GetHashCode`, `Equals`, `<Clone>$`, and a primary constructor.
+* Records have value equality (`==`), `ToString`, `GetHashCode`, `Equals`, `<Clone>$`, and a primary constructor.
 * An object literal is typed by its target: a record or class → constructor call or object initializer; a dictionary →
   indexer assignments. Without a target it becomes a compiler-generated sealed record (internal, generic over its property
   types) usable within the declaring method. A leading single spread is supported (`{ ...p, x: 3 }`).
@@ -215,7 +214,7 @@ be omitted. A trailing object literal assigns attribute properties/fields. Argum
 
 ## 7. Unsupported on purpose
 
-`var`, `any`, `undefined`, `==`/`!=`, `for…in`, `export default`, `namespace`, `delete`, `declare`, intersection types other than generic
+`var`, `any`, `undefined`, `===`/`!==`, `for…in`, `export default`, `namespace`, `delete`, `declare`, intersection types other than generic
 constraints, object type literals outside type aliases, `async` constructors.
 
 ## 8. Tooling

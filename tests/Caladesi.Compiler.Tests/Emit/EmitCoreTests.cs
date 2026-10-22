@@ -25,7 +25,7 @@ public class EmitCoreTests
     [TestMethod]
     public void ControlFlow() => Check("""
         let sum = 0;
-        for (let i = 0; i < 5; i++) { if (i === 3) continue; sum += i; }
+        for (let i = 0; i < 5; i++) { if (i == 3) continue; sum += i; }
         Console.WriteLine(sum);
         let n = 0;
         while (n < 3) n++;

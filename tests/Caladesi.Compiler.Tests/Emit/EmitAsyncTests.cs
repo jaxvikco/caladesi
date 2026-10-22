@@ -35,7 +35,7 @@ public class EmitAsyncTests
           for (let i = 0; i < n; i++) {
             try {
               await Task.Delay(1);
-              if (i === 2) throw new Exception("two");
+              if (i == 2) throw new Exception("two");
               sum += i;
             } catch (e: Exception) {
               await Task.Delay(1);

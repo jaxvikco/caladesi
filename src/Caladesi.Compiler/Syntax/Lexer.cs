@@ -213,12 +213,12 @@ public sealed class Lexer
                 break;
             case '>': kind = Make(SyntaxKind.GreaterThanToken, 1); break;
             case '=':
-                if (Peek(1) == '=') kind = Peek(2) == '=' ? Make(SyntaxKind.EqualsEqualsEqualsToken, 3) : Make(SyntaxKind.EqualsEqualsToken, 2);
+                if (Peek(1) == '=') kind = Make(SyntaxKind.EqualsEqualsToken, 2);
                 else if (Peek(1) == '>') kind = Make(SyntaxKind.EqualsGreaterThanToken, 2);
                 else kind = Make(SyntaxKind.EqualsToken, 1);
                 break;
             case '!':
-                if (Peek(1) == '=') kind = Peek(2) == '=' ? Make(SyntaxKind.ExclamationEqualsEqualsToken, 3) : Make(SyntaxKind.ExclamationEqualsToken, 2);
+                if (Peek(1) == '=') kind = Make(SyntaxKind.ExclamationEqualsToken, 2);
                 else kind = Make(SyntaxKind.ExclamationToken, 1);
                 break;
             case '+':
