@@ -14,6 +14,8 @@ internal sealed class ResolvedCall
     public bool Expanded { get; init; }
     /// <summary>Locals standing for omitted trailing <c>out</c> parameters; the call returns them in a tuple.</summary>
     public ImmutableArray<LocalSymbol> OutLocals { get; init; } = [];
+    /// <summary>The two applicable candidates when none was better than all the others; the first was picked.</summary>
+    public (MethodSymbol First, MethodSymbol Second)? Ambiguity { get; init; }
 }
 
 public sealed partial class Binder
@@ -69,6 +71,7 @@ public sealed partial class Binder
         }
 
         Candidate best = applicable[0];
+        (MethodSymbol, MethodSymbol)? ambiguity = null;
         if (applicable.Count > 1)
         {
             List<Candidate> winners = [];
@@ -95,18 +98,20 @@ public sealed partial class Binder
             }
             else
             {
+                MethodSymbol a = applicable[0].Method;
+                MethodSymbol b = applicable[1].Method;
                 if (report)
                 {
-                    MethodSymbol a = applicable[0].Method;
-                    MethodSymbol b = applicable[1].Method;
                     Report(Descriptors.AmbiguousCall, at, name, Signature(a), Signature(b));
                 }
+
+                ambiguity = (a, b);
                 best = winners.Count > 0 ? winners[0] : applicable[0];
             }
         }
 
         (ImmutableArray<BoundExpression> Arguments, ImmutableArray<LocalSymbol> OutLocals) = BuildArguments(best, fullArgs, at, report);
-        return new ResolvedCall { Method = best.Method, Arguments = Arguments, Expanded = best.Expanded, OutLocals = OutLocals };
+        return new ResolvedCall { Method = best.Method, Arguments = Arguments, Expanded = best.Expanded, OutLocals = OutLocals, Ambiguity = ambiguity };
     }
 
     private static string Signature(MethodSymbol m)

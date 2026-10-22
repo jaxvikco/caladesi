@@ -276,8 +276,20 @@ public class ReviewRegressionTests
     public void Item22_LocalFunctionAfterUsingIsDeclaredOnce()
     {
         Check("""
-        function main(): void { using f = new System.IO.StringReader("x"); function helper(): int { return 1; } Console.WriteLine(helper()); }
-        main();
+        function run(): void { using f = new System.IO.StringReader("x"); function helper(): int { return 1; } Console.WriteLine(helper()); }
+        run();
         """, "1\n");
+    }
+
+    [TestMethod]
+    public void Item25_TargetTypedNewInfersTypeArgumentsFromInterface()
+    {
+        Check("""
+        const l: IList<int> = new List();
+        l.Add(3);
+        const d: IDictionary<string, int> = new Dictionary();
+        d["a"] = 1;
+        Console.WriteLine(l.Count + d.Count);
+        """, "2\n");
     }
 }

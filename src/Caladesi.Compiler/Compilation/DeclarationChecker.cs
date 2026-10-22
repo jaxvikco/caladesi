@@ -132,7 +132,7 @@ internal sealed class DeclarationChecker(Compilation compilation)
             foreach (MethodSymbol o in seen)
             {
                 if (o.Name == m.Name && o.MethodKind == m.MethodKind && o.Arity == m.Arity && o.Parameters.Length == m.Parameters.Length
-                    && o.Parameters.Zip(m.Parameters).All(p => p.First.Type.Equals(p.Second.Type)))
+                    && o.Parameters.Zip(m.Parameters).All(p => TypesMatchForImplementation(p.First.Type, p.Second.Type))) // `string` and `string | null` are one CLR signature
                 {
                     TextSpan span = m.Locations.FirstOrDefault().Span;
                     Report(Descriptors.DuplicateMember, type, span, m.Name, type.Name);

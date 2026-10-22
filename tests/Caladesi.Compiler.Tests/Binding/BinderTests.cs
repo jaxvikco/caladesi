@@ -308,4 +308,39 @@ public class BinderTests
         AssertError(source, Descriptors.NestingTooDeep, OutputKind.ConsoleApplication);
         Assert.AreEqual(source, Compiler.Syntax.SyntaxTree.ParseText(source, "/proj/main.cala").Root.ToFullString());
     }
+
+    [TestMethod]
+    public void Item23_AmbiguousOverloadIsReported()
+    {
+        AssertError("""
+            function f(a: int, b: long): string { return "A"; }
+            function f(a: long, b: int): string { return "B"; }
+            Console.WriteLine(f(1, 2));
+            """, Descriptors.AmbiguousCall, OutputKind.ConsoleApplication);
+    }
+
+    [TestMethod]
+    public void Item23_UnambiguousOverloadsStillResolve()
+    {
+        AssertClean("""
+            function f(a: int, b: long): string { return "A"; }
+            function f(a: long, b: int): string { return "B"; }
+            Console.WriteLine(f(1, 2L));
+            """);
+    }
+
+    [TestMethod]
+    public void Item24_OverloadsDifferingOnlyByNullabilityAreDuplicates()
+    {
+        AssertError("""
+            function f(x: string): string { return "a"; }
+            function f(x: string | null): string { return "b"; }
+            """, Descriptors.DuplicateMember);
+    }
+
+    [TestMethod]
+    public void Item25_TargetTypedNewOfOpenGenericAgainstObjectIsReported()
+    {
+        AssertError("const o: object = new List();", Descriptors.TypeRequiresArguments, OutputKind.ConsoleApplication);
+    }
 }
