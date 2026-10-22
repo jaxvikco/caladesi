@@ -1,0 +1,70 @@
+using System.Diagnostics;
+
+namespace Caladesi.Compiler.Tests.Cli;
+
+[TestClass]
+public class CalacExitCodeTests
+{
+    private static string CalacPath()
+    {
+        DirectoryInfo? dir = new(AppContext.BaseDirectory);
+        string tfm = dir.Name;
+        string config = dir.Parent!.Name;
+        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "Caladesi.slnx")))
+        {
+            dir = dir.Parent;
+        }
+
+        return Path.Combine(dir!.FullName, "src", "Caladesi.Cli", "bin", config, tfm, "calac.dll");
+    }
+
+    private static (int ExitCode, string Output, bool OutputWritten) RunCalac(string source, params string[] extraReferences)
+    {
+        string work = Path.Combine(Path.GetTempPath(), "calac-test-" + Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(work);
+        try
+        {
+            string main = Path.Combine(work, "main.cala");
+            string output = Path.Combine(work, "app.dll");
+            File.WriteAllText(main, source);
+            ProcessStartInfo psi = new("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true };
+            psi.ArgumentList.Add(CalacPath());
+            psi.ArgumentList.Add("-out:" + output);
+            psi.ArgumentList.Add("-assemblyname:app");
+            psi.ArgumentList.Add("-rootnamespace:App");
+            psi.ArgumentList.Add("-projectdir:" + work);
+            foreach (string r in TestReferences.Paths.Concat(extraReferences))
+            {
+                psi.ArgumentList.Add("-ref:" + r);
+            }
+
+            psi.ArgumentList.Add("-ref:" + typeof(Runtime.CaladesiUnionAttribute).Assembly.Location);
+            psi.ArgumentList.Add(main);
+            using Process p = Process.Start(psi)!;
+            string text = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
+            p.WaitForExit();
+            return (p.ExitCode, text, File.Exists(output));
+        }
+        finally
+        {
+            Directory.Delete(work, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public void Item29_MissingReferenceFailsTheBuild()
+    {
+        (int exit, string output, bool written) = RunCalac("Console.WriteLine(1);", "/missing/Foo.dll");
+        StringAssert.Contains(output, "CAL0100");
+        Assert.AreEqual(1, exit, output);
+        Assert.IsFalse(written);
+    }
+
+    [TestMethod]
+    public void Item29_ValidReferencesStillBuild()
+    {
+        (int exit, string output, bool written) = RunCalac("Console.WriteLine(1);");
+        Assert.AreEqual(0, exit, output);
+        Assert.IsTrue(written);
+    }
+}
