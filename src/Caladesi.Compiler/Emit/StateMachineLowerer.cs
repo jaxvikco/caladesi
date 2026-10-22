@@ -106,7 +106,7 @@ internal sealed partial class StateMachineLowerer
         DeclareMembers(collected);
 
         body = (BoundBlock)new Hoister(this).Visit(body)!;
-        StateRewriter states = new(this, tryRewriter.DisposeTargets);
+        StateRewriter states = new(this);
         body = (BoundBlock)states.Visit(body)!;
 
         BoundBlock moveNextBody = _kind == Kind.Iterator ? AssembleIteratorMoveNext(body, states) : AssembleAsyncMoveNext(body, states);
@@ -394,14 +394,12 @@ internal sealed partial class StateMachineLowerer
     private sealed class StateRewriter : BoundTreeRewriter
     {
         private readonly StateMachineLowerer _o;
-        private readonly Dictionary<BoundYieldReturn, LabelSymbol?> _disposeTargets;
         private readonly Stack<TryInfo> _tries = new();
         public TryInfo Root { get; } = new(new LabelSymbol("<root>"));
 
-        public StateRewriter(StateMachineLowerer o, Dictionary<BoundYieldReturn, LabelSymbol?> disposeTargets)
+        public StateRewriter(StateMachineLowerer o)
         {
             _o = o;
-            _disposeTargets = disposeTargets;
             _tries.Push(Root);
         }
 
@@ -459,7 +457,7 @@ internal sealed partial class StateMachineLowerer
 
         protected override BoundNode VisitYieldReturn(BoundYieldReturn n)
         {
-            return _o.LowerYieldReturn(n, NewState, _disposeTargets.GetValueOrDefault(n));
+            return _o.LowerYieldReturn(n, NewState, n.DisposeTarget);
         }
 
         protected override BoundNode VisitAwait(BoundAwait n)

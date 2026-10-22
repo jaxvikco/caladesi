@@ -24,9 +24,6 @@ internal sealed class TryRewriter(Compilation c, SuspensionFinder finder, Func<T
     private readonly LabelSymbol _endLabel = endLabel;
     private readonly Stack<LabelSymbol> _finallyLabels = new();
 
-    /// <summary>Where a resumed iterator that is being disposed continues (the innermost enclosing rewritten finally, or null for the end of the method).</summary>
-    public Dictionary<BoundYieldReturn, LabelSymbol?> DisposeTargets { get; } = new(ReferenceEqualityComparer.Instance);
-
     private bool Has(BoundNode? n)
     {
         return _finder.Has(n);
@@ -48,8 +45,8 @@ internal sealed class TryRewriter(Compilation c, SuspensionFinder finder, Func<T
 
     protected override BoundNode VisitYieldReturn(BoundYieldReturn n)
     {
-        DisposeTargets[n] = _finallyLabels.Count > 0 ? _finallyLabels.Peek() : null;
-        return base.VisitYieldReturn(n);
+        BoundYieldReturn y = (BoundYieldReturn)base.VisitYieldReturn(n);
+        return new BoundYieldReturn(y.Expression) { Syntax = n.Syntax, DisposeTarget = _finallyLabels.Count > 0 ? _finallyLabels.Peek() : null };
     }
 
     protected override BoundNode VisitTry(BoundTry t)

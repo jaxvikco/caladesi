@@ -427,6 +427,9 @@ public sealed class BoundTry(BoundBlock body, ImmutableArray<BoundCatch> catches
 public sealed class BoundYieldReturn(BoundExpression expression) : BoundStatement
 {
     public BoundExpression Expression { get; } = expression;
+
+    /// <summary>Where a resumed iterator that is being disposed continues (the innermost enclosing rewritten finally, or null for the end of the method). Set by the try rewriter; carried on the node so later tree rewrites keep it.</summary>
+    public LabelSymbol? DisposeTarget { get; init; }
 }
 
 public sealed class BoundYieldBreak : BoundStatement;

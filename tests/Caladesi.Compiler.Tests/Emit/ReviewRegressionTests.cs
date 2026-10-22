@@ -46,4 +46,48 @@ public class ReviewRegressionTests
         Console.WriteLine(f(5));
         """, "5\n");
     }
+
+    [TestMethod]
+    public void Item02a_IteratorFinallyRunsOnBreakSync()
+    {
+        Check("""
+        function* sf(): IEnumerable<int> { try { for (let i = 0; i < 3; i++) { yield i; } } finally { Console.WriteLine("fin-sf"); } }
+        function* sw(): IEnumerable<int> { try { let i = 0; while (i < 3) { yield i; i++; } } finally { Console.WriteLine("fin-sw"); } }
+        function* sfo(): IEnumerable<int> { try { for (const x of [1, 2, 3]) { yield x; } } finally { Console.WriteLine("fin-sfo"); } }
+        for (const t of sf()) { break; } Console.WriteLine("sf done");
+        for (const t of sw()) { break; } Console.WriteLine("sw done");
+        for (const t of sfo()) { break; } Console.WriteLine("sfo done");
+        const en = sf().GetEnumerator();
+        en.MoveNext(); en.Dispose(); Console.WriteLine("manual done");
+        """, "fin-sf\nsf done\nfin-sw\nsw done\nfin-sfo\nsfo done\nfin-sf\nmanual done\n");
+    }
+
+    [TestMethod]
+    public void Item02b_IteratorFinallyRunsWhenYieldOperandIsHoisted()
+    {
+        Check("""
+        class D implements IDisposable { constructor(public name: string) {} Dispose(): void { Console.WriteLine("disposed " + this.name); } }
+        function* param(n: int): IEnumerable<int> { try { yield n; yield n; } finally { Console.WriteLine("fin-param"); } }
+        function* hoisted(): IEnumerable<int> { try { let i = 5; yield i; i++; yield i; } finally { Console.WriteLine("fin-hoisted"); } }
+        class H { v = 9; *m(): IEnumerable<int> { try { yield this.v; yield 1; } finally { Console.WriteLine("fin-this"); } } }
+        function* usingIt(): IEnumerable<int> { using d = new D("iter"); yield 1; yield 2; }
+        for (const t of param(1)) { break; } Console.WriteLine("param done");
+        for (const t of hoisted()) { break; } Console.WriteLine("hoisted done");
+        for (const t of new H().m()) { break; } Console.WriteLine("this done");
+        for (const t of usingIt()) { break; } Console.WriteLine("usingIt done");
+        """, "fin-param\nparam done\nfin-hoisted\nhoisted done\nfin-this\nthis done\ndisposed iter\nusingIt done\n");
+    }
+
+    [TestMethod]
+    public void Item02c_AsyncIteratorFinallyRunsOnBreak()
+    {
+        Check("""
+        async function* aparam(n: int): IAsyncEnumerable<int> { try { yield n; yield n; } finally { Console.WriteLine("fin-aparam"); } }
+        async function* a(): IAsyncEnumerable<int> { try { await Task.Delay(1); yield 1; yield 2; } finally { Console.WriteLine("fin-a"); } }
+        async function* d(): IAsyncEnumerable<int> { try { for (let i = 0; i < 3; i++) { yield i; await Task.Delay(1); } } finally { Console.WriteLine("fin-d"); } }
+        for await (const t of aparam(1)) { break; } Console.WriteLine("aparam done");
+        for await (const t of a()) { break; } Console.WriteLine("a done");
+        for await (const t of d()) { break; } Console.WriteLine("d done");
+        """, "fin-aparam\naparam done\nfin-a\na done\nfin-d\nd done\n");
+    }
 }
