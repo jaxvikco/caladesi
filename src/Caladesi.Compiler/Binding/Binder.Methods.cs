@@ -416,14 +416,16 @@ public sealed partial class Binder
                         continue;
                     }
 
-                    if (field.IsConst) { BoundExpression _ = BindToType(d.Initializer.Value, field.Type); continue; }
-                    BoundExpression value = BindToType(d.Initializer.Value, field.Type);
+                    BoundExpression rawValue = BindValue(d.Initializer.Value, field.Type);
+                    BoundExpression value = ConvertImplicit(rawValue, field.Type, d.Initializer.Value);
+                    if (field.IsConst) { AfterAssignmentToNew(field, rawValue, field.Type); continue; }
                     if (value.HasErrors)
                     {
                         continue;
                     }
 
                     stmts.Add(new BoundExpressionStatement(new BoundAssignment(new BoundFieldAccess(null, field) { Syntax = d }, value) { Syntax = d, IsDiscarded = true }) { Syntax = d });
+                    AfterAssignmentToNew(field, rawValue, field.Type);
                 }
                 continue;
             }

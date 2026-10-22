@@ -55,7 +55,10 @@ import type { Point } from "./geometry";              // erased; identical to a 
 * **Strict nullability.** `T | null` or `T?` for reference types (tracked through nullable metadata) and `Nullable<T>` for value
   types. Operators `?.`, `??`, `??=`, `!`. `T | null` is not assignable to `T` (`CAL0283`); `null` is not assignable to `T`
   (`CAL0278`). Null checks, `instanceof`, and `switch` narrow variables, parameters, fields and properties (also top-level
-  variables), including inside `&&`, `||`, `?:` and after early returns.
+  variables), including inside `&&`, `||`, `?:` and after early returns. A declaration initializer and a later assignment narrow
+  alike. A narrowed field, `this`-or-object member path or static variable goes back to its declared type after a call into
+  Caladesi code or a delegate, and a variable that a lambda or local function assigns does too once the lambda exists
+  (calls into referenced assemblies keep the narrowing). `x instanceof T` with no possible overlap is warning `CAL0241`.
 * Tuples support array-style destructuring and constant indexing: `const [a, b] = t; t[0]`.
 * Conversions: numeric widening is implicit; narrowing needs `as`. `as T` is a checked cast, `x satisfies T` a compile-time check.
   `/` between integers is integer division. `**` is `Math.Pow` (`BigInteger.Pow` for bigint). `>>>` is an unsigned shift.

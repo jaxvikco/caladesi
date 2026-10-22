@@ -399,7 +399,7 @@ public sealed partial class Binder
         return new BoundLocalDeclaration(local!, init) { Syntax = d };
     }
 
-    private void AfterAssignmentToNew(LocalSymbol local, BoundExpression rawValue, TypeSymbol declared)
+    private void AfterAssignmentToNew(Symbol local, BoundExpression rawValue, TypeSymbol declared)
     {
         NarrowPath path = new([local]);
         _narrow = RemovePathsStartingWith(_narrow, path);

@@ -45,6 +45,15 @@ Each entry records a choice that is not obvious from the language specification,
 * **`char`** is available as a type; a one-character string literal converts to it.
 * **Destructuring defaults** are only allowed for nullable element types, because the default applies when the value is `null`.
 
+* **Narrowing follows TypeScript for initializers and assignments, and is stricter after calls.** A declaration initializer
+  narrows exactly like an assignment (`let s: string | null = "x"; s.Length` compiles, also for top-level variables). A narrowed
+  field (through `this`, another object, or a static/top-level variable) is reset to its declared type after any call into
+  Caladesi code, constructor, or delegate invocation, and a variable assigned inside a lambda or local function is reset once
+  that lambda is created and after such calls, because the callee may assign it. Calls into referenced assemblies keep the
+  narrowing: they cannot assign source variables. The reset lets `x instanceof T` be asked again after the callee ran, so
+  `CAL0241` ("can never be an instance") is a warning, not an error; with unsound narrowing it was a hard error on correct code.
+  Loops are not re-analysed for calls in their body.
+
 ## Unions and enums
 
 * **Named unions** (`type Shape = Circle | Square`) are generated readonly structs with fields `Tag` (1-based, 0 = empty) and

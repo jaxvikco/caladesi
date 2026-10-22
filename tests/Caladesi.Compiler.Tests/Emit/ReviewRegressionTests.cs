@@ -292,4 +292,49 @@ public class ReviewRegressionTests
         Console.WriteLine(l.Count + d.Count);
         """, "2\n");
     }
+
+    [TestMethod]
+    public void Item26_NarrowedFieldAndVariableResetAfterCallsThatAssignThem()
+    {
+        Check("""
+        class K {
+          v: object = 1;
+          reset(): void { this.v = "s"; }
+          test(): string {
+            if (this.v instanceof int) { this.reset(); if (this.v instanceof string) return "now string"; }
+            return "int";
+          }
+        }
+        Console.WriteLine(new K().test());
+        let o: object = 1;
+        function mut(): void { o = "str"; }
+        if (o instanceof int) { mut(); Console.WriteLine(o instanceof string ? "now string" : "still int"); }
+        """, "now string\nnow string\n");
+    }
+
+    [TestMethod]
+    public void Item26_NarrowedVariableResetAfterLambdaThatAssignsItIsInvoked()
+    {
+        Check("""
+        function run(): string {
+          let o: object = 1;
+          const set = (): void => { o = "str"; };
+          if (o instanceof int) { set(); return o instanceof string ? "now string" : "still int"; }
+          return "none";
+        }
+        Console.WriteLine(run());
+        """, "now string\n");
+    }
+
+    [TestMethod]
+    public void Item27_InitializerAndAssignmentBothNarrowTopLevelVariables()
+    {
+        Check("""
+        let s1: string | null = "x";
+        Console.WriteLine(s1.Length);
+        let s2: string | null = null;
+        s2 = "yy";
+        Console.WriteLine(s2.Length);
+        """, "1\n2\n");
+    }
 }

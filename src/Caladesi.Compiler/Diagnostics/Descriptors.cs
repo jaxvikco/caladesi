@@ -3,6 +3,11 @@ namespace Caladesi.Compiler.Diagnostics;
 /// <summary>The catalog of every diagnostic the compiler can produce. Codes are stable.</summary>
 public static class Descriptors
 {
+    private static DiagnosticDescriptor W(int n, string msg)
+    {
+        return new($"CAL{n:D4}", DiagnosticSeverity.Warning, msg);
+    }
+
     private static DiagnosticDescriptor E(int n, string msg)
     {
         return new($"CAL{n:D4}", DiagnosticSeverity.Error, msg);
@@ -104,7 +109,7 @@ public static class Descriptors
     public static readonly DiagnosticDescriptor ExpressionNotAValue = E(238, "This expression does not produce a value.");
     public static readonly DiagnosticDescriptor FunctionNeedsBody = E(239, "Function '{0}' must have a body.");
     public static readonly DiagnosticDescriptor IndexerNeedsArguments = E(240, "'{0}' is an indexer and requires arguments.");
-    public static readonly DiagnosticDescriptor InstanceOfImpossible = E(241, "A value of type '{0}' can never be an instance of '{1}'.");
+    public static readonly DiagnosticDescriptor InstanceOfImpossible = W(241, "A value of type '{0}' can never be an instance of '{1}'.");
     public static readonly DiagnosticDescriptor InstanceViaType = E(242, "'{0}' is an instance member and cannot be accessed through type '{1}'.");
     public static readonly DiagnosticDescriptor IntersectionNotAllowed = E(243, "Intersection types are only allowed in type parameter constraints.");
     public static readonly DiagnosticDescriptor LabelNotFound = E(244, "Label '{0}' was not found.");

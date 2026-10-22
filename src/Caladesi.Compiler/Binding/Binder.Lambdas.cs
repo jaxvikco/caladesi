@@ -359,6 +359,7 @@ public sealed partial class Binder
             _yieldType = savedYield;
             _yieldExprs = savedYieldExprs;
             _narrow = savedNarrow;
+            NoteLambdaAssignments(body);
             (_inConstructor, _inStaticConstructor, _inInitializer) = savedCtor;
             _inCatch = savedInCatch;
         }

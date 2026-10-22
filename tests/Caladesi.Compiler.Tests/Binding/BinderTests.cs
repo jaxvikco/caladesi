@@ -343,4 +343,31 @@ public class BinderTests
     {
         AssertError("const o: object = new List();", Descriptors.TypeRequiresArguments, OutputKind.ConsoleApplication);
     }
+
+    [TestMethod]
+    public void Item26_ImpossibleInstanceofIsAWarning()
+    {
+        ImmutableArray<Diagnostic> d = TestCompiler.Diagnose("const x: int = 1;\nConsole.WriteLine(x instanceof string);");
+        Diagnostic hit = d.Single(x => x.Id == Descriptors.InstanceOfImpossible.Id);
+        Assert.AreEqual(DiagnosticSeverity.Warning, hit.EffectiveSeverity);
+        Assert.IsFalse(d.Any(x => x.EffectiveSeverity == DiagnosticSeverity.Error), TestCompiler.Format(d));
+    }
+
+    [TestMethod]
+    public void Item26_CallsIntoSourceCodeResetFieldNarrowingButLibraryCallsDoNot()
+    {
+        AssertError("""
+            class K {
+              name: string | null = "a";
+              clear(): void { this.name = null; }
+              m(): int { if (this.name != null) { this.clear(); return this.name.Length; } return 0; }
+            }
+            """, Descriptors.PossiblyNull);
+        AssertClean("""
+            class K {
+              name: string | null = "a";
+              m(): int { if (this.name != null) { Console.WriteLine("x"); return this.name.Length; } return 0; }
+            }
+            """, OutputKind.DynamicallyLinkedLibrary);
+    }
 }

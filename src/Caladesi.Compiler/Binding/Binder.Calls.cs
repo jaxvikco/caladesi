@@ -52,9 +52,23 @@ public sealed partial class Binder
             _ = BindArguments(inv.Arguments.Arguments);
             return Bad(inv, callee);
         }
-        return callee is BoundConditionalAccess ca && calleeSyntax is not ParenthesizedExpressionSyntax
+        BoundExpression result = callee is BoundConditionalAccess ca && calleeSyntax is not ParenthesizedExpressionSyntax
             ? LiftConditional(ca, inner => BindInvocationOn(inner, inv, target), inv)
             : BindInvocationOn(callee, inv, target);
+        InvalidateAfterCall(CalledMethod(result));
+        return result;
+    }
+
+    private static MethodSymbol? CalledMethod(BoundExpression e)
+    {
+        return e switch
+        {
+            BoundCall c => c.Method,
+            BoundObjectCreation { Constructor: { } ctor } => ctor,
+            BoundConditionalAccess { WhenNotNull: { } inner } => CalledMethod(inner),
+            BoundSequence { Value: { } v } => CalledMethod(v),
+            _ => null,
+        };
     }
 
     private BoundExpression BindInvocationOn(BoundExpression callee, InvocationExpressionSyntax inv, TypeSymbol? target)
@@ -243,9 +257,14 @@ public sealed partial class Binder
         TypeSyntax typeSyntax = n.Type;
         TypeSymbol type = BindNewType(typeSyntax, target);
         ImmutableArray<BoundExpression> args = n.Arguments != null ? BindArguments(n.Arguments.Arguments) : [];
-        return type.IsErrorType || args.Any(a => a is BoundBadExpression)
-            ? BadFrom(n, args.CastArray<BoundNode>())
-            : BuildObjectCreation(type, args, n, typeSyntax);
+        if (type.IsErrorType || args.Any(a => a is BoundBadExpression))
+        {
+            return BadFrom(n, args.CastArray<BoundNode>());
+        }
+
+        BoundExpression created = BuildObjectCreation(type, args, n, typeSyntax);
+        InvalidateAfterCall(CalledMethod(created));
+        return created;
     }
 
     private TypeSymbol BindNewType(TypeSyntax typeSyntax, TypeSymbol? target)
