@@ -73,14 +73,19 @@ public sealed partial class Parser
         finally { ExitNesting(); }
     }
 
+    /// <summary>Set while parsing the operand after `?`: `c ? (x) : y => z` is a conditional, so a return-type annotation there only counts when a `:` follows the arrow.</summary>
+    private bool _arrowNeedsColon;
+
     private ExpressionSyntax ParseAssignmentExpressionCore()
     {
+        bool arrowNeedsColon = _arrowNeedsColon;
+        _arrowNeedsColon = false;
         if (Kind == SyntaxKind.YieldKeyword)
         {
             return ParseYield();
         }
 
-        ExpressionSyntax? arrow = TryParseArrowFunction();
+        ExpressionSyntax? arrow = TryParseArrowFunction(arrowNeedsColon);
         if (arrow != null)
         {
             return arrow;
@@ -153,6 +158,7 @@ public sealed partial class Parser
         }
 
         SyntaxToken q = Eat();
+        _arrowNeedsColon = true;
         ExpressionSyntax whenTrue = ParseAssignmentExpression();
         SyntaxToken colon = Expect(SyntaxKind.ColonToken);
         ExpressionSyntax whenFalse = ParseAssignmentExpression();
@@ -245,14 +251,6 @@ public sealed partial class Parser
                 {
                     SyntaxToken kw = Eat();
                     return new ThrowExpressionSyntax(kw, ParseAssignmentExpression());
-                }
-            case SyntaxKind.TypeOfKeyword:
-                {
-                    SyntaxToken kw = Eat();
-                    SyntaxToken open = Expect(SyntaxKind.OpenParenToken);
-                    TypeSyntax t = ParseType();
-                    SyntaxToken close = Expect(SyntaxKind.CloseParenToken);
-                    return new TypeOfExpressionSyntax(kw, open, t, close);
                 }
             case SyntaxKind.VoidKeyword:
                 {
@@ -361,7 +359,8 @@ public sealed partial class Parser
                         TypeArgumentListSyntax? generic = Speculate(() =>
                         {
                             TypeArgumentListSyntax args = ParseTypeArgumentList();
-                            return args.IsMissing || args.GreaterThanToken.IsMissing ? null : CanFollowTypeArgumentsInExpression(Kind) ? args : null;
+                            // an `=` right after the `>` is the `>=` operator (`a < b >= c`), not an assignment to a generic name
+                            return args.IsMissing || args.GreaterThanToken.IsMissing || (Kind == SyntaxKind.EqualsToken && IsAdjacent(_i)) ? null : CanFollowTypeArgumentsInExpression(Kind) ? args : null;
                         });
                         if (generic == null)
                         {
@@ -450,6 +449,15 @@ public sealed partial class Parser
                     ExpressionSyntax e = ParseExpression();
                     SyntaxToken close = Expect(SyntaxKind.CloseParenToken);
                     return new ParenthesizedExpressionSyntax(open, e, close);
+                }
+            case SyntaxKind.TypeOfKeyword:
+                {
+                    // `typeof(T)` is the .NET type object, so members can follow it: typeof(T).Name
+                    SyntaxToken kw = Eat();
+                    SyntaxToken open = Expect(SyntaxKind.OpenParenToken);
+                    TypeSyntax t = ParseType();
+                    SyntaxToken close = Expect(SyntaxKind.CloseParenToken);
+                    return new TypeOfExpressionSyntax(kw, open, t, close);
                 }
             case SyntaxKind.OpenBracketToken: return ParseArrayLiteral();
             case SyntaxKind.OpenBraceToken: return ParseObjectLiteral();
@@ -613,7 +621,7 @@ public sealed partial class Parser
 
     // ------------------------------------------------------------------ arrow functions
 
-    private ArrowFunctionSyntax? TryParseArrowFunction()
+    private ArrowFunctionSyntax? TryParseArrowFunction(bool arrowNeedsColon = false)
     {
         switch (Kind)
         {
@@ -642,6 +650,15 @@ public sealed partial class Parser
                         if (ak is not SyntaxKind.EqualsGreaterThanToken and not SyntaxKind.ColonToken)
                         {
                             return null;
+                        }
+
+                        if (ak == SyntaxKind.ColonToken && arrowNeedsColon)
+                        {
+                            return Speculate(() =>
+                            {
+                                ArrowFunctionSyntax? candidate = ParseParenthesizedArrow(false);
+                                return candidate != null && Kind == SyntaxKind.ColonToken ? candidate : null;
+                            });
                         }
                     }
                     return Speculate(() => ParseParenthesizedArrow(false));

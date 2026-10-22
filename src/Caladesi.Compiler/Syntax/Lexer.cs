@@ -363,7 +363,8 @@ public sealed class Lexer(SourceText source, string path, DiagnosticBag diagnost
         int digitsStart = _pos;
         if (isHexOrBin)
         {
-            while (Uri.IsHexDigit(Peek()) || Peek() == '_')
+            // binary literals take every decimal digit so a stray `2` is reported as part of the literal
+            while ((radix == 2 ? char.IsAsciiDigit(Peek()) : Uri.IsHexDigit(Peek())) || Peek() == '_')
             {
                 _pos++;
             }
@@ -431,6 +432,7 @@ public sealed class Lexer(SourceText source, string path, DiagnosticBag diagnost
             try
             {
                 if (isHexOrBin && digits.Length == 0) { error = "missing digits"; ok = false; }
+                else if (radix == 2 && digits.Any(c => c is not ('0' or '1'))) { error = "invalid digit in binary literal"; ok = false; }
                 else if (suffix == "n")
                 {
                     kind = SyntaxKind.BigIntLiteralToken;

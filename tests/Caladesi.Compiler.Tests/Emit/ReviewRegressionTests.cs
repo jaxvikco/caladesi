@@ -357,4 +357,21 @@ public class ReviewRegressionTests
         Console.WriteLine(j("a", null) + "|");
         """, "b\na|\n");
     }
+
+    [TestMethod]
+    public void Item30_BinaryLiteralComparisonConditionalAndTypeof()
+    {
+        Check("""
+        const x = 0b101;
+        const a = 1, b = 2, c = 0;
+        const flag = a < b == true;
+        const k = true;
+        const f: Func<int, int> = y => y;
+        const v = k ? (f) : y => y * 2;
+        Console.WriteLine(x);
+        Console.WriteLine(flag);
+        Console.WriteLine(v(3));
+        Console.WriteLine(typeof(int).Name);
+        """, "5\nTrue\n3\nInt32\n");
+    }
 }
