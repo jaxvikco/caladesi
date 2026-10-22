@@ -203,6 +203,11 @@ public sealed partial class Binder
             default:
                 e = BindValue(expr);
                 if (e is BoundUnbound) e = ConvertImplicit(e, e.Type ?? ObjectType, expr);
+                else if (e.Type == null && e is not BoundBadExpression)
+                {
+                    ReportNotAValue(e, expr);
+                    e = Bad(expr, e);
+                }
                 break;
         }
         return e;

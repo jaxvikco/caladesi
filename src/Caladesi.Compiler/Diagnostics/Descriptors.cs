@@ -186,6 +186,7 @@ public static class Descriptors
     public static readonly DiagnosticDescriptor AttributeNotFound = E(320, "Cannot find an attribute named '{0}'.");
     public static readonly DiagnosticDescriptor AttributeArgumentNotConstant = E(321, "An attribute argument must be a compile-time constant, a typeof expression or an array of those.");
     public static readonly DiagnosticDescriptor AttributeMemberNotFound = E(322, "Attribute '{1}' has no settable property or field '{0}'.");
+    public static readonly DiagnosticDescriptor CyclicInheritance = E(323, "Circular inheritance involving '{0}'.");
     public static readonly DiagnosticDescriptor YieldNotAllowedHere = E(318, "'yield' is only allowed in a generator function.");
     public static readonly DiagnosticDescriptor NoEntryPoint = E(170, "Program does not contain an entry point; add top-level statements or a 'main' function.");
 }

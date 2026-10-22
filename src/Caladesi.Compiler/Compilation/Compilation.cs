@@ -124,8 +124,25 @@ public sealed partial class Compilation
     internal ArrayTypeSymbol CreateArrayType(TypeSymbol element, int rank = 1) =>
         new(element, GetSpecialType(SpecialType.Array), rank);
 
-    internal Binder CreateBinder(SourceFile file, Symbol? containing, DiagnosticBag? diagnostics) =>
-        new(this, file, containing, diagnostics);
+    internal Dictionary<SyntaxNode, Symbol>? RecordedSymbols { get; private set; }
+    internal Dictionary<SyntaxNode, TypeSymbol>? RecordedTypes { get; private set; }
+    /// <summary>Declared locals, parameters and local functions by (tree, identifier start).</summary>
+    internal Dictionary<(SyntaxTree, int), Symbol>? RecordedDeclarations { get; private set; }
+
+    internal Binder CreateBinder(SourceFile file, Symbol? containing, DiagnosticBag? diagnostics)
+    {
+        var binder = new Binder(this, file, containing, diagnostics);
+        if (Options.RecordSemanticInfo)
+        {
+            RecordedSymbols ??= new(ReferenceEqualityComparer.Instance);
+            RecordedTypes ??= new(ReferenceEqualityComparer.Instance);
+            RecordedDeclarations ??= new();
+            binder.SymbolMap = RecordedSymbols;
+            binder.TypeMap = RecordedTypes;
+            binder.DeclarationMap = RecordedDeclarations;
+        }
+        return binder;
+    }
 
     // ------------------------------------------------------------------ declarations
 
@@ -302,6 +319,61 @@ public sealed partial class Compilation
     /// <summary>Emits the assembly (and optionally a portable PDB). Fails without writing when there are errors.</summary>
     public Emit.EmitResult Emit(Stream peStream, Stream? pdbStream = null, string? pdbFileName = null) =>
         new Emit.EmitModule(this).Emit(peStream, pdbStream, pdbFileName);
+
+    private Dictionary<(SyntaxTree, int), Symbol>? _declarationIndex;
+
+    /// <summary>Every declared source symbol (types, members, locals, parameters) by the start of its identifier.</summary>
+    internal Dictionary<(SyntaxTree, int), Symbol> GetDeclarationIndex()
+    {
+        if (_declarationIndex != null) return _declarationIndex;
+        var index = new Dictionary<(SyntaxTree, int), Symbol>();
+        if (RecordedDeclarations != null) foreach (var kv in RecordedDeclarations) index[kv.Key] = kv.Value;
+        void Add(SyntaxTree tree, SyntaxToken? token, Symbol symbol)
+        {
+            if (token != null && !token.IsMissing) index.TryAdd((tree, token.Start), symbol);
+        }
+        foreach (var type in AllSourceTypes.ToList())
+        {
+            if (type is SourceModuleClassSymbol) { }
+            else Add(type.File.Tree, type.IdentifierToken, type);
+            foreach (var m in type.GetMembers())
+            {
+                switch (m)
+                {
+                    case SourceMethodSymbol sm when sm.MethodKind is not (MethodKind.PropertyGet or MethodKind.PropertySet):
+                        Add(type.File.Tree, DeclarationIdentifier(sm.Declaration), sm);
+                        break;
+                    case SourcePropertySymbol sp:
+                        Add(type.File.Tree, DeclarationIdentifier(sp.Declaration), sp);
+                        break;
+                    case SourceFieldSymbol sf when !sf.IsBackingField:
+                        Add(type.File.Tree, DeclarationIdentifier(sf.Declaration), sf);
+                        break;
+                }
+            }
+        }
+        foreach (var file in SourceFiles)
+            foreach (var alias in file.Aliases) Add(file.Tree, alias.Syntax.Identifier, alias);
+        return _declarationIndex = index;
+    }
+
+    internal static SyntaxToken? DeclarationIdentifier(SyntaxNode? decl) => decl switch
+    {
+        FunctionDeclarationSyntax f => f.Identifier,
+        MethodDeclarationSyntax m => m.Identifier,
+        PropertyDeclarationSyntax p => p.Identifier,
+        AccessorDeclarationSyntax a => a.Identifier,
+        ClassDeclarationSyntax c => c.Identifier,
+        InterfaceDeclarationSyntax i => i.Identifier,
+        EnumDeclarationSyntax e => e.Identifier,
+        EnumMemberSyntax em => em.Identifier,
+        TypeAliasDeclarationSyntax t => t.Identifier,
+        VariableDeclaratorSyntax v => v.Identifier,
+        ParameterSyntax p => p.Identifier,
+        _ => null,
+    };
+
+    public Semantics.SemanticModel GetSemanticModel(SyntaxTree tree) => new(this, tree);
 
     private readonly Dictionary<DecoratorSyntax, BoundAttribute?> _boundAttributes = new(ReferenceEqualityComparer.Instance);
 

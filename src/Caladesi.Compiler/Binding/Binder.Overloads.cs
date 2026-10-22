@@ -126,7 +126,7 @@ public sealed partial class Binder
         // normal form
         if (TryApplicable(ps, args, expanded: false, out var defaults))
             return new Candidate { Method = m, Parameters = ps, Expanded = false, DefaultsUsed = defaults, Original = original };
-        if (ps.Length > 0 && ps[^1].IsParams && TryApplicable(ps, args, expanded: true, out defaults))
+        if (ps.Length > 0 && ps[^1].IsParams && ps[^1].Type is ArrayTypeSymbol && TryApplicable(ps, args, expanded: true, out defaults))
             return new Candidate { Method = m, Parameters = ps, Expanded = true, DefaultsUsed = defaults, Original = original };
         return null;
     }
@@ -399,9 +399,8 @@ public sealed partial class Binder
             {
                 result.Add(ConvertArg(args[i], p.Type, report, p.RefKind));
             }
-            else if (p.IsParams)
+            else if (p.IsParams && p.Type is ArrayTypeSymbol at2)
             {
-                var at2 = (ArrayTypeSymbol)p.Type;
                 result.Add(new BoundArrayCreation(at2, new BoundLiteral(new ConstantValue(0), IntType), ImmutableArray<BoundExpression>.Empty) { Syntax = at });
             }
             else
