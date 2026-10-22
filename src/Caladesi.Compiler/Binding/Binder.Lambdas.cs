@@ -140,7 +140,7 @@ public sealed partial class Binder
         }
 
         int n = ps.Length;
-        if (ret.IsVoid)
+        if (ret.ReturnsNothing)
         {
             NamedTypeSymbol? action = Compilation.GetWellKnownType(n == 0 ? "System.Action" : "System.Action`" + n);
             return n == 0 ? action : action?.Construct(ps);
@@ -216,6 +216,7 @@ public sealed partial class Binder
         TypeSymbol? savedDeclared = _declaredReturn;
         List<BoundExpression>? savedReturns = _returnExprs;
         bool savedBare = _sawBareReturn;
+        bool savedInCatch = _inCatch;
         bool savedAsync = _isAsyncContext;
         bool savedIter = _isIteratorContext;
         TypeSymbol? savedYield = _yieldType;
@@ -242,6 +243,7 @@ public sealed partial class Binder
             DropMutableNarrowings();
             InvalidateAssignedIn(body);
             _inConstructor = false; _inStaticConstructor = false; _inInitializer = false;
+            _inCatch = false;
             _function = sym;
             _isAsyncContext = isAsync;
             _isIteratorContext = isGenerator;
@@ -357,7 +359,9 @@ public sealed partial class Binder
             _yieldType = savedYield;
             _yieldExprs = savedYieldExprs;
             _narrow = savedNarrow;
+            NoteLambdaAssignments(body);
             (_inConstructor, _inStaticConstructor, _inInitializer) = savedCtor;
+            _inCatch = savedInCatch;
         }
     }
 

@@ -15,7 +15,7 @@ internal sealed partial class EmitModule(Compilation compilation)
     private readonly Dictionary<NamedTypeSymbol, EntityHandle> _typeHandles = [];
     private readonly Dictionary<(TypeSymbol, bool), TypeSpecificationHandle> _typeSpecs = [];
     private readonly Dictionary<(Symbol, bool), EntityHandle> _memberRefs = [];
-    private readonly Dictionary<(EntityHandle, string, bool), MethodSpecificationHandle> _methodSpecs = [];
+    private readonly Dictionary<(EntityHandle, BlobHandle), MethodSpecificationHandle> _methodSpecs = [];
 
     public Compilation Compilation { get; } = compilation;
     public MetadataBuilder Metadata { get; } = new();
@@ -254,7 +254,7 @@ internal sealed partial class EmitModule(Compilation compilation)
         MethodSignatureEncoder enc = new BlobEncoder(bb).MethodSignature(SignatureCallingConvention.Default, def.Arity, isInstanceMethod: !def.IsStatic);
         enc.Parameters(def.Parameters.Length, out ReturnTypeEncoder ret, out ParametersEncoder ps);
         TypeSymbol rt = def.ReturnType;
-        if (rt.IsVoid)
+        if (rt.ReturnsNothing)
         {
             ret.Void();
         }
@@ -319,7 +319,7 @@ internal sealed partial class EmitModule(Compilation compilation)
             }
 
             BlobHandle blob = Metadata.GetOrAddBlob(bb);
-            (EntityHandle baseHandle, string, bool) key = (baseHandle, string.Join(",", cm.TypeArguments.Select(a => a.ToDisplayString())), _classTypeParameterMap != null);
+            (EntityHandle, BlobHandle) key = (baseHandle, blob); // the blob is the exact encoding, so it separates class and method type parameters that share a name
             if (!_methodSpecs.TryGetValue(key, out MethodSpecificationHandle spec))
             {
                 spec = Metadata.AddMethodSpecification(baseHandle, blob);

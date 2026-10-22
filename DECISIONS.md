@@ -36,7 +36,8 @@ Each entry records a choice that is not obvious from the language specification,
   members are nullable with a `null` default.
 * **Object literals without a target** become a compiler-generated internal record generic over its property types (like C#
   anonymous types). Only a single leading spread is supported.
-* **`===` is `op_Equality` when present**, otherwise reference or value equality as appropriate. `==` is rejected with a fix-it.
+* **`==` is `op_Equality` when present**, otherwise reference or value equality as appropriate. `===` and `!==` are rejected with one
+  targeted error (`CAL0332`); so are the removed globals `NaN` and `Infinity`.
 * **Fields are initialized after the base constructor call**, in declaration order, before the rest of the constructor body.
 * **Top-level variables are static fields** of the file's module class; their initializers run in the entry method (or the
   static constructor for library projects). Consequently ref struct types cannot be top-level variables.
@@ -44,6 +45,19 @@ Each entry records a choice that is not obvious from the language specification,
 * **Integer literal rule:** `int`, else `long`, else `ulong`; decimal literals are `double`.
 * **`char`** is available as a type; a one-character string literal converts to it.
 * **Destructuring defaults** are only allowed for nullable element types, because the default applies when the value is `null`.
+
+* **Narrowing follows TypeScript for initializers and assignments, and is stricter after calls.** A declaration initializer
+  narrows exactly like an assignment (`let s: string | null = "x"; s.Length` compiles, also for top-level variables). A narrowed
+  field (through `this`, another object, or a static/top-level variable) is reset to its declared type after any call into
+  Caladesi code, constructor, or delegate invocation, and a variable assigned inside a lambda or local function is reset once
+  that lambda is created and after such calls, because the callee may assign it. Calls into referenced assemblies keep the
+  narrowing: they cannot assign source variables. The reset lets `x instanceof T` be asked again after the callee ran, so
+  `CAL0241` ("can never be an instance") is a warning, not an error; with unsound narrowing it was a hard error on correct code.
+  Loops are not re-analysed for calls in their body.
+
+* **`-2 ** 2` is a syntax error (`CAL0331`)**, as in TypeScript. A prefix `+ - ! ~` or `await` directly left of `**` is ambiguous
+  between `(-2) ** 2` and `-(2 ** 2)`, and C# programmers and JavaScript programmers disagree on which one it means, so the
+  parentheses are required (`(-2) ** 2`, `-(2 ** 2)`). `2 ** -2` is fine; `++x ** 2` is fine.
 
 ## Unions and enums
 

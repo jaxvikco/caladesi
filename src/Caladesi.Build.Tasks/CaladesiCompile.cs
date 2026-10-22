@@ -52,6 +52,12 @@ public sealed class CaladesiCompile : ToolTask
         return $"\"{CompilerPath}\"";
     }
 
+    /// <summary>Splits an MSBuild list property; project files wrap long lists over several lines, and a raw newline would end the response-file line.</summary>
+    private static string[] SplitList(string? value)
+    {
+        return (value ?? "").Split([';', ',', ' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
+    }
+
     protected override string GenerateResponseFileCommands()
     {
         StringBuilder sb = new();
@@ -88,7 +94,7 @@ public sealed class CaladesiCompile : ToolTask
             Add("-ref:" + r.ItemSpec);
         }
 
-        foreach (string d in (DefineConstants ?? "").Split([';', ',', ' '], StringSplitOptions.RemoveEmptyEntries))
+        foreach (string d in SplitList(DefineConstants))
         {
             Add("-define:" + d);
         }
@@ -103,9 +109,10 @@ public sealed class CaladesiCompile : ToolTask
             Add("-warnaserror");
         }
 
-        if (!string.IsNullOrWhiteSpace(NoWarn))
+        string[] noWarn = SplitList(NoWarn);
+        if (noWarn.Length > 0)
         {
-            Add("-nowarn:" + NoWarn!.Trim());
+            Add("-nowarn:" + string.Join(';', noWarn));
         }
 
         foreach (ITaskItem g in GlobalImports)

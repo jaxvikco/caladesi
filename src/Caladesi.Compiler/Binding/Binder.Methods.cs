@@ -390,8 +390,22 @@ public sealed partial class Binder
             list.Add(s);
         }
         _inInitializer = true;
-        foreach (StatementSyntax s in list)
+        stmts.AddRange(BindTopLevelFrom(list, 0, members));
+        _inInitializer = false;
+        ImmutableArray<LocalSymbol> locals = [.. _scope.Locals];
+        return new BoundBlock(locals, stmts.ToImmutable());
+    }
+
+    /// <summary>
+    /// Binds top-level statements from <paramref name="start"/>: variable declarations assign module fields (functions see them), and the
+    /// statements after a <c>using</c> are bound the same way inside its try/finally.
+    /// </summary>
+    private ImmutableArray<BoundStatement> BindTopLevelFrom(List<StatementSyntax> list, int start, ImmutableArray<Symbol> members)
+    {
+        ImmutableArray<BoundStatement>.Builder stmts = ImmutableArray.CreateBuilder<BoundStatement>();
+        for (int i = start; i < list.Count; i++)
         {
+            StatementSyntax s = list[i];
             if (s is VariableStatementSyntax { Declaration.IsUsing: false } vs && vs.Declaration.Declarators.All(d => d.Identifier is { IsMissing: false }))
             {
                 foreach (VariableDeclaratorSyntax d in vs.Declaration.Declarators)
@@ -402,26 +416,28 @@ public sealed partial class Binder
                         continue;
                     }
 
-                    if (field.IsConst) { BoundExpression _ = BindToType(d.Initializer.Value, field.Type); continue; }
-                    BoundExpression value = BindToType(d.Initializer.Value, field.Type);
+                    BoundExpression rawValue = BindValue(d.Initializer.Value, field.Type);
+                    BoundExpression value = ConvertImplicit(rawValue, field.Type, d.Initializer.Value);
+                    if (field.IsConst) { AfterAssignmentToNew(field, rawValue, field.Type); continue; }
                     if (value.HasErrors)
                     {
                         continue;
                     }
 
                     stmts.Add(new BoundExpressionStatement(new BoundAssignment(new BoundFieldAccess(null, field) { Syntax = d }, value) { Syntax = d, IsDiscarded = true }) { Syntax = d });
+                    AfterAssignmentToNew(field, rawValue, field.Type);
                 }
                 continue;
             }
             if (s is VariableStatementSyntax { Declaration.IsUsing: true } us)
             {
-                stmts.Add(BindUsing(us, list, list.IndexOf(s) + 1));
+                int next = i + 1;
+                stmts.Add(BindUsing(us, list, next, () => BindTopLevelFrom(list, next, members)));
                 break;
             }
             stmts.Add(BindStatement(s));
         }
-        _inInitializer = false;
-        ImmutableArray<LocalSymbol> locals = [.. _scope.Locals];
-        return new BoundBlock(locals, stmts.ToImmutable());
+
+        return stmts.ToImmutable();
     }
 }

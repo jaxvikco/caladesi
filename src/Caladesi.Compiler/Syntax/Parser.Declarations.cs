@@ -110,7 +110,10 @@ public sealed partial class Parser
             case SyntaxKind.DefaultKeyword:
                 {
                     Report(Descriptors.ExportDefaultNotSupported, Current.Span);
+                    // `export` and the decorators were consumed already: keep their text in the tree with the skipped `default`
+                    string consumed = decorators.ToFullString() + modifiers.ToFullString();
                     SkipCurrent();
+                    PrependSkipped(consumed);
                     return ParseStatement();
                 }
             case SyntaxKind.OpenBraceToken or SyntaxKind.AsteriskToken when modifiers.SlotCount > 0:

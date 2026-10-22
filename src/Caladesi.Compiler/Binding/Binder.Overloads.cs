@@ -14,6 +14,8 @@ internal sealed class ResolvedCall
     public bool Expanded { get; init; }
     /// <summary>Locals standing for omitted trailing <c>out</c> parameters; the call returns them in a tuple.</summary>
     public ImmutableArray<LocalSymbol> OutLocals { get; init; } = [];
+    /// <summary>The two applicable candidates when none was better than all the others; the first was picked.</summary>
+    public (MethodSymbol First, MethodSymbol Second)? Ambiguity { get; init; }
 }
 
 public sealed partial class Binder
@@ -69,6 +71,7 @@ public sealed partial class Binder
         }
 
         Candidate best = applicable[0];
+        (MethodSymbol, MethodSymbol)? ambiguity = null;
         if (applicable.Count > 1)
         {
             List<Candidate> winners = [];
@@ -95,18 +98,20 @@ public sealed partial class Binder
             }
             else
             {
+                MethodSymbol a = applicable[0].Method;
+                MethodSymbol b = applicable[1].Method;
                 if (report)
                 {
-                    MethodSymbol a = applicable[0].Method;
-                    MethodSymbol b = applicable[1].Method;
                     Report(Descriptors.AmbiguousCall, at, name, Signature(a), Signature(b));
                 }
+
+                ambiguity = (a, b);
                 best = winners.Count > 0 ? winners[0] : applicable[0];
             }
         }
 
         (ImmutableArray<BoundExpression> Arguments, ImmutableArray<LocalSymbol> OutLocals) = BuildArguments(best, fullArgs, at, report);
-        return new ResolvedCall { Method = best.Method, Arguments = Arguments, Expanded = best.Expanded, OutLocals = OutLocals };
+        return new ResolvedCall { Method = best.Method, Arguments = Arguments, Expanded = best.Expanded, OutLocals = OutLocals, Ambiguity = ambiguity };
     }
 
     private static string Signature(MethodSymbol m)
@@ -352,11 +357,11 @@ public sealed partial class Binder
         {
             return null;
         }
-        // return type must be convertible
+        // the return type must be convertible; unlike a lambda, a method group cannot discard a result (`const a: Action = Console.ReadLine`)
         TypeSymbol rt = res.Method.ReturnType;
-        return !invoke.ReturnType.IsVoid && !rt.IsVoid && !ClassifyImplicit(null, rt, invoke.ReturnType).Exists
-            ? null
-            : !invoke.ReturnType.IsVoid && rt.IsVoid ? null : res.Method;
+        return invoke.ReturnType.IsVoid
+            ? rt.IsVoid || rt.IsNeverType ? res.Method : null
+            : rt.IsVoid || !ClassifyImplicit(null, rt, invoke.ReturnType).Exists ? null : res.Method;
     }
 
     private bool SatisfiesConstraints(MethodSymbol constructed)
@@ -719,6 +724,14 @@ public sealed partial class Binder
                 : new BoundDefaultValue(t) { Syntax = at };
         }
         TypeSymbol inner = t.StripNullable();
+        if (dv.Value.Value is DateTime when && inner is NamedTypeSymbol dateTimeType
+            && dateTimeType.InstanceConstructors.FirstOrDefault(c => c.Parameters.Length == 1 && c.Parameters[0].Type.SpecialType == SpecialType.Int64) is { } fromTicks)
+        {
+            // a DateTime default is a DateTimeConstantAttribute holding the ticks
+            BoundExpression created = new BoundObjectCreation(fromTicks, dateTimeType, [new BoundLiteral(new ConstantValue(when.Ticks), Special(SpecialType.Int64)) { Syntax = at }], []) { Syntax = at };
+            return t is NullableTypeSymbol ? new BoundConversion(created, ConversionKind.ToNullable, t) { Syntax = at } : created;
+        }
+
         TypeSymbol litType = inner.TypeKind == TypeKind.Enum ? inner : inner.SpecialType != SpecialType.None ? inner : TypeOfConstant(dv.Value.Value);
         BoundExpression lit = new BoundLiteral(dv.Value, litType) { Syntax = at };
         if (t is NullableTypeSymbol)

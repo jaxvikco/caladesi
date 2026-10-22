@@ -363,7 +363,8 @@ public sealed class Lexer(SourceText source, string path, DiagnosticBag diagnost
         int digitsStart = _pos;
         if (isHexOrBin)
         {
-            while (Uri.IsHexDigit(Peek()) || Peek() == '_')
+            // binary literals take every decimal digit so a stray `2` is reported as part of the literal
+            while ((radix == 2 ? char.IsAsciiDigit(Peek()) : Uri.IsHexDigit(Peek())) || Peek() == '_')
             {
                 _pos++;
             }
@@ -431,6 +432,7 @@ public sealed class Lexer(SourceText source, string path, DiagnosticBag diagnost
             try
             {
                 if (isHexOrBin && digits.Length == 0) { error = "missing digits"; ok = false; }
+                else if (radix == 2 && digits.Any(c => c is not ('0' or '1'))) { error = "invalid digit in binary literal"; ok = false; }
                 else if (suffix == "n")
                 {
                     kind = SyntaxKind.BigIntLiteralToken;
@@ -439,10 +441,12 @@ public sealed class Lexer(SourceText source, string path, DiagnosticBag diagnost
                 else if (suffix == "f")
                 {
                     value = float.Parse(digits, NumberStyles.Float, CultureInfo.InvariantCulture);
+                    if (float.IsInfinity((float)value)) { error = "out of range"; ok = false; } // modern .NET parses overflow to Infinity instead of throwing
                 }
                 else if (suffix == "d")
                 {
                     value = double.Parse(digits, NumberStyles.Float, CultureInfo.InvariantCulture);
+                    if (double.IsInfinity((double)value)) { error = "out of range"; ok = false; }
                 }
                 else if (suffix == "m")
                 {
@@ -451,6 +455,7 @@ public sealed class Lexer(SourceText source, string path, DiagnosticBag diagnost
                 else if (isReal)
                 {
                     value = double.Parse(digits, NumberStyles.Float, CultureInfo.InvariantCulture);
+                    if (double.IsInfinity((double)value)) { error = "out of range"; ok = false; }
                 }
                 else
                 {
@@ -622,9 +627,10 @@ public sealed class Lexer(SourceText source, string path, DiagnosticBag diagnost
                 {
                     int close = _text.IndexOf('}', _pos);
                     if (close > 0 && int.TryParse(_text.AsSpan(_pos + 1, close - _pos - 1), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out int cp)
-                        && cp <= 0x10FFFF)
+                        && cp is >= 0 and <= 0x10FFFF)
                     {
-                        _ = sb.Append(char.ConvertFromUtf32(cp));
+                        // like the 4-digit form, a lone surrogate is a valid UTF-16 code unit in a string
+                        _ = cp <= 0xFFFF ? sb.Append((char)cp) : sb.Append(char.ConvertFromUtf32(cp));
                         _pos = close + 1;
                     }
                     else

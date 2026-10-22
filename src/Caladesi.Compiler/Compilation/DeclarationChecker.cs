@@ -132,7 +132,7 @@ internal sealed class DeclarationChecker(Compilation compilation)
             foreach (MethodSymbol o in seen)
             {
                 if (o.Name == m.Name && o.MethodKind == m.MethodKind && o.Arity == m.Arity && o.Parameters.Length == m.Parameters.Length
-                    && o.Parameters.Zip(m.Parameters).All(p => p.First.Type.Equals(p.Second.Type)))
+                    && o.Parameters.Zip(m.Parameters).All(p => TypesMatchForImplementation(p.First.Type, p.Second.Type))) // `string` and `string | null` are one CLR signature
                 {
                     TextSpan span = m.Locations.FirstOrDefault().Span;
                     Report(Descriptors.DuplicateMember, type, span, m.Name, type.Name);
@@ -171,7 +171,7 @@ internal sealed class DeclarationChecker(Compilation compilation)
                 Report(Descriptors.AbstractInNonAbstractClass, type, span, m.Name);
             }
 
-            if (m.IsOverrideFlag)
+            if (m.IsOverrideFlag && m.MethodKind == MethodKind.Ordinary)
             {
                 MethodSymbol? o = m.OverriddenMethod;
                 if (o == null)
@@ -185,7 +185,20 @@ internal sealed class DeclarationChecker(Compilation compilation)
                     {
                         Report(Descriptors.CannotOverrideSealed, type, span, o.Name);
                     }
+                    else if (o.IsSealed)
+                    {
+                        Report(Descriptors.OverrideOfSealedMember, type, span, o.ContainingType?.Name + "." + o.Name);
+                    }
+
+                    if (!TypesMatchForImplementation(m.ReturnType, o.ReturnType))
+                    {
+                        Report(Descriptors.OverrideTypeMismatch, type, span, m.Name, m.ReturnType.ToDisplayString(), o.ContainingType?.Name + "." + o.Name, o.ReturnType.ToDisplayString());
+                    }
                 }
+            }
+            else if (m.IsOverrideFlag)
+            {
+                // property accessors are checked with their property below
             }
             else if (!m.IsStatic && m.MethodKind == MethodKind.Ordinary)
             {
@@ -219,6 +232,15 @@ internal sealed class DeclarationChecker(Compilation compilation)
             else
             {
                 p.Getter?.SetEmitName("get_" + o.Name);
+                if (o.IsSealed)
+                {
+                    Report(Descriptors.OverrideOfSealedMember, type, span, o.ContainingType?.Name + "." + o.Name);
+                }
+
+                if (!TypesMatchForImplementation(p.Type, o.Type))
+                {
+                    Report(Descriptors.OverrideTypeMismatch, type, span, p.Name, p.Type.ToDisplayString(), o.ContainingType?.Name + "." + o.Name, o.Type.ToDisplayString());
+                }
             }
 
             if (o != null && p.Setter != null)
@@ -262,7 +284,7 @@ internal sealed class DeclarationChecker(Compilation compilation)
                 }
                 foreach (PropertySymbol? ap in b.GetMembers().OfType<PropertySymbol>().Where(x => x.IsAbstract))
                 {
-                    PropertySymbol? impl = type.BaseTypesAndSelf().Select(t => t.GetMembers().OfType<PropertySymbol>().FirstOrDefault(p => p.Name == ap.Name && p.IsOverride)).FirstOrDefault(x => x != null);
+                    PropertySymbol? impl = type.BaseTypesAndSelf().Select(t => OverrideResolver.LookupNames(t, ap.Name).OfType<PropertySymbol>().FirstOrDefault(p => p.IsOverride && TypesMatchForImplementation(p.Type, ap.Type))).FirstOrDefault(x => x != null);
                     if (impl == null)
                     {
                         Report(Descriptors.AbstractMemberNotImplemented, type, span, type.Name, b.Name + "." + ap.Name);
@@ -277,6 +299,12 @@ internal sealed class DeclarationChecker(Compilation compilation)
 
         foreach (NamedTypeSymbol iface in type.AllInterfaces)
         {
+            // a base class that already implements the interface (including explicitly, which metadata types do not expose) supplies the members
+            if (type.BaseType is { } baseType && baseType.AllInterfaces.Any(i => i.Equals(iface)))
+            {
+                continue;
+            }
+
             foreach (MethodSymbol im in iface.GetMembers().OfType<MethodSymbol>())
             {
                 if (im.MethodKind is not (MethodKind.Ordinary or MethodKind.PropertyGet or MethodKind.PropertySet) || im.IsStatic)
@@ -306,7 +334,7 @@ internal sealed class DeclarationChecker(Compilation compilation)
             {
                 foreach (Symbol cand in OverrideResolver.LookupNames(t, tp.Name))
                 {
-                    if (cand is not PropertySymbol cp || cp.IsStatic || (cp.IsAbstract && t.Equals(type) && false))
+                    if (cand is not PropertySymbol cp || cp.IsStatic || !TypesMatchForImplementation(cp.Type, tp.Type))
                     {
                         continue;
                     }

@@ -3,6 +3,11 @@ namespace Caladesi.Compiler.Diagnostics;
 /// <summary>The catalog of every diagnostic the compiler can produce. Codes are stable.</summary>
 public static class Descriptors
 {
+    private static DiagnosticDescriptor W(int n, string msg)
+    {
+        return new($"CAL{n:D4}", DiagnosticSeverity.Warning, msg);
+    }
+
     private static DiagnosticDescriptor E(int n, string msg)
     {
         return new($"CAL{n:D4}", DiagnosticSeverity.Error, msg);
@@ -104,7 +109,7 @@ public static class Descriptors
     public static readonly DiagnosticDescriptor ExpressionNotAValue = E(238, "This expression does not produce a value.");
     public static readonly DiagnosticDescriptor FunctionNeedsBody = E(239, "Function '{0}' must have a body.");
     public static readonly DiagnosticDescriptor IndexerNeedsArguments = E(240, "'{0}' is an indexer and requires arguments.");
-    public static readonly DiagnosticDescriptor InstanceOfImpossible = E(241, "A value of type '{0}' can never be an instance of '{1}'.");
+    public static readonly DiagnosticDescriptor InstanceOfImpossible = W(241, "A value of type '{0}' can never be an instance of '{1}'.");
     public static readonly DiagnosticDescriptor InstanceViaType = E(242, "'{0}' is an instance member and cannot be accessed through type '{1}'.");
     public static readonly DiagnosticDescriptor IntersectionNotAllowed = E(243, "Intersection types are only allowed in type parameter constraints.");
     public static readonly DiagnosticDescriptor LabelNotFound = E(244, "Label '{0}' was not found.");
@@ -189,5 +194,12 @@ public static class Descriptors
     public static readonly DiagnosticDescriptor RefStructModuleVariable = E(326, "Variable '{0}' cannot have the ref struct type '{1}' because top-level variables are static fields.");
     public static readonly DiagnosticDescriptor PropertyWriteOnly = E(324, "Property '{0}' has no getter and cannot be read.");
     public static readonly DiagnosticDescriptor YieldNotAllowedHere = E(318, "'yield' is only allowed in a generator function.");
+    public static readonly DiagnosticDescriptor JumpOutOfFinally = E(327, "A '{0}' statement cannot leave a 'finally' block.");
+    public static readonly DiagnosticDescriptor ModifyValueTypeTemporary = E(328, "Cannot modify '{0}' because it is a copy of a value type; assign it to a variable first.");
+    public static readonly DiagnosticDescriptor OverrideTypeMismatch = E(329, "'{0}' has type '{1}' but the member it overrides, '{2}', has type '{3}'.");
+    public static readonly DiagnosticDescriptor NestingTooDeep = E(330, "The code is nested too deeply.");
+    public static readonly DiagnosticDescriptor UnaryBeforeExponent = E(331, "A unary operator cannot be the left operand of '**'; enclose it in parentheses, e.g. '(-2) ** 2' or '-(2 ** 2)'.");
+    public static readonly DiagnosticDescriptor NotSupportedUseInstead = E(332, "'{0}' is not supported; use '{1}'.");
+    public static readonly DiagnosticDescriptor OverrideOfSealedMember = E(333, "Cannot override '{0}' because it is sealed.");
     public static readonly DiagnosticDescriptor NoEntryPoint = E(170, "Program does not contain an entry point; add top-level statements or a 'main' function.");
 }

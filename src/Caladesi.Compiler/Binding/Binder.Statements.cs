@@ -24,11 +24,15 @@ public sealed partial class Binder
         return result;
     }
 
-    private ImmutableArray<BoundStatement> BindStatementList(IReadOnlyList<StatementSyntax> statements, int start = 0)
+    private ImmutableArray<BoundStatement> BindStatementList(IReadOnlyList<StatementSyntax> statements, int start = 0, bool hoistFunctions = true)
     {
         ImmutableArray<BoundStatement>.Builder result = ImmutableArray.CreateBuilder<BoundStatement>();
-        // hoist nested function declarations of this block
-        HoistLocalFunctions(statements, start, result);
+        // hoist nested function declarations of this block (the statements after a `using` were hoisted with the ones before it)
+        if (hoistFunctions)
+        {
+            HoistLocalFunctions(statements, start, result);
+        }
+
         for (int i = start; i < statements.Count; i++)
         {
             StatementSyntax s = statements[i];
@@ -395,7 +399,7 @@ public sealed partial class Binder
         return new BoundLocalDeclaration(local!, init) { Syntax = d };
     }
 
-    private void AfterAssignmentToNew(LocalSymbol local, BoundExpression rawValue, TypeSymbol declared)
+    private void AfterAssignmentToNew(Symbol local, BoundExpression rawValue, TypeSymbol declared)
     {
         NarrowPath path = new([local]);
         _narrow = RemovePathsStartingWith(_narrow, path);
@@ -417,10 +421,15 @@ public sealed partial class Binder
 
     // ------------------------------------------------------------------ using
 
-    private BoundStatementList BindUsing(VariableStatementSyntax us, IReadOnlyList<StatementSyntax> all, int nextIndex)
+    private BoundStatementList BindUsing(VariableStatementSyntax us, IReadOnlyList<StatementSyntax> all, int nextIndex, Func<ImmutableArray<BoundStatement>>? bindRest = null)
     {
         VariableDeclarationListSyntax decl = us.Declaration;
         bool isAsync = decl.AwaitKeyword != null;
+        if (isAsync && !_isAsyncContext)
+        {
+            Report(Descriptors.AwaitOutsideAsync, decl.AwaitKeyword!.Span);
+        }
+
         ImmutableArray<BoundStatement>.Builder inits = ImmutableArray.CreateBuilder<BoundStatement>();
         List<LocalSymbol> locals = [];
         foreach (VariableDeclaratorSyntax d in decl.Declarators)
@@ -433,7 +442,7 @@ public sealed partial class Binder
                 locals.Add(l);
             }
         }
-        ImmutableArray<BoundStatement> rest = BindStatementList(all, nextIndex);
+        ImmutableArray<BoundStatement> rest = bindRest != null ? bindRest() : BindStatementList(all, nextIndex, hoistFunctions: false);
         BoundStatement result = new BoundBlock([], rest) { Syntax = us };
         // wrap from the last declared variable outwards
         for (int i = locals.Count - 1; i >= 0; i--)
@@ -613,6 +622,8 @@ public sealed partial class Binder
         BoundStatement body = BindEmbedded(ds.Body);
         bool breakUsed = _scope.BreakUsed;
         PopScope();
+        // the condition is reached from the end of the body and from `continue`, and the loop is left through the condition or `break`
+        _narrow = saved;
         InvalidateAssignedIn(ds);
         BoundExpression cond = ConvertToBool(BindValue(ds.Condition), ds.Condition);
         BoundDoWhile node = new(cond, body, brk, cont) { Syntax = ds };
@@ -620,8 +631,11 @@ public sealed partial class Binder
         {
             _flow[node] = false;
         }
+        else if (!breakUsed)
+        {
+            _narrow = ApplyNarrowings(_narrow, GetNarrowing(cond).whenFalse);
+        }
 
-        _ = saved;
         return node;
     }
 
@@ -655,6 +669,8 @@ public sealed partial class Binder
         BoundStatement body = BindEmbedded(fs.Body);
         bool breakUsed = _scope.BreakUsed;
         PopScope();
+        // the incrementor is reached from the end of the body and from `continue`: only what held at the start of the body holds there
+        _narrow = ApplyNarrowings(saved, tN);
         BoundStatement? incr = fs.Incrementor != null ? new BoundExpressionStatement(BindStatementExpression(fs.Incrementor)) { Syntax = fs.Incrementor } : null;
         ImmutableArray<LocalSymbol> locals = [.. outer.Locals];
         PopScope();
@@ -935,8 +951,32 @@ public sealed partial class Binder
 
     // ------------------------------------------------------------------ return / throw / break / continue
 
+    /// <summary>True when a jump from the current position to <paramref name="target"/> (or out of the function when null) leaves a finally block.</summary>
+    private bool LeavesFinally(Scope? target)
+    {
+        for (Scope? s = _scope; s != null && s != target; s = s.Parent)
+        {
+            if (s.Kind == ScopeKind.Finally)
+            {
+                return true;
+            }
+
+            if (s.Kind is ScopeKind.Lambda or ScopeKind.Method)
+            {
+                break;
+            }
+        }
+
+        return false;
+    }
+
     private BoundStatement BindReturn(ReturnStatementSyntax rs)
     {
+        if (LeavesFinally(null))
+        {
+            Report(Descriptors.JumpOutOfFinally, rs, "return");
+        }
+
         if (_isIteratorContext)
         {
             if (rs.Expression != null)
@@ -998,16 +1038,25 @@ public sealed partial class Binder
 
             if (bs.Label != null)
             {
-                if (s.LabelName == bs.Label.Text && s.BreakLabel != null) { s.BreakUsed = true; return new BoundGoto(s.BreakLabel) { Syntax = bs }; }
+                if (s.LabelName == bs.Label.Text && s.BreakLabel != null) { s.BreakUsed = true; ReportJumpOutOfFinally(s, bs, "break"); return new BoundGoto(s.BreakLabel) { Syntax = bs }; }
             }
             else if (s.Kind is ScopeKind.Loop or ScopeKind.Switch && s.BreakLabel != null)
             {
                 s.BreakUsed = true;
+                ReportJumpOutOfFinally(s, bs, "break");
                 return new BoundGoto(s.BreakLabel) { Syntax = bs };
             }
         }
         Report(bs.Label != null ? Descriptors.LabelNotFound : Descriptors.BreakOutsideLoop, bs, bs.Label?.Text);
         return new BoundNoOp { Syntax = bs };
+    }
+
+    private void ReportJumpOutOfFinally(Scope target, StatementSyntax jump, string keyword)
+    {
+        if (LeavesFinally(target))
+        {
+            Report(Descriptors.JumpOutOfFinally, jump, keyword);
+        }
     }
 
     private BoundStatement BindContinue(ContinueStatementSyntax cs)
@@ -1021,6 +1070,7 @@ public sealed partial class Binder
 
             if (s.Kind == ScopeKind.Loop && s.ContinueLabel != null && (cs.Label == null || s.LabelName == cs.Label.Text))
             {
+                ReportJumpOutOfFinally(s, cs, "continue");
                 return new BoundGoto(s.ContinueLabel) { Syntax = cs };
             }
         }
@@ -1043,7 +1093,13 @@ public sealed partial class Binder
         BoundStatement st = BindStatement(inner);
         ImmutableArray<LocalSymbol> locals = [.. scope.Locals];
         PopScope();
-        return new BoundBlock(locals, [st, new BoundLabel(scope.BreakLabel) { Syntax = ls }]) { Syntax = ls };
+        BoundBlock labeled = new(locals, [st, new BoundLabel(scope.BreakLabel) { Syntax = ls }]) { Syntax = ls };
+        if (scope.BreakUsed)
+        {
+            _flow[labeled] = true; // `break label` jumps to the end of the block, so it completes even when its body does not
+        }
+
+        return labeled;
     }
 
     // ------------------------------------------------------------------ try
@@ -1089,7 +1145,9 @@ public sealed partial class Binder
         BoundBlock? fin = null;
         if (tr.Finally != null)
         {
+            _ = PushScope(ScopeKind.Finally);
             fin = (BoundBlock)BindStatement(tr.Finally.Block);
+            PopScope();
             _narrow = saved;
             InvalidateAssignedIn(tr);
         }

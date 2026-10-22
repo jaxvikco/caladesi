@@ -34,6 +34,24 @@ public sealed partial class Binder
         return e;
     }
 
+    /// <summary>Gives a target-typed placeholder (collection literal, lambda) its natural type when it is used as a receiver, indexed value or callee.</summary>
+    private BoundExpression BindNaturalType(BoundExpression e, SyntaxNode syntax)
+    {
+        if (e is not BoundUnbound u)
+        {
+            return e;
+        }
+
+        BoundExpression bound = u.BindToType(null);
+        if (bound is BoundUnbound)
+        {
+            Report(Descriptors.CannotInferType, syntax);
+            return Bad(syntax, bound);
+        }
+
+        return bound;
+    }
+
     /// <summary>Binds an expression that must produce a value (not a type, namespace, or module).</summary>
     internal BoundExpression BindValue(ExpressionSyntax syntax, TypeSymbol? target = null)
     {
@@ -302,6 +320,8 @@ public sealed partial class Binder
             {
                 case "undefined": Report(Descriptors.UndefinedNotAllowed, span); return Bad(syntax);
                 case "any": Report(Descriptors.AnyNotAllowed, span); return Bad(syntax);
+                case "NaN": Report(Descriptors.NotSupportedUseInstead, span, name, "double.NaN"); return Bad(syntax);
+                case "Infinity": Report(Descriptors.NotSupportedUseInstead, span, name, "double.PositiveInfinity"); return Bad(syntax);
             }
         }
         Report(Descriptors.NameNotFound, span, name);
@@ -383,7 +403,7 @@ public sealed partial class Binder
             {
                 if (cases[i].Equals(targetBase))
                 {
-                    return new BoundTypeTest(UnwrapNullableValue(e), targetBase, BoolType, TypeTestKind.UnionCase, i) { Syntax = io };
+                    return new BoundTypeTest(UnwrapNullableValue(e), targetBase, BoolType, TypeTestKind.UnionCase, i) { Syntax = io, OperandWasNullable = source is NullableTypeSymbol };
                 }
             }
         }

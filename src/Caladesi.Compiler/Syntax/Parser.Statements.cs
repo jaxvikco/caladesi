@@ -6,6 +6,17 @@ public sealed partial class Parser
 {
     private StatementSyntax ParseStatement(bool _1 = false)
     {
+        if (!EnterNesting())
+        {
+            return new EmptyStatementSyntax(Missing(SyntaxKind.SemicolonToken));
+        }
+
+        try { return ParseStatementCore(); }
+        finally { ExitNesting(); }
+    }
+
+    private StatementSyntax ParseStatementCore()
+    {
         switch (Kind)
         {
             case SyntaxKind.OpenBraceToken: return ParseBlock();

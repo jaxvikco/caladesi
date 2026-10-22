@@ -460,7 +460,7 @@ public abstract class BoundTreeRewriter
     {
         ArgumentNullException.ThrowIfNull(n);
         BoundExpression e = VisitExpr(n.Expression);
-        return ReferenceEquals(e, n.Expression) ? n : new BoundYieldReturn(e) { Syntax = n.Syntax };
+        return ReferenceEquals(e, n.Expression) ? n : new BoundYieldReturn(e) { Syntax = n.Syntax, DisposeTarget = n.DisposeTarget };
     }
 
     protected virtual BoundNode VisitSequencePoint(BoundSequencePoint n)

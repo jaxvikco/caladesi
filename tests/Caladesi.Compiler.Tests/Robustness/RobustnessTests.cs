@@ -114,17 +114,16 @@ public class RobustnessTests
     [TestMethod]
     public void EmitIsDeterministic()
     {
-        foreach (string? source in SampleSources().Take(6))
+        // whole sample directories: a multi-file sample compiled from Program.cala alone fails, which would skip the byte comparison
+        foreach (string sample in Emit.SampleProgramTests.RunnableSamples())
         {
+            (string main, (string, string)[] more) = Emit.SampleProgramTests.Load(sample);
             using MemoryStream a = new();
             using MemoryStream b = new();
-            EmitResult ra = TestCompiler.Create(source).Emit(a);
-            EmitResult rb = TestCompiler.Create(source).Emit(b);
-            Assert.AreEqual(ra.Success, rb.Success);
-            if (ra.Success)
-            {
-                CollectionAssert.AreEqual(a.ToArray(), b.ToArray());
-            }
+            EmitResult ra = TestCompiler.Create(main, OutputKind.ConsoleApplication, "/proj/main.cala", more).Emit(a);
+            EmitResult rb = TestCompiler.Create(main, OutputKind.ConsoleApplication, "/proj/main.cala", more).Emit(b);
+            Assert.IsTrue(ra.Success && rb.Success, sample + " did not compile: " + TestCompiler.Format(ra.Diagnostics));
+            CollectionAssert.AreEqual(a.ToArray(), b.ToArray(), sample + " is not deterministic");
         }
     }
 }

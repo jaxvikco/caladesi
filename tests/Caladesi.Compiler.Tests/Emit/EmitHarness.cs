@@ -19,7 +19,19 @@ internal static class EmitHarness
     /// <summary>Compiles, loads into a collectible context, runs the entry point and returns captured stdout.</summary>
     public static (string Output, int ExitCode) Run(string source, params (string path, string text)[] more)
     {
-        Compilation comp = TestCompiler.Create(source, OutputKind.ConsoleApplication, "/proj/main.cala", more);
+        return Execute(TestCompiler.Create(source, OutputKind.ConsoleApplication, "/proj/main.cala", more));
+    }
+
+    /// <summary>Like <see cref="Run"/> with extra reference assemblies (for example a C# fixture in the test assembly).</summary>
+    public static (string Output, int ExitCode) RunWithReferences(string source, params string[] extraReferences)
+    {
+        List<string> paths = [.. TestReferences.Paths, typeof(Runtime.CaladesiUnionAttribute).Assembly.Location, .. extraReferences];
+        CompilationOptions options = new() { OutputKind = OutputKind.ConsoleApplication, AssemblyName = "Test", RootNamespace = "Test", ProjectDirectory = "/proj" };
+        return Execute(Compilation.Create(options, [Compiler.Syntax.SyntaxTree.ParseText(source, "/proj/main.cala")], Compiler.Symbols.Metadata.ReferenceSet.Create(paths)));
+    }
+
+    private static (string Output, int ExitCode) Execute(Compilation comp)
+    {
         using MemoryStream pe = new();
         using MemoryStream pdb = new();
         EmitResult result = comp.Emit(pe, pdb, "Test.pdb");

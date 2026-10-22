@@ -52,9 +52,9 @@ internal sealed partial class MethodBodyEmitter
                 break;
             case ConversionKind.Boxing:
                 EmitExpression(c.Operand, true);
-                if (EmitModule.IsValueTypeLike(_m.ClrType(from)) || from is TypeParameterSymbol || EmitModule.IsNullableValue(from))
+                if (EmitModule.IsValueTypeLike(_m.ClrType(from)) || from.StripNullable() is TypeParameterSymbol || EmitModule.IsNullableValue(from))
                 {
-                    _il.Token(ILOpCode.Box, _m.GetTypeEntity(from), 0);
+                    _il.Token(ILOpCode.Box, _m.GetTypeEntity(from.StripNullable() is TypeParameterSymbol tp ? tp : from), 0);
                 }
 
                 break;
@@ -132,6 +132,11 @@ internal sealed partial class MethodBodyEmitter
         ImmutableArray<TypeSymbol> cases = unionType.UnionCases;
         TypeSymbol caseType = c.CaseIndex >= 0 && c.CaseIndex < cases.Length ? cases[c.CaseIndex] : from;
         // convert to the case type first when needed (e.g. int -> double case)
+        if (c.CaseIndex >= 0 && c.CaseIndex < cases.Length && !from.Equals(caseType) && IsNumericKind(from) && IsNumericKind(caseType))
+        {
+            EmitNumericConversion(from, caseType);
+        }
+
         MethodSymbol ctor = unionType.InstanceConstructors.First(k => k.Parameters.Length == 1 && k.Parameters[0].Type.Equals(caseType));
         _il.Call(ILOpCode.Newobj, _m.GetMethodEntity(ctor), 1, 1);
     }
@@ -211,6 +216,11 @@ internal sealed partial class MethodBodyEmitter
         return a.AllInterfaces.Any(i => i.Equals(b)) || b.SpecialType == SpecialType.Object;
     }
 
+    private static bool IsNumericKind(TypeSymbol t)
+    {
+        return t is not NullableTypeSymbol && (t.SpecialType.IsNumeric() || t.SpecialType == SpecialType.Decimal);
+    }
+
     private void EmitLiftedNumeric(BoundConversion c)
     {
         NullableTypeSymbol from = (NullableTypeSymbol)c.Operand.Type!;
@@ -256,7 +266,7 @@ internal sealed partial class MethodBodyEmitter
             NamedTypeSymbol dec = _c.GetSpecialType(SpecialType.Decimal);
             NamedTypeSymbol fromT = _c.GetSpecialType(from);
             NamedTypeSymbol toT = _c.GetSpecialType(to);
-            string name = from == SpecialType.Decimal ? "op_Explicit" : "op_Implicit";
+            string name = from is SpecialType.Decimal or SpecialType.Single or SpecialType.Double ? "op_Explicit" : "op_Implicit"; // decimal has no implicit conversion from floating point
             MethodSymbol? m = null;
             foreach (MethodSymbol cand in dec.GetMembers(name).OfType<MethodSymbol>())
             {
@@ -308,7 +318,7 @@ internal sealed partial class MethodBodyEmitter
                 _il.Op(from is SpecialType.UInt32 or SpecialType.UInt16 or SpecialType.Byte or SpecialType.Char or SpecialType.UIntPtr ? ILOpCode.Conv_u8 : ILOpCode.Conv_i8, 0);
                 break;
             case SpecialType.UInt64:
-                _il.Op(unsignedFrom ? ILOpCode.Conv_u8 : ILOpCode.Conv_i8, 0);
+                _il.Op(unsignedFrom || from is SpecialType.Single or SpecialType.Double ? ILOpCode.Conv_u8 : ILOpCode.Conv_i8, 0);
                 break;
             case SpecialType.Single:
                 if (unsignedFrom)

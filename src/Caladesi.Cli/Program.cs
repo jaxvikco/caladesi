@@ -96,7 +96,8 @@ static int Run(string[] args)
             Console.WriteLine(line);
         }
     }
-    if (!result.Success)
+    // an unreadable reference (CAL0100) is an error even when the sources themselves compile
+    if (!result.Success || refDiags.Items.Any(d => d.EffectiveSeverity == DiagnosticSeverity.Error))
     {
         return 1;
     }

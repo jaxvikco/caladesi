@@ -246,7 +246,8 @@ public sealed partial class Binder
                     Narrowings whenTrue = new([(tp, tt.Target)]);
                     Narrowings whenFalse = Narrowings.Empty;
                     TypeSymbol? opType = tt.Operand.Type?.StripNullable();
-                    if (opType is NamedTypeSymbol { IsUnionType: true } u)
+                    // for `A | B | null` the false branch may still be null, so only a non-nullable union narrows to its remaining case
+                    if (opType is NamedTypeSymbol { IsUnionType: true } u && !tt.OperandWasNullable)
                     {
                         List<TypeSymbol> rest = [.. u.UnionCases.Where(c => !c.Equals(tt.Target))];
                         if (rest.Count == 1)
@@ -262,14 +263,9 @@ public sealed partial class Binder
         return (Narrowings.Empty, Narrowings.Empty);
     }
 
-    /// <summary>Removes narrowings invalidated by assignments inside <paramref name="syntax"/> (loop bodies, lambdas).</summary>
-    private void InvalidateAssignedIn(SyntaxNode syntax)
+    /// <summary>Names assigned to (or incremented) inside <paramref name="syntax"/>.</summary>
+    private static HashSet<string> AssignedNames(SyntaxNode syntax)
     {
-        if (_narrow.IsEmpty)
-        {
-            return;
-        }
-
         HashSet<string> names = new(StringComparer.Ordinal);
         foreach (SyntaxNode n in syntax.DescendantNodesAndSelf())
         {
@@ -291,6 +287,19 @@ public sealed partial class Binder
                 case MemberAccessExpressionSyntax ma: _ = names.Add(ma.Name.Name); break;
             }
         }
+
+        return names;
+    }
+
+    /// <summary>Removes narrowings invalidated by assignments inside <paramref name="syntax"/> (loop bodies, lambdas).</summary>
+    private void InvalidateAssignedIn(SyntaxNode syntax)
+    {
+        if (_narrow.IsEmpty)
+        {
+            return;
+        }
+
+        HashSet<string> names = AssignedNames(syntax);
         if (names.Count == 0)
         {
             return;
@@ -299,6 +308,37 @@ public sealed partial class Binder
         foreach (NarrowPath? k in _narrow.Keys.ToList())
         {
             if (k.Parts.Any(part => names.Contains(part.Name)))
+            {
+                _narrow = _narrow.Remove(k);
+            }
+        }
+    }
+
+    /// <summary>Names assigned inside lambdas and local functions bound so far: a call may run any of them.</summary>
+    private readonly HashSet<string> _lambdaAssignedNames = new(StringComparer.Ordinal);
+
+    /// <summary>A lambda may run at any later point, so what it assigns is no longer known to hold the narrowed type after it is created.</summary>
+    private void NoteLambdaAssignments(SyntaxNode body)
+    {
+        _lambdaAssignedNames.UnionWith(AssignedNames(body));
+        InvalidateAssignedIn(body);
+    }
+
+    /// <summary>
+    /// After a call into code that may assign: narrowed fields (through <c>this</c>, another object or a static) and variables that a lambda
+    /// assigns go back to their declared type. Calls into referenced assemblies cannot assign source variables, so they keep the narrowing.
+    /// </summary>
+    private void InvalidateAfterCall(MethodSymbol? callee)
+    {
+        if (_narrow.IsEmpty || callee == null || !(callee.IsFromSource || callee.ContainingType is { TypeKind: TypeKind.Delegate }))
+        {
+            return;
+        }
+
+        foreach (NarrowPath? k in _narrow.Keys.ToList())
+        {
+            bool throughMember = k.Parts.Length > 1 || k.Root is FieldSymbol or PropertySymbol;
+            if (throughMember || _lambdaAssignedNames.Contains(k.Root.Name))
             {
                 _narrow = _narrow.Remove(k);
             }

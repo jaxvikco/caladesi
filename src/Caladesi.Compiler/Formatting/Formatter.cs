@@ -60,10 +60,13 @@ public static class Formatter
                 raw = raw[..^1];
             }
 
-            bool inProtected = protectedSpans.Any(p => lineStart > p.Start && lineStart < p.End);
+            (int Start, int End) containing = protectedSpans.FirstOrDefault(p => lineStart > p.Start && lineStart < p.End);
+            bool inProtected = containing != default;
             if (inProtected)
             {
-                _ = sb.Append(raw);
+                // whitespace inside the token belongs to its value; whitespace after the token ends on this line is not
+                int tokenEnd = containing.End - lineStart;
+                _ = tokenEnd >= raw.Length ? sb.Append(raw) : sb.Append(raw[..tokenEnd]).Append(raw[tokenEnd..].TrimEnd());
                 blankRun = 0;
             }
             else
@@ -90,7 +93,9 @@ public static class Formatter
                         indentDepth = Math.Max(0, indentDepth - 1);
                     }
 
-                    _ = sb.Append(' ', indentDepth * indentSize).Append(trimmed.TrimEnd());
+                    // a multi-line token that starts on this line continues past its end: trailing whitespace is part of its value
+                    bool startsMultiLineToken = protectedSpans.Any(p => p.Start >= lineStart && p.Start < lineEnd && p.End > lineEnd);
+                    _ = sb.Append(' ', indentDepth * indentSize).Append(startsMultiLineToken ? raw.TrimStart() : trimmed);
                 }
             }
             if (hasNewline)

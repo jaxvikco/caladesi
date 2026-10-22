@@ -32,7 +32,7 @@ public class SampleProgramTests
             .Select(Path.GetFileName)!;
     }
 
-    private static (string main, (string, string)[] more) Load(string sample)
+    internal static (string main, (string, string)[] more) Load(string sample)
     {
         string dir = Path.Combine(SamplesRoot(), sample);
         string main = File.ReadAllText(Path.Combine(dir, "Program.cala"));

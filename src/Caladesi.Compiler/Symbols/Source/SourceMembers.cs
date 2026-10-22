@@ -299,6 +299,12 @@ public static class OverrideResolver
             return null;
         }
 
+        if (m.AssociatedSymbol is SourcePropertySymbol { } sp && m.MethodKind is MethodKind.PropertyGet or MethodKind.PropertySet)
+        {
+            PropertySymbol? bp = DeclarationChecker.FindOverriddenProperty(c, sp);
+            return m.MethodKind == MethodKind.PropertyGet ? bp?.GetMethod : bp?.SetMethod;
+        }
+
         for (NamedTypeSymbol? b = c.BaseType; b != null; b = b.BaseType)
         {
             foreach (Symbol cand in LookupNames(b, m.Name))
@@ -535,7 +541,35 @@ public sealed class SourcePropertySymbol(SourceFile file, NamedTypeSymbol contai
             _ => Declaration.Span,
         })];
 
-    public override TypeSymbol Type => _type ??= _typeFactory!(this);
+    private bool _typeInProgress;
+
+    public override TypeSymbol Type
+    {
+        get
+        {
+            if (_type != null)
+            {
+                return _type;
+            }
+
+            if (_typeInProgress)
+            {
+                // an inferred type that depends on itself (`static a = C.a`), as for fields
+                if (_container is SourceNamedType owner)
+                {
+                    owner.Compilation.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.RecursiveInference, File.FilePath, Declaration?.Span ?? default, Name));
+                }
+
+                return _type = ErrorTypeSymbol.Instance;
+            }
+
+            _typeInProgress = true;
+            _type = _typeFactory!(this);
+            _typeInProgress = false;
+            return _type;
+        }
+    }
+
     internal void SetType(TypeSymbol t)
     {
         _type = t;

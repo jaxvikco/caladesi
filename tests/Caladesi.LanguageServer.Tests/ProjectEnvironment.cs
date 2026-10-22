@@ -42,7 +42,7 @@ internal static class ProjectEnvironment
         if (string.IsNullOrEmpty(feed))
         {
             feed = Path.Combine(work, "packages");
-            if (!File.Exists(Path.Combine(feed, "Caladesi.Sdk.1.0.0.nupkg")) || !File.Exists(Path.Combine(feed, "Caladesi.Runtime.1.0.0.nupkg")))
+            if (IsStale(feed, RepoRoot))
             {
                 ProcessStartInfo info = new("bash") { WorkingDirectory = RepoRoot, RedirectStandardOutput = true, RedirectStandardError = true };
                 info.ArgumentList.Add(Path.Combine(RepoRoot, "eng", "pack.sh"));
@@ -71,6 +71,25 @@ internal static class ProjectEnvironment
         }
         _ = Directory.CreateDirectory(cache);
         return new Info(feed, cache, Path.Combine(Path.GetTempPath(), "cala-ls-tests-" + Guid.NewGuid().ToString("N")[..8]));
+    }
+
+    /// <summary>True when the packed feed is missing, or older than any compiler, SDK or runtime source it was packed from.</summary>
+    internal static bool IsStale(string feed, string repoRoot)
+    {
+        string[] packages = [Path.Join(feed, "Caladesi.Sdk.1.0.0.nupkg"), Path.Join(feed, "Caladesi.Runtime.1.0.0.nupkg")];
+        if (packages.Any(p => !File.Exists(p)))
+        {
+            return true;
+        }
+
+        DateTime packed = packages.Min(File.GetLastWriteTimeUtc);
+        string src = Path.Join(repoRoot, "src");
+        string[] roots = [Path.Join(repoRoot, "Directory.Build.props"), Path.Join(repoRoot, "Directory.Packages.props")];
+        IEnumerable<string> sources = Directory.EnumerateFiles(src, "*", SearchOption.AllDirectories)
+            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+                && !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .Concat(roots.Where(File.Exists));
+        return sources.Any(f => File.GetLastWriteTimeUtc(f) > packed);
     }
 
     internal sealed record Info(string Feed, string NuGetPackages, string WorkRoot)

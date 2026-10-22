@@ -160,10 +160,11 @@ public sealed partial class Binder
         if (cv.Exists) { resultType = underlying; }
         else
         {
-            TypeSymbol? common = BestCommonType([UnwrapForCommon(left), right], b);
+            // the result is never null, so the common type is that of the unwrapped left operand and the right one (`int | null ?? long` is `long`)
+            TypeSymbol? common = BestCommonType([UnwrapNullableValueIfNeeded(left), right], b);
             if (common == null) { Report(Descriptors.NoBestCommonType, b, lt.ToDisplayString(), rt.ToDisplayString()); return Bad(b, left, right); }
             resultType = common;
-            left = ConvertImplicit(UnwrapNullableValueIfNeeded(left), resultType, b.Left);
+            left = ConvertImplicit(left, lt is NullableTypeSymbol ? new NullableTypeSymbol(common) : common, b.Left);
         }
         if (lt is not NullableTypeSymbol && lt.IsValueType)
         {
@@ -180,7 +181,7 @@ public sealed partial class Binder
 
     private static BoundExpression UnwrapNullableValueIfNeeded(BoundExpression e)
     {
-        return e;
+        return e.Type is NullableTypeSymbol n ? new BoundConversion(e, ConversionKind.FromNullable, n.Underlying) { Syntax = e.Syntax } : e;
     }
 
     // ------------------------------------------------------------------ arithmetic / comparison
@@ -197,8 +198,11 @@ public sealed partial class Binder
     /// <summary>Binary numeric promotion; returns None if the operands have no common arithmetic type.</summary>
     private static SpecialType BinaryPromotion(BoundExpression l, BoundExpression r)
     {
-        SpecialType a = l.Type!.SpecialType;
-        SpecialType b = r.Type!.SpecialType;
+        return BinaryPromotion(l.Type!.SpecialType, r.Type!.SpecialType, l, r);
+    }
+
+    private static SpecialType BinaryPromotion(SpecialType a, SpecialType b, BoundExpression? l = null, BoundExpression? r = null)
+    {
         if (!a.IsNumeric() || !b.IsNumeric())
         {
             return SpecialType.None;
@@ -233,11 +237,11 @@ public sealed partial class Binder
         if (a == SpecialType.UInt64 || b == SpecialType.UInt64)
         {
             SpecialType other = a == SpecialType.UInt64 ? b : a;
-            BoundExpression otherExpr = a == SpecialType.UInt64 ? r : l;
+            BoundExpression? otherExpr = a == SpecialType.UInt64 ? r : l;
             if (other.IsSignedIntegral())
             {
                 // signed constant that fits is allowed
-                return otherExpr.ConstantValue is { Value: { } cv } && ConstantFits(cv, SpecialType.UInt64) ? SpecialType.UInt64 : SpecialType.None;
+                return otherExpr?.ConstantValue is { Value: { } cv } && ConstantFits(cv, SpecialType.UInt64) ? SpecialType.UInt64 : SpecialType.None;
             }
             return SpecialType.UInt64;
         }
@@ -249,9 +253,9 @@ public sealed partial class Binder
         if (a == SpecialType.UInt32 || b == SpecialType.UInt32)
         {
             SpecialType other = a == SpecialType.UInt32 ? b : a;
-            BoundExpression otherExpr = a == SpecialType.UInt32 ? r : l;
+            BoundExpression? otherExpr = a == SpecialType.UInt32 ? r : l;
             return other == SpecialType.Int32
-                ? otherExpr.ConstantValue is { Value: int ci } && ci >= 0 ? SpecialType.UInt32 : SpecialType.Int64
+                ? otherExpr?.ConstantValue is { Value: int ci } && ci >= 0 ? SpecialType.UInt32 : SpecialType.Int64
                 : SpecialType.UInt32;
         }
         return SpecialType.Int32;
@@ -283,18 +287,15 @@ public sealed partial class Binder
         bool isComparison = kind is >= BinaryOperatorKind.LessThan and <= BinaryOperatorKind.GreaterThanOrEqual;
 
         // string concatenation
-        if (kind == BinaryOperatorKind.Add && (lt.SpecialType == SpecialType.String || rt.SpecialType == SpecialType.String))
+        if (kind == BinaryOperatorKind.Add && (lt.StripNullable().SpecialType == SpecialType.String || rt.StripNullable().SpecialType == SpecialType.String))
         {
             if (lt.IsVoid || rt.IsVoid) { ReportBadOperands(syntax, kind, lt, rt); return Bad(syntax, left, right); }
-#pragma warning disable CA1508 // flow analysis cannot see that nullable-string operands reach here
-            if (lt is NullableTypeSymbol { Underlying.SpecialType: SpecialType.String } || rt is NullableTypeSymbol { Underlying.SpecialType: SpecialType.String } || lt.IsNullType || rt.IsNullType)
-#pragma warning restore CA1508
+            // null concatenates as empty (C# semantics), but only for an explicit `string | null` operand
+            BoundExpression? offender = lt is NullableTypeSymbol { Underlying.SpecialType: not SpecialType.String } ? left
+                : rt is NullableTypeSymbol { Underlying.SpecialType: not SpecialType.String } ? right : null;
+            if (offender != null)
             {
-                // allowed: null concatenates as empty (C# semantics) but only for explicit string | null
-            }
-            else if (lt is NullableTypeSymbol || rt is NullableTypeSymbol)
-            {
-                ReportPossiblyNullOperand(left, right, syntax);
+                Report(Descriptors.PossiblyNull, offender.Syntax ?? syntax, offender.Syntax?.ToFullString().Trim() ?? "expression");
                 return Bad(syntax, left, right);
             }
             BoundExpression l2 = lt.StripNullable().SpecialType == SpecialType.String ? left : left;
@@ -431,6 +432,12 @@ public sealed partial class Binder
             NamedTypeSymbol under = ((NamedTypeSymbol)lt).EnumUnderlyingType!;
             return MakeBinary(syntax, kind, left, ConvertImplicit(right, under, syntax), lt, under);
         }
+        else if (rt.TypeKind == TypeKind.Enum && lt.SpecialType.IsIntegral() && kind == BinaryOperatorKind.Add)
+        {
+            // `1 + Color.Red` : addition is symmetric, subtraction of an enum from a number is not defined
+            NamedTypeSymbol under = ((NamedTypeSymbol)rt).EnumUnderlyingType!;
+            return MakeBinary(syntax, kind, ConvertImplicit(left, under, syntax), right, rt, under);
+        }
         ReportBadOperands(syntax, kind, lt, rt);
         return Bad(syntax, left, right);
     }
@@ -512,8 +519,8 @@ public sealed partial class Binder
             BinaryOperatorKind.LessThanOrEqual => "<=",
             BinaryOperatorKind.GreaterThan => ">",
             BinaryOperatorKind.GreaterThanOrEqual => ">=",
-            BinaryOperatorKind.Equal => "===",
-            BinaryOperatorKind.NotEqual => "!==",
+            BinaryOperatorKind.Equal => "==",
+            BinaryOperatorKind.NotEqual => "!=",
             _ => "?",
         };
         Report(Descriptors.BadOperands, syntax is BinaryExpressionSyntax be ? be.OperatorToken.Span : syntax.Span, op, l.ToDisplayString(), r.ToDisplayString());
@@ -643,7 +650,18 @@ public sealed partial class Binder
         // anything else comparable via Object.Equals (value types without operators, nullable values, tuples)
         if (ClassifyImplicit(null, lu, ru).Exists || ClassifyImplicit(null, ru, lu).Exists)
         {
-            TypeSymbol common = ClassifyImplicit(null, lu, ru).Exists ? ru : lu;
+            // numeric operands of different widths (`long | null == int`) are compared in their common type, lifted to nullable
+            if (anyNullableValue && lu.SpecialType.IsNumeric() && ru.SpecialType.IsNumeric() && !lu.Equals(ru))
+            {
+                SpecialType promoted = BinaryPromotion(lu.SpecialType, ru.SpecialType);
+                if (promoted != SpecialType.None)
+                {
+                    NullableTypeSymbol lifted = new(Special(promoted));
+                    left = ConvertImplicit(left, lifted, syntax);
+                    right = ConvertImplicit(right, lifted, syntax);
+                }
+            }
+
             MethodSymbol objEquals = Special(SpecialType.Object).GetMembers("Equals").OfType<MethodSymbol>().First(m => m.IsStatic && m.Parameters.Length == 2);
             BoundCall call = new(null, objEquals, [BoxToObject(left, syntax), BoxToObject(right, syntax)]) { Syntax = syntax };
             return kind == BinaryOperatorKind.Equal ? call : new BoundUnary(UnaryOperatorKind.Not, call, BoolType) { Syntax = syntax };

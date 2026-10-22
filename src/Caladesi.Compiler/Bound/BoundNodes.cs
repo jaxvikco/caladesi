@@ -221,6 +221,9 @@ public sealed class BoundTypeTest(BoundExpression operand, TypeSymbol target, Ty
     public TypeSymbol Target { get; } = target;
     public TypeTestKind Kind { get; } = kind;
     public int CaseIndex { get; } = caseIndex;
+
+    /// <summary>The tested value was null-capable before the test unwrapped it, so a failed test does not rule null out.</summary>
+    public bool OperandWasNullable { get; init; }
 }
 
 public sealed class BoundLambda(LambdaSymbol symbol, BoundBlock body, TypeSymbol delegateType) : BoundExpression(delegateType)
@@ -427,6 +430,9 @@ public sealed class BoundTry(BoundBlock body, ImmutableArray<BoundCatch> catches
 public sealed class BoundYieldReturn(BoundExpression expression) : BoundStatement
 {
     public BoundExpression Expression { get; } = expression;
+
+    /// <summary>Where a resumed iterator that is being disposed continues (the innermost enclosing rewritten finally, or null for the end of the method). Set by the try rewriter; carried on the node so later tree rewrites keep it.</summary>
+    public LabelSymbol? DisposeTarget { get; init; }
 }
 
 public sealed class BoundYieldBreak : BoundStatement;

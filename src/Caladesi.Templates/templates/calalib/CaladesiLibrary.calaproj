@@ -1,4 +1,4 @@
-<Project Sdk="Caladesi.Sdk/1.0.0">
+<Project Sdk="Caladesi.Sdk/__CALADESI_VERSION__">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>

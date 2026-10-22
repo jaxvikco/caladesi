@@ -76,6 +76,7 @@ public sealed class ConstructedMethodSymbol(MethodSymbol definition, ImmutableAr
     public override bool IsSealed => _definition.IsSealed;
     public override bool IsExtensionMethod => _definition.IsExtensionMethod;
     public override bool IsAsync => _definition.IsAsync;
+    public override bool ReturnsByRef => _definition.ReturnsByRef;
     public override bool IsFromSource => _definition.IsFromSource;
     public override Symbol? AssociatedSymbol => _definition.AssociatedSymbol;
     public override ImmutableArray<SourceLocation> Locations => _definition.Locations;
@@ -127,6 +128,7 @@ public sealed class SubstitutedMethodSymbol(ConstructedNamedType container, Meth
     public override bool IsSealed => _original.IsSealed;
     public override bool IsExtensionMethod => _original.IsExtensionMethod;
     public override bool IsInitOnly => _original.IsInitOnly;
+    public override bool ReturnsByRef => _original.ReturnsByRef;
     public override bool IsFromSource => _original.IsFromSource;
     public override Symbol? AssociatedSymbol => _associated ?? _original.AssociatedSymbol;
     public override ImmutableArray<AttributeData> GetAttributes()

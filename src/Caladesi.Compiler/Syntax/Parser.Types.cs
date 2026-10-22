@@ -6,7 +6,13 @@ public sealed partial class Parser
 {
     private TypeSyntax ParseType()
     {
-        return IsStartOfFunctionType() ? ParseFunctionType() : ParseUnionType();
+        if (!EnterNesting())
+        {
+            return new MissingTypeSyntax(Missing(SyntaxKind.IdentifierToken));
+        }
+
+        try { return IsStartOfFunctionType() ? ParseFunctionType() : ParseUnionType(); }
+        finally { ExitNesting(); }
     }
 
     private bool IsStartOfFunctionType()

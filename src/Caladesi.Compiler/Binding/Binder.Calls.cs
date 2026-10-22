@@ -46,15 +46,29 @@ public sealed partial class Binder
             _ = BindArguments(inv.Arguments.Arguments);
             return Bad(inv);
         }
-        BoundExpression callee = BindExpression(calleeSyntax);
+        BoundExpression callee = BindNaturalType(BindExpression(calleeSyntax), calleeSyntax);
         if (callee is BoundBadExpression)
         {
             _ = BindArguments(inv.Arguments.Arguments);
             return Bad(inv, callee);
         }
-        return callee is BoundConditionalAccess ca && calleeSyntax is not ParenthesizedExpressionSyntax
+        BoundExpression result = callee is BoundConditionalAccess ca && calleeSyntax is not ParenthesizedExpressionSyntax
             ? LiftConditional(ca, inner => BindInvocationOn(inner, inv, target), inv)
             : BindInvocationOn(callee, inv, target);
+        InvalidateAfterCall(CalledMethod(result));
+        return result;
+    }
+
+    private static MethodSymbol? CalledMethod(BoundExpression e)
+    {
+        return e switch
+        {
+            BoundCall c => c.Method,
+            BoundObjectCreation { Constructor: { } ctor } => ctor,
+            BoundConditionalAccess { WhenNotNull: { } inner } => CalledMethod(inner),
+            BoundSequence { Value: { } v } => CalledMethod(v),
+            _ => null,
+        };
     }
 
     private BoundExpression BindInvocationOn(BoundExpression callee, InvocationExpressionSyntax inv, TypeSymbol? target)
@@ -143,6 +157,12 @@ public sealed partial class Binder
             }
 
             return Bad(inv, [mg, .. args]);
+        }
+
+        if (res.Ambiguity is var (first, second))
+        {
+            // the lookups above are not reported (an extension method may still apply), so an ambiguity is reported once a call is chosen
+            Report(Descriptors.AmbiguousCall, inv.Expression, mg.Name, Signature(first), Signature(second));
         }
 
         MethodSymbol m = res.Method;
@@ -237,9 +257,14 @@ public sealed partial class Binder
         TypeSyntax typeSyntax = n.Type;
         TypeSymbol type = BindNewType(typeSyntax, target);
         ImmutableArray<BoundExpression> args = n.Arguments != null ? BindArguments(n.Arguments.Arguments) : [];
-        return type.IsErrorType || args.Any(a => a is BoundBadExpression)
-            ? BadFrom(n, args.CastArray<BoundNode>())
-            : BuildObjectCreation(type, args, n, typeSyntax);
+        if (type.IsErrorType || args.Any(a => a is BoundBadExpression))
+        {
+            return BadFrom(n, args.CastArray<BoundNode>());
+        }
+
+        BoundExpression created = BuildObjectCreation(type, args, n, typeSyntax);
+        InvalidateAfterCall(CalledMethod(created));
+        return created;
     }
 
     private TypeSymbol BindNewType(TypeSyntax typeSyntax, TypeSymbol? target)
@@ -257,18 +282,77 @@ public sealed partial class Binder
                     return nt;
                 }
 
-                if (tt is NamedTypeSymbol)
+                if (tt is NamedTypeSymbol && InferNewTypeArguments(generic, tt) is { } inferred)
                 {
-                    return generic.Construct(InferNewTypeArguments(generic, tt) ?? generic.TypeArguments);
+                    return generic.Construct(inferred);
                 }
             }
         }
         return BindType(typeSyntax);
     }
 
-    private static ImmutableArray<TypeSymbol>? InferNewTypeArguments(NamedTypeSymbol _1, TypeSymbol _2)
+    /// <summary>Infers the type arguments of <paramref name="generic"/> from a target type it derives from or implements (`new List()` against `IList&lt;int&gt;`), or null when the target does not determine them all.</summary>
+    private static ImmutableArray<TypeSymbol>? InferNewTypeArguments(NamedTypeSymbol generic, TypeSymbol target)
     {
+        if (target is not NamedTypeSymbol { IsGenericType: true } tn)
+        {
+            return null;
+        }
+
+        TypeSymbol?[] solved = new TypeSymbol?[generic.TypeParameters.Length];
+        IEnumerable<NamedTypeSymbol> supers = generic.AllInterfaces.Concat(BaseChain(generic));
+        foreach (NamedTypeSymbol super in supers)
+        {
+            if (ReferenceEquals(super.OriginalDefinition, tn.OriginalDefinition) && Unify(super, tn, generic, solved))
+            {
+                return solved.All(s => s != null) ? [.. solved!] : null;
+            }
+        }
+
         return null;
+    }
+
+    private static IEnumerable<NamedTypeSymbol> BaseChain(NamedTypeSymbol t)
+    {
+        for (NamedTypeSymbol? b = t.BaseType; b != null; b = b.BaseType)
+        {
+            yield return b;
+        }
+    }
+
+    private static bool Unify(TypeSymbol pattern, TypeSymbol actual, NamedTypeSymbol generic, TypeSymbol?[] solved)
+    {
+        if (pattern is TypeParameterSymbol tp)
+        {
+            int i = generic.TypeParameters.IndexOf(tp);
+            if (i < 0)
+            {
+                return pattern.Equals(actual);
+            }
+
+            if (solved[i] != null)
+            {
+                return solved[i]!.Equals(actual);
+            }
+
+            solved[i] = actual;
+            return true;
+        }
+
+        if (pattern is NamedTypeSymbol { IsGenericType: true } pn && actual is NamedTypeSymbol an && ReferenceEquals(pn.OriginalDefinition, an.OriginalDefinition))
+        {
+            for (int i = 0; i < pn.TypeArguments.Length; i++)
+            {
+                if (!Unify(pn.TypeArguments[i], an.TypeArguments[i], generic, solved))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        return pattern.Equals(actual);
     }
 
     internal BoundExpression BuildObjectCreation(TypeSymbol type, ImmutableArray<BoundExpression> args, SyntaxNode syntax, SyntaxNode? typeSyntax = null)

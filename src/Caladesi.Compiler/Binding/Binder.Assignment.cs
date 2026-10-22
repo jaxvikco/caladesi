@@ -70,6 +70,11 @@ public sealed partial class Binder
                         Report(Descriptors.CannotAssignConst, syntax, f.Field.Name);
                         return Bad(syntax, target);
                     }
+                    if (!f.Field.IsStatic && f.Receiver is { Type.IsValueType: true } vr && !IsVariable(vr))
+                    {
+                        Report(Descriptors.ModifyValueTypeTemporary, syntax, ReceiverDisplay(vr, syntax));
+                        return Bad(syntax, target);
+                    }
                     return target;
                 }
             case BoundPropertyAccess pa:
@@ -106,6 +111,25 @@ public sealed partial class Binder
         }
         Report(Descriptors.InvalidAssignmentTarget, syntax);
         return Bad(syntax, target);
+    }
+
+    /// <summary>True when <paramref name="e"/> names storage (so a struct member write through it is seen by later reads) rather than a copy.</summary>
+    private static bool IsVariable(BoundExpression e)
+    {
+        return e switch
+        {
+            BoundPropertyAccess pa => pa.Property.GetMethod?.ReturnsByRef == true,
+            BoundCall c => c.Method.ReturnsByRef,
+            BoundFieldAccess { Field.IsStatic: false, Receiver: { Type.IsValueType: true } r } => IsVariable(r),
+            BoundConversion { Kind: ConversionKind.FromNullable or ConversionKind.UnionExtract } => false,
+            BoundConversion { Kind: ConversionKind.TypeOnly or ConversionKind.ExplicitReference or ConversionKind.Identity } c => IsVariable(c.Operand),
+            _ => true,
+        };
+    }
+
+    private static string ReceiverDisplay(BoundExpression e, SyntaxNode syntax)
+    {
+        return syntax is MemberAccessExpressionSyntax { Expression: { } inner } ? inner.ToFullString().Trim() : e.Type!.ToDisplayString();
     }
 
     private bool IsOwnMember(Symbol member)
@@ -348,10 +372,22 @@ public sealed partial class Binder
             return new BoundLocal(tmp) { Syntax = syntax };
         }
 
+        // a value-type receiver must stay addressable (array element, field of a struct variable): only its own operands are evaluated once
+        BoundExpression StabilizeReceiver(BoundExpression r)
+        {
+            return r switch
+            {
+                { Type.IsValueType: false } => Stabilize(r),
+                BoundArrayAccess aa => new BoundArrayAccess(Stabilize(aa.Array), Stabilize(aa.Index), aa.Type!) { Syntax = aa.Syntax },
+                BoundFieldAccess { Field.IsStatic: false, Receiver: { } fr } ff => new BoundFieldAccess(StabilizeReceiver(fr), ff.Field) { Syntax = ff.Syntax },
+                _ => IsSimpleOperand(r) ? r : Stabilize(r),
+            };
+        }
+
         BoundExpression stable = target switch
         {
-            BoundFieldAccess { Receiver: { } r } f => new BoundFieldAccess(Stabilize(r), f.Field) { Syntax = f.Syntax },
-            BoundPropertyAccess p => new BoundPropertyAccess(p.Receiver == null ? null : Stabilize(p.Receiver), p.Property,
+            BoundFieldAccess { Receiver: { } r } f => new BoundFieldAccess(StabilizeReceiver(r), f.Field) { Syntax = f.Syntax },
+            BoundPropertyAccess p => new BoundPropertyAccess(p.Receiver == null ? null : StabilizeReceiver(p.Receiver), p.Property,
                 [.. p.Arguments.Select(Stabilize)])
             { Syntax = p.Syntax, IsBaseAccess = p.IsBaseAccess },
             BoundArrayAccess aa => new BoundArrayAccess(Stabilize(aa.Array), Stabilize(aa.Index), aa.Type!) { Syntax = aa.Syntax },

@@ -3,7 +3,9 @@
     <CaladesiSdkRoot>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', '..'))</CaladesiSdkRoot>
     <CaladesiCompilerPath Condition="'$(CaladesiCompilerPath)' == ''">$(CaladesiSdkRoot)tools/net10.0/calac.dll</CaladesiCompilerPath>
     <CaladesiTasksAssembly Condition="'$(CaladesiTasksAssembly)' == ''">$(CaladesiSdkRoot)tasks/net10.0/Caladesi.Build.Tasks.dll</CaladesiTasksAssembly>
-    <CaladesiRuntimeVersion Condition="'$(CaladesiRuntimeVersion)' == ''">1.0.0</CaladesiRuntimeVersion>
+    <!-- Caladesi.Runtime is packed with the same version as this SDK. NuGet unpacks the SDK to <packages>/caladesi.sdk/<version>/, so the version is the folder name. -->
+    <_CaladesiSdkFolderName>$([System.IO.Path]::GetFileName($([System.IO.Path]::GetDirectoryName($(CaladesiSdkRoot)))))</_CaladesiSdkFolderName>
+    <CaladesiRuntimeVersion Condition="'$(CaladesiRuntimeVersion)' == '' and $([System.Text.RegularExpressions.Regex]::IsMatch('$(_CaladesiSdkFolderName)', '^[0-9]+[.][0-9]+[.][0-9]+'))">$(_CaladesiSdkFolderName)</CaladesiRuntimeVersion>
     <!-- Set to false to take Caladesi.Runtime from somewhere else (e.g. a ProjectReference). -->
     <CaladesiImplicitRuntimeReference Condition="'$(CaladesiImplicitRuntimeReference)' == ''">true</CaladesiImplicitRuntimeReference>
 
@@ -20,7 +22,7 @@
     <GenerateSelfRegisteredExtensions>false</GenerateSelfRegisteredExtensions>
   </PropertyGroup>
 
-  <ItemGroup Condition="'$(CaladesiImplicitRuntimeReference)' == 'true' and '$(DisableImplicitFrameworkReferences)' != 'true'">
+  <ItemGroup Condition="'$(CaladesiImplicitRuntimeReference)' == 'true' and '$(DisableImplicitFrameworkReferences)' != 'true' and '$(CaladesiRuntimeVersion)' != ''">
     <PackageReference Include="Caladesi.Runtime" Version="$(CaladesiRuntimeVersion)" IsImplicitlyDefined="true" />
   </ItemGroup>
 </Project>
