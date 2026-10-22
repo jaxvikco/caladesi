@@ -12,6 +12,20 @@
     <NoWarn>$(NoWarn);NU5128;NU5100;NU5105</NoWarn>
   </PropertyGroup>
   <ItemGroup>
-    <None Include="templates/**/*" Exclude="templates/**/bin/**;templates/**/obj/**" Pack="true" PackagePath="content/%(RecursiveDir)%(Filename)%(Extension)" />
+    <None Include="templates/**/*" Exclude="templates/**/bin/**;templates/**/obj/**;templates/**/*.calaproj" Pack="true" PackagePath="content/%(RecursiveDir)%(Filename)%(Extension)" />
+    <TemplateProject Include="templates/**/*.calaproj" Exclude="templates/**/bin/**;templates/**/obj/**" />
   </ItemGroup>
+  <!--
+    The template projects name the SDK as Caladesi.Sdk/__CALADESI_VERSION__: the packed Version replaces it, so a template always
+    asks for the SDK (and, through it, the runtime) that was packed together with it.
+  -->
+  <Target Name="StampTemplateVersion" BeforeTargets="_GetPackageFiles">
+    <ItemGroup>
+      <StampedProject Include="@(TemplateProject->'$(IntermediateOutputPath)stamped/%(RecursiveDir)%(Filename)%(Extension)')" OriginalPath="%(TemplateProject.FullPath)" PackageDir="%(TemplateProject.RecursiveDir)" />
+    </ItemGroup>
+    <WriteLinesToFile File="%(StampedProject.Identity)" Lines="$([System.IO.File]::ReadAllText('%(StampedProject.OriginalPath)').Replace('__CALADESI_VERSION__', '$(Version)'))" Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <ItemGroup>
+      <None Include="@(StampedProject)" Pack="true" PackagePath="content/%(StampedProject.PackageDir)%(StampedProject.Filename)%(StampedProject.Extension)" />
+    </ItemGroup>
+  </Target>
 </Project>
