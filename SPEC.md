@@ -14,7 +14,7 @@ Diagnostics have stable codes `CAL0001…`. Messages quoted below are abbreviate
 * `export` makes a declaration public. Without it a declaration is `internal`. `export default` does not exist (`CAL0026`).
 * Top-level functions, `const`s and `let`s of a file are static members of a static class named after the PascalCased file
   name (`shapes.cala` → `Shapes`). If the name collides with another type in the namespace the class gets a `Module` suffix.
-  Top-level variables are static fields; exported ones are public.
+  Top-level variables are static fields; exported ones are public. A top-level variable cannot have a ref struct type such as `Span<T>` (CAL0326).
 * Top-level statements are allowed in exactly one file of an `Exe` project (`CAL0171`); they form the program's entry method.
   The alternative is a function `main(args: string[])` or `main()` returning `void`, `int`, `Task` or `Task<int>`.
   Top-level `await` is allowed; async entry points are bridged to a synchronous `Main`.
@@ -228,3 +228,7 @@ constraints, object type literals outside type aliases, `async` constructors.
 * **Templates:** `dotnet new calaconsole | calalib | calatest` (install `Caladesi.Templates`).
 * **Language server:** `cala-ls` (stdio JSON-RPC): diagnostics, hover, completion, go to definition, find references,
   rename, document symbols, semantic tokens, signature help, formatting. The VS Code extension in `editors/vscode` launches it.
+
+## Known limitations
+
+* `await` inside a conditional access chain (`p?.m(await x)`) is reported as CAL0325; assign the awaited value to a local first.

@@ -43,6 +43,10 @@ internal sealed class DeclarationChecker(Compilation compilation)
         // aliases are resolved lazily; resolve them all so their errors are reported
         foreach (var file in compilation.SourceFiles)
             foreach (var alias in file.Aliases) { _ = alias.TypeParameters; _ = alias.Target; }
+        foreach (var type in compilation.AllSourceTypes.ToList())
+            foreach (var f in type.GetMembers().OfType<SourceFieldSymbol>()) {
+                if (f.IsModuleVariable && f.Type is NamedTypeSymbol { OriginalDefinition: Symbols.Metadata.MetadataNamedType { IsByRefLike: true } } && f.Declarator != null)
+                    _bag.Add(Diagnostic.Create(Descriptors.RefStructModuleVariable, type.File.FilePath, f.Declarator.Span, f.Name, f.Type.ToDisplayString())); }
         // decorators
         foreach (var type in compilation.AllSourceTypes.ToList())
         {
