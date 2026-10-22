@@ -90,4 +90,26 @@ public class ReviewRegressionTests
         for await (const t of d()) { break; } Console.WriteLine("d done");
         """, "fin-aparam\naparam done\nfin-a\na done\nfin-d\nd done\n");
     }
+
+    [TestMethod]
+    public void Item05_MethodSpecCacheSeparatesClassAndMethodTypeParameters()
+    {
+        Check("""
+        function id<T>(x: T): T { return x; }
+        function pick<T>(x: T): T { return id(x); }
+        class Box<T> { constructor(public v: T) {} get(): T { return id(this.v); } }
+        Console.WriteLine(pick(5));
+        Console.WriteLine(new Box<string>("s").get());
+        Console.WriteLine(new Box<int>(7).get());
+        """, "5\ns\n7\n");
+    }
+
+    [TestMethod]
+    public void Item06_RefReturnOfConstructedGenericIsDereferenced()
+    {
+        Check("""
+        function first(): int { const sp: Span<int> = [1, 2, 3]; return sp[0]; }
+        Console.WriteLine(first());
+        """, "1\n");
+    }
 }
