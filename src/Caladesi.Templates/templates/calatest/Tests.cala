@@ -4,7 +4,7 @@ import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.
 export class Tests {
   @TestMethod
   addsNumbers(): void {
-    if (2 + 2 !== 4) {
+    if (2 + 2 != 4) {
       throw new Exception("2 + 2 should be 4");
     }
   }
