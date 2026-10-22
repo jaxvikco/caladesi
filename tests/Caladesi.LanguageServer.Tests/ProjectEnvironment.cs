@@ -76,15 +76,15 @@ internal static class ProjectEnvironment
     /// <summary>True when the packed feed is missing, or older than any compiler, SDK or runtime source it was packed from.</summary>
     internal static bool IsStale(string feed, string repoRoot)
     {
-        string[] packages = [Path.Combine(feed, "Caladesi.Sdk.1.0.0.nupkg"), Path.Combine(feed, "Caladesi.Runtime.1.0.0.nupkg")];
+        string[] packages = [Path.Join(feed, "Caladesi.Sdk.1.0.0.nupkg"), Path.Join(feed, "Caladesi.Runtime.1.0.0.nupkg")];
         if (packages.Any(p => !File.Exists(p)))
         {
             return true;
         }
 
         DateTime packed = packages.Min(File.GetLastWriteTimeUtc);
-        string src = Path.Combine(repoRoot, "src");
-        string[] roots = [Path.Combine(repoRoot, "Directory.Build.props"), Path.Combine(repoRoot, "Directory.Packages.props")];
+        string src = Path.Join(repoRoot, "src");
+        string[] roots = [Path.Join(repoRoot, "Directory.Build.props"), Path.Join(repoRoot, "Directory.Packages.props")];
         IEnumerable<string> sources = Directory.EnumerateFiles(src, "*", SearchOption.AllDirectories)
             .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
                 && !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))

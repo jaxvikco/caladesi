@@ -8,12 +8,12 @@ public class TemplateSourceTests
     private static string TemplatesRoot()
     {
         DirectoryInfo? dir = new(AppContext.BaseDirectory);
-        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "Caladesi.slnx")))
+        while (dir != null && !File.Exists(Path.Join(dir.FullName, "Caladesi.slnx")))
         {
             dir = dir.Parent;
         }
 
-        return Path.Combine(dir!.FullName, "src", "Caladesi.Templates", "templates");
+        return Path.Join(dir!.FullName, "src", "Caladesi.Templates", "templates");
     }
 
     public static IEnumerable<string> TemplateSources()
