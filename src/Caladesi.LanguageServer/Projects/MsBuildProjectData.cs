@@ -15,7 +15,10 @@ internal sealed class MsBuildProjectData
     public List<string> References { get; } = [];
     public List<string> TestHooks { get; } = [];
 
-    public string Property(string name) => Properties.TryGetValue(name, out var v) ? v : "";
+    public string Property(string name)
+    {
+        return Properties.TryGetValue(name, out string? v) ? v : "";
+    }
 
     /// <summary>
     /// Parses the output of <c>dotnet msbuild -getProperty:… -getItem:…</c>. Anything printed before the JSON object (restore
@@ -23,25 +26,38 @@ internal sealed class MsBuildProjectData
     /// </summary>
     public static MsBuildProjectData? Parse(string output, string projectDirectory)
     {
-        var json = ExtractJson(output);
-        if (json == null) return null;
+        string? json = ExtractJson(output);
+        if (json == null)
+        {
+            return null;
+        }
+
         JsonDocument document;
         try { document = JsonDocument.Parse(json); }
         catch (JsonException) { return null; }
         using (document)
         {
-            var data = new MsBuildProjectData();
-            var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object) return null;
-            if (root.TryGetProperty("Properties", out var props) && props.ValueKind == JsonValueKind.Object)
-                foreach (var p in props.EnumerateObject())
-                    data.Properties[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() ?? "" : p.Value.ToString();
-            if (root.TryGetProperty("Items", out var items) && items.ValueKind == JsonValueKind.Object)
+            MsBuildProjectData data = new();
+            JsonElement root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
             {
-                data.Collect(items, "Compile", data.Compile, projectDirectory, path: true);
-                data.Collect(items, "CaladesiGlobalImport", data.GlobalImports, projectDirectory, path: false);
-                data.Collect(items, "ReferencePathWithRefAssemblies", data.References, projectDirectory, path: true);
-                data.Collect(items, "TestingPlatformBuilderHook", data.TestHooks, projectDirectory, path: false);
+                return null;
+            }
+
+            if (root.TryGetProperty(nameof(Properties), out JsonElement props) && props.ValueKind == JsonValueKind.Object)
+            {
+                foreach (JsonProperty p in props.EnumerateObject())
+                {
+                    data.Properties[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() ?? "" : p.Value.ToString();
+                }
+            }
+
+            if (root.TryGetProperty("Items", out JsonElement items) && items.ValueKind == JsonValueKind.Object)
+            {
+                Collect(items, "Compile", data.Compile, projectDirectory, path: true);
+                Collect(items, "CaladesiGlobalImport", data.GlobalImports, projectDirectory, path: false);
+                Collect(items, "ReferencePathWithRefAssemblies", data.References, projectDirectory, path: true);
+                Collect(items, "TestingPlatformBuilderHook", data.TestHooks, projectDirectory, path: false);
             }
             return data;
         }
@@ -49,44 +65,80 @@ internal sealed class MsBuildProjectData
 
     private static string? ExtractJson(string output)
     {
-        var index = 0;
+        int index = 0;
         while (index < output.Length)
         {
-            var end = output.IndexOf('\n', index);
-            if (end < 0) end = output.Length;
-            if (output.AsSpan(index, end - index).Trim().SequenceEqual("{")) return output[index..];
+            int end = output.IndexOf('\n', index);
+            if (end < 0)
+            {
+                end = output.Length;
+            }
+
+            if (output.AsSpan(index, end - index).Trim().SequenceEqual("{"))
+            {
+                return output[index..];
+            }
+
             index = end + 1;
         }
-        var first = output.IndexOf('{');
+        int first = output.IndexOf('{');
         return first >= 0 ? output[first..] : null;
     }
 
-    private void Collect(JsonElement items, string name, List<string> into, string projectDirectory, bool path)
+    private static void Collect(JsonElement items, string name, List<string> into, string projectDirectory, bool path)
     {
-        if (!items.TryGetProperty(name, out var array) || array.ValueKind != JsonValueKind.Array) return;
-        foreach (var item in array.EnumerateArray())
+        if (!items.TryGetProperty(name, out JsonElement array) || array.ValueKind != JsonValueKind.Array)
         {
-            if (item.ValueKind != JsonValueKind.Object) continue;
+            return;
+        }
+
+        foreach (JsonElement item in array.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
             string? value = null;
-            if (path && item.TryGetProperty("FullPath", out var full) && full.ValueKind == JsonValueKind.String) value = full.GetString();
-            if (string.IsNullOrEmpty(value) && item.TryGetProperty("Identity", out var id) && id.ValueKind == JsonValueKind.String) value = id.GetString();
-            if (string.IsNullOrEmpty(value)) continue;
-            if (path && !Path.IsPathRooted(value)) value = Path.GetFullPath(Path.Combine(projectDirectory, value));
+            if (path && item.TryGetProperty("FullPath", out JsonElement full) && full.ValueKind == JsonValueKind.String)
+            {
+                value = full.GetString();
+            }
+
+            if (string.IsNullOrEmpty(value) && item.TryGetProperty("Identity", out JsonElement id) && id.ValueKind == JsonValueKind.String)
+            {
+                value = id.GetString();
+            }
+
+            if (string.IsNullOrEmpty(value))
+            {
+                continue;
+            }
+
+            if (path && !Path.IsPathRooted(value))
+            {
+                value = Path.GetFullPath(Path.Combine(projectDirectory, value));
+            }
+
             into.Add(value);
         }
     }
 
     public CompilationOptions ToCompilationOptions(string projectPath)
     {
-        var projectDirectory = Path.GetDirectoryName(projectPath) ?? "";
-        var fileName = Path.GetFileNameWithoutExtension(projectPath);
-        var assemblyName = Property("AssemblyName");
-        var rootNamespace = Property("RootNamespace");
-        var outputType = Property("OutputType");
-        var version = Property("AssemblyVersion");
-        if (version.Length == 0) version = Property("Version");
-        var moniker = Property("TargetFrameworkMoniker");
-        var defaults = new CompilationOptions();
+        string projectDirectory = Path.GetDirectoryName(projectPath) ?? "";
+        string fileName = Path.GetFileNameWithoutExtension(projectPath);
+        string assemblyName = Property("AssemblyName");
+        string rootNamespace = Property("RootNamespace");
+        string outputType = Property("OutputType");
+        string version = Property("AssemblyVersion");
+        if (version.Length == 0)
+        {
+            version = Property("Version");
+        }
+
+        string moniker = Property("TargetFrameworkMoniker");
+        CompilationOptions defaults = new();
         return new CompilationOptions
         {
             AssemblyName = assemblyName.Length > 0 ? assemblyName : fileName,
@@ -105,13 +157,14 @@ internal sealed class MsBuildProjectData
         };
     }
 
-    private static ImmutableArray<string> Split(string value) =>
-        [.. value.Split([';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.Ordinal)];
+    private static ImmutableArray<string> Split(string value)
+    {
+        return [.. value.Split([';', ','], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.Ordinal)];
+    }
 
     private static Version? ParseVersion(string text)
     {
-        var core = text.Split('-', '+')[0];
-        if (!Version.TryParse(core, out var v)) return null;
-        return new Version(v.Major, v.Minor, Math.Max(v.Build, 0), Math.Max(v.Revision, 0));
+        string core = text.Split('-', '+')[0];
+        return !Version.TryParse(core, out Version? v) ? null : new Version(v.Major, v.Minor, Math.Max(v.Build, 0), Math.Max(v.Revision, 0));
     }
 }

@@ -1,5 +1,4 @@
 using System.Collections.Immutable;
-using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Security.Cryptography;
@@ -10,40 +9,51 @@ using Caladesi.Compiler.Symbols.Source;
 namespace Caladesi.Compiler.Emit;
 
 /// <summary>Emits a compilation as an assembly: owns the metadata builder and all handle caches.</summary>
-internal sealed partial class EmitModule
+internal sealed partial class EmitModule(Compilation compilation)
 {
-    private readonly Dictionary<AssemblySymbol, AssemblyReferenceHandle> _assemblyRefs = new();
-    private readonly Dictionary<NamedTypeSymbol, EntityHandle> _typeHandles = new();
-    private readonly Dictionary<(TypeSymbol, bool), TypeSpecificationHandle> _typeSpecs = new();
-    private readonly Dictionary<(Symbol, bool), EntityHandle> _memberRefs = new();
-    private readonly Dictionary<(EntityHandle, string, bool), MethodSpecificationHandle> _methodSpecs = new();
+    private readonly Dictionary<AssemblySymbol, AssemblyReferenceHandle> _assemblyRefs = [];
+    private readonly Dictionary<NamedTypeSymbol, EntityHandle> _typeHandles = [];
+    private readonly Dictionary<(TypeSymbol, bool), TypeSpecificationHandle> _typeSpecs = [];
+    private readonly Dictionary<(Symbol, bool), EntityHandle> _memberRefs = [];
+    private readonly Dictionary<(EntityHandle, string, bool), MethodSpecificationHandle> _methodSpecs = [];
 
-    public Compilation Compilation { get; }
+    public Compilation Compilation { get; } = compilation;
     public MetadataBuilder Metadata { get; } = new();
 
     /// <summary>Maps type parameters of an emitted generic method to class parameters when a method body is moved into a generic helper class.</summary>
     private Dictionary<TypeParameterSymbol, int>? _classTypeParameterMap;
-    internal void SetClassTypeParameterMap(Dictionary<TypeParameterSymbol, int>? map) => _classTypeParameterMap = map;
-
-    public EmitModule(Compilation compilation) => Compilation = compilation;
+    internal void SetClassTypeParameterMap(Dictionary<TypeParameterSymbol, int>? map)
+    {
+        _classTypeParameterMap = map;
+    }
 
     // ------------------------------------------------------------------ assembly / type references
 
     private AssemblyReferenceHandle GetAssemblyRef(AssemblySymbol asm)
     {
-        if (_assemblyRefs.TryGetValue(asm, out var h)) return h;
-        var md = (MetadataAssemblySymbol)asm;
-        var reader = md.Reader;
-        var def = reader.GetAssemblyDefinition();
-        var name = reader.GetString(def.Name);
-        var culture = def.Culture.IsNil ? null : reader.GetString(def.Culture);
-        var keyBlob = def.PublicKey.IsNil ? Array.Empty<byte>() : reader.GetBlobBytes(def.PublicKey);
+        if (_assemblyRefs.TryGetValue(asm, out AssemblyReferenceHandle h))
+        {
+            return h;
+        }
+
+        MetadataAssemblySymbol md = (MetadataAssemblySymbol)asm;
+        MetadataReader reader = md.Reader;
+        AssemblyDefinition def = reader.GetAssemblyDefinition();
+        string name = reader.GetString(def.Name);
+        string? culture = def.Culture.IsNil ? null : reader.GetString(def.Culture);
+        byte[] keyBlob = def.PublicKey.IsNil ? [] : reader.GetBlobBytes(def.PublicKey);
         BlobHandle token = default;
         if (keyBlob.Length > 0)
         {
-            var hash = SHA1.HashData(keyBlob);
-            var tokenBytes = new byte[8];
-            for (var i = 0; i < 8; i++) tokenBytes[i] = hash[hash.Length - 1 - i];
+#pragma warning disable CA5350 // ECMA-335 defines the public key token as the low 8 bytes of the SHA-1 of the public key
+            byte[] hash = SHA1.HashData(keyBlob);
+#pragma warning restore CA5350
+            byte[] tokenBytes = new byte[8];
+            for (int i = 0; i < 8; i++)
+            {
+                tokenBytes[i] = hash[hash.Length - 1 - i];
+            }
+
             token = Metadata.GetOrAddBlob(tokenBytes);
         }
         h = Metadata.AddAssemblyReference(Metadata.GetOrAddString(name), def.Version, culture == null ? default : Metadata.GetOrAddString(culture), token, 0, default);
@@ -55,14 +65,16 @@ internal sealed partial class EmitModule
     private EntityHandle GetTypeDefOrRef(NamedTypeSymbol type)
     {
         type = type.OriginalDefinition;
-        if (_typeHandles.TryGetValue(type, out var h)) return h;
+        if (_typeHandles.TryGetValue(type, out EntityHandle h))
+        {
+            return h;
+        }
+
         if (type is MetadataNamedType mt)
         {
-            EntityHandle scope;
-            if (type.ContainingSymbol is NamedTypeSymbol outer) scope = GetTypeDefOrRef(outer);
-            else scope = GetAssemblyRef(mt.Assembly);
-            var raw = type.MetadataName;
-            var ns = type.ContainingSymbol is NamedTypeSymbol ? default : (type.ContainingSymbol as NamespaceSymbol)?.ToDisplayString() ?? mt.Namespace;
+            EntityHandle scope = type.ContainingSymbol is NamedTypeSymbol outer ? GetTypeDefOrRef(outer) : (EntityHandle)GetAssemblyRef(mt.Assembly);
+            string raw = type.MetadataName;
+            string? ns = type.ContainingSymbol is NamedTypeSymbol ? default : (type.ContainingSymbol as NamespaceSymbol)?.ToDisplayString() ?? mt.Namespace;
             h = Metadata.AddTypeReference(scope, ns == default || string.IsNullOrEmpty(ns) ? default : Metadata.GetOrAddString(ns), Metadata.GetOrAddString(raw));
         }
         else if (type is ErrorTypeSymbol or UnsupportedTypeSymbol)
@@ -77,9 +89,10 @@ internal sealed partial class EmitModule
         return h;
     }
 
-    internal void RegisterTypeDefinition(NamedTypeSymbol type, TypeDefinitionHandle handle) => _typeHandles[type] = handle;
-
-    private bool IsEmittedStructLike(NamedTypeSymbol t) => t.TypeKind is TypeKind.Struct or TypeKind.Enum;
+    internal void RegisterTypeDefinition(NamedTypeSymbol type, TypeDefinitionHandle handle)
+    {
+        _typeHandles[type] = handle;
+    }
 
     // ------------------------------------------------------------------ CLR type mapping
 
@@ -88,10 +101,10 @@ internal sealed partial class EmitModule
     {
         if (t is NullableTypeSymbol n)
         {
-            var u = ClrType(n.Underlying);
+            TypeSymbol u = ClrType(n.Underlying);
             if (u.IsValueType || u is TypeParameterSymbol { HasValueTypeConstraint: true })
             {
-                var nullable = Compilation.GetSpecialType(SpecialType.Nullable);
+                NamedTypeSymbol nullable = Compilation.GetSpecialType(SpecialType.Nullable);
                 return nullable.Construct(u);
             }
             return u;
@@ -99,23 +112,41 @@ internal sealed partial class EmitModule
         return t;
     }
 
-    public bool IsNullableValue(TypeSymbol t) =>
-        t is NullableTypeSymbol n && (n.Underlying.IsValueType || n.Underlying is TypeParameterSymbol { HasValueTypeConstraint: true });
+    public static bool IsNullableValue(TypeSymbol t)
+    {
+        return t is NullableTypeSymbol n && (n.Underlying.IsValueType || n.Underlying is TypeParameterSymbol { HasValueTypeConstraint: true });
+    }
 
-    public static bool IsValueTypeLike(TypeSymbol t) =>
-        t.IsValueType || t is TypeParameterSymbol { HasValueTypeConstraint: true };
+    public static bool IsValueTypeLike(TypeSymbol t)
+    {
+        return t.IsValueType || t is TypeParameterSymbol { HasValueTypeConstraint: true };
+    }
 
     // ------------------------------------------------------------------ signatures
 
-    private static PrimitiveTypeCode? Primitive(SpecialType t) => t switch
+    private static PrimitiveTypeCode? Primitive(SpecialType t)
     {
-        SpecialType.Boolean => PrimitiveTypeCode.Boolean, SpecialType.Char => PrimitiveTypeCode.Char, SpecialType.SByte => PrimitiveTypeCode.SByte,
-        SpecialType.Byte => PrimitiveTypeCode.Byte, SpecialType.Int16 => PrimitiveTypeCode.Int16, SpecialType.UInt16 => PrimitiveTypeCode.UInt16,
-        SpecialType.Int32 => PrimitiveTypeCode.Int32, SpecialType.UInt32 => PrimitiveTypeCode.UInt32, SpecialType.Int64 => PrimitiveTypeCode.Int64,
-        SpecialType.UInt64 => PrimitiveTypeCode.UInt64, SpecialType.Single => PrimitiveTypeCode.Single, SpecialType.Double => PrimitiveTypeCode.Double,
-        SpecialType.String => PrimitiveTypeCode.String, SpecialType.Object => PrimitiveTypeCode.Object, SpecialType.IntPtr => PrimitiveTypeCode.IntPtr,
-        SpecialType.UIntPtr => PrimitiveTypeCode.UIntPtr, _ => null,
-    };
+        return t switch
+        {
+            SpecialType.Boolean => PrimitiveTypeCode.Boolean,
+            SpecialType.Char => PrimitiveTypeCode.Char,
+            SpecialType.SByte => PrimitiveTypeCode.SByte,
+            SpecialType.Byte => PrimitiveTypeCode.Byte,
+            SpecialType.Int16 => PrimitiveTypeCode.Int16,
+            SpecialType.UInt16 => PrimitiveTypeCode.UInt16,
+            SpecialType.Int32 => PrimitiveTypeCode.Int32,
+            SpecialType.UInt32 => PrimitiveTypeCode.UInt32,
+            SpecialType.Int64 => PrimitiveTypeCode.Int64,
+            SpecialType.UInt64 => PrimitiveTypeCode.UInt64,
+            SpecialType.Single => PrimitiveTypeCode.Single,
+            SpecialType.Double => PrimitiveTypeCode.Double,
+            SpecialType.String => PrimitiveTypeCode.String,
+            SpecialType.Object => PrimitiveTypeCode.Object,
+            SpecialType.IntPtr => PrimitiveTypeCode.IntPtr,
+            SpecialType.UIntPtr => PrimitiveTypeCode.UIntPtr,
+            _ => null,
+        };
+    }
 
     public void EncodeType(SignatureTypeEncoder enc, TypeSymbol t)
     {
@@ -123,47 +154,68 @@ internal sealed partial class EmitModule
         switch (t)
         {
             case ArrayTypeSymbol a:
-                if (a.Rank == 1) EncodeType(enc.SZArray(), a.ElementType);
+                if (a.Rank == 1)
+                {
+                    EncodeType(enc.SZArray(), a.ElementType);
+                }
                 else
                 {
-                    enc.Array(out var elem, out var shape);
+                    enc.Array(out SignatureTypeEncoder elem, out ArrayShapeEncoder shape);
                     EncodeType(elem, a.ElementType);
-                    shape.Shape(a.Rank, ImmutableArray<int>.Empty, ImmutableArray<int>.Empty);
+                    shape.Shape(a.Rank, [], []);
                 }
                 return;
             case TypeParameterSymbol tp:
-                if (_classTypeParameterMap != null && _classTypeParameterMap.TryGetValue(tp, out var classOrdinal)) enc.GenericTypeParameter(classOrdinal);
-                else if (tp.IsMethodTypeParameter) enc.GenericMethodTypeParameter(tp.Ordinal);
-                else enc.GenericTypeParameter(tp.Ordinal);
+                if (_classTypeParameterMap != null && _classTypeParameterMap.TryGetValue(tp, out int classOrdinal))
+                {
+                    enc.GenericTypeParameter(classOrdinal);
+                }
+                else if (tp.IsMethodTypeParameter)
+                {
+                    enc.GenericMethodTypeParameter(tp.Ordinal);
+                }
+                else
+                {
+                    enc.GenericTypeParameter(tp.Ordinal);
+                }
+
                 return;
             case NamedTypeSymbol nt:
-            {
-                var p = Primitive(nt.SpecialType);
-                if (p != null && nt.IsDefinition) { enc.PrimitiveType(p.Value); return; }
-                if (nt.IsGenericType && !ReferenceEquals(nt, nt.OriginalDefinition) || (nt.IsGenericType && nt is ConstructedNamedType))
                 {
-                    var def = nt.OriginalDefinition;
-                    var gargs = enc.GenericInstantiation(GetTypeDefOrRef(def), nt.TypeArguments.Length, IsValueTypeLike(def));
-                    foreach (var arg in nt.TypeArguments) EncodeType(gargs.AddArgument(), arg);
+                    PrimitiveTypeCode? p = Primitive(nt.SpecialType);
+                    if (p != null && nt.IsDefinition) { enc.PrimitiveType(p.Value); return; }
+                    if ((nt.IsGenericType && !ReferenceEquals(nt, nt.OriginalDefinition)) || (nt.IsGenericType && nt is ConstructedNamedType))
+                    {
+                        NamedTypeSymbol def = nt.OriginalDefinition;
+                        GenericTypeArgumentsEncoder gargs = enc.GenericInstantiation(GetTypeDefOrRef(def), nt.TypeArguments.Length, IsValueTypeLike(def));
+                        foreach (TypeSymbol arg in nt.TypeArguments)
+                        {
+                            EncodeType(gargs.AddArgument(), arg);
+                        }
+
+                        return;
+                    }
+                    if (nt.IsGenericType)
+                    {
+                        // the generic definition referenced inside itself: instantiate over its own parameters
+                        GenericTypeArgumentsEncoder gargs2 = enc.GenericInstantiation(GetTypeDefOrRef(nt), nt.TypeParameters.Length, IsValueTypeLike(nt));
+                        foreach (TypeParameterSymbol tp2 in nt.TypeParameters)
+                        {
+                            EncodeType(gargs2.AddArgument(), tp2);
+                        }
+
+                        return;
+                    }
+                    enc.Type(GetTypeDefOrRef(nt), IsValueTypeLike(nt));
                     return;
                 }
-                if (nt.IsGenericType)
-                {
-                    // the generic definition referenced inside itself: instantiate over its own parameters
-                    var gargs2 = enc.GenericInstantiation(GetTypeDefOrRef(nt), nt.TypeParameters.Length, IsValueTypeLike(nt));
-                    foreach (var tp2 in nt.TypeParameters) EncodeType(gargs2.AddArgument(), tp2);
-                    return;
-                }
-                enc.Type(GetTypeDefOrRef(nt), IsValueTypeLike(nt));
-                return;
-            }
         }
         throw new InvalidOperationException("Cannot encode type " + t.ToDisplayString());
     }
 
     private BlobHandle EncodeTypeBlob(TypeSymbol t)
     {
-        var bb = new BlobBuilder();
+        BlobBuilder bb = new();
         EncodeType(new SignatureTypeEncoder(bb), t);
         return Metadata.GetOrAddBlob(bb);
     }
@@ -172,8 +224,16 @@ internal sealed partial class EmitModule
     public EntityHandle GetTypeEntity(TypeSymbol t)
     {
         t = ClrType(t);
-        if (t is NamedTypeSymbol nt && !nt.IsGenericType) return GetTypeDefOrRef(nt);
-        if (_typeSpecs.TryGetValue((t, _classTypeParameterMap != null), out var h)) return h;
+        if (t is NamedTypeSymbol nt && !nt.IsGenericType)
+        {
+            return GetTypeDefOrRef(nt);
+        }
+
+        if (_typeSpecs.TryGetValue((t, _classTypeParameterMap != null), out TypeSpecificationHandle h))
+        {
+            return h;
+        }
+
         h = Metadata.AddTypeSpecification(EncodeTypeBlob(t));
         _typeSpecs[(t, _classTypeParameterMap != null)] = h;
         return h;
@@ -181,37 +241,44 @@ internal sealed partial class EmitModule
 
     private void EncodeParameters(ParametersEncoder pe, ImmutableArray<ParameterSymbol> ps)
     {
-        foreach (var p in ps)
+        foreach (ParameterSymbol p in ps)
         {
-            var e = pe.AddParameter();
+            ParameterTypeEncoder e = pe.AddParameter();
             EncodeType(e.Type(p.RefKind != RefKind.None), p.Type);
         }
     }
 
     private BlobHandle EncodeMethodSignature(MethodSymbol def)
     {
-        var bb = new BlobBuilder();
-        var enc = new BlobEncoder(bb).MethodSignature(SignatureCallingConvention.Default, def.Arity, isInstanceMethod: !def.IsStatic);
-        enc.Parameters(def.Parameters.Length, out var ret, out var ps);
-        var rt = def.ReturnType;
-        if (rt.IsVoid) ret.Void();
-        else EncodeType(ret.Type(def.ReturnsByRef), rt);
+        BlobBuilder bb = new();
+        MethodSignatureEncoder enc = new BlobEncoder(bb).MethodSignature(SignatureCallingConvention.Default, def.Arity, isInstanceMethod: !def.IsStatic);
+        enc.Parameters(def.Parameters.Length, out ReturnTypeEncoder ret, out ParametersEncoder ps);
+        TypeSymbol rt = def.ReturnType;
+        if (rt.IsVoid)
+        {
+            ret.Void();
+        }
+        else
+        {
+            EncodeType(ret.Type(def.ReturnsByRef), rt);
+        }
+
         EncodeParameters(ps, def.Parameters);
         return Metadata.GetOrAddBlob(bb);
     }
 
     private BlobHandle EncodeFieldSignature(TypeSymbol type)
     {
-        var bb = new BlobBuilder();
+        BlobBuilder bb = new();
         EncodeType(new BlobEncoder(bb).FieldSignature(), type);
         return Metadata.GetOrAddBlob(bb);
     }
 
     private BlobHandle EncodePropertySignature(PropertySymbol p)
     {
-        var bb = new BlobBuilder();
-        var enc = new BlobEncoder(bb).PropertySignature(isInstanceProperty: !p.IsStatic);
-        enc.Parameters(p.Parameters.Length, out var ret, out var ps);
+        BlobBuilder bb = new();
+        MethodSignatureEncoder enc = new BlobEncoder(bb).PropertySignature(isInstanceProperty: !p.IsStatic);
+        enc.Parameters(p.Parameters.Length, out ReturnTypeEncoder ret, out ParametersEncoder ps);
         EncodeType(ret.Type(false), p.Type);
         EncodeParameters(ps, p.Parameters);
         return Metadata.GetOrAddBlob(bb);
@@ -219,62 +286,93 @@ internal sealed partial class EmitModule
 
     // ------------------------------------------------------------------ member references
 
-    private readonly Dictionary<MethodSymbol, MethodDefinitionHandle> _methodDefs = new();
-    private readonly Dictionary<FieldSymbol, FieldDefinitionHandle> _fieldDefs = new();
-    private readonly Dictionary<PropertySymbol, PropertyDefinitionHandle> _propertyDefs = new();
+    private readonly Dictionary<MethodSymbol, MethodDefinitionHandle> _methodDefs = [];
+    private readonly Dictionary<FieldSymbol, FieldDefinitionHandle> _fieldDefs = [];
+    private readonly Dictionary<PropertySymbol, PropertyDefinitionHandle> _propertyDefs = [];
 
-    internal void RegisterMethod(MethodSymbol m, MethodDefinitionHandle h) => _methodDefs[m] = h;
-    internal void RegisterField(FieldSymbol f, FieldDefinitionHandle h) => _fieldDefs[f] = h;
-    internal void RegisterProperty(PropertySymbol p, PropertyDefinitionHandle h) => _propertyDefs[p] = h;
+    internal void RegisterMethod(MethodSymbol m, MethodDefinitionHandle h)
+    {
+        _methodDefs[m] = h;
+    }
+
+    internal void RegisterField(FieldSymbol f, FieldDefinitionHandle h)
+    {
+        _fieldDefs[f] = h;
+    }
+
+    internal void RegisterProperty(PropertySymbol p, PropertyDefinitionHandle h)
+    {
+        _propertyDefs[p] = h;
+    }
 
     /// <summary>The method token for a call: MethodDef, MemberRef or MethodSpec.</summary>
     public EntityHandle GetMethodEntity(MethodSymbol m)
     {
         if (m is ConstructedMethodSymbol cm)
         {
-            var baseHandle = GetMethodEntity(cm.ConstructedFrom);
-            var bb = new BlobBuilder();
-            var enc = new BlobEncoder(bb).MethodSpecificationSignature(cm.TypeArguments.Length);
-            foreach (var a in cm.TypeArguments) EncodeType(enc.AddArgument(), a);
-            var blob = Metadata.GetOrAddBlob(bb);
-            var key = (baseHandle, string.Join(",", cm.TypeArguments.Select(a => a.ToDisplayString())), _classTypeParameterMap != null);
-            if (!_methodSpecs.TryGetValue(key, out var spec))
+            EntityHandle baseHandle = GetMethodEntity(cm.ConstructedFrom);
+            BlobBuilder bb = new();
+            GenericTypeArgumentsEncoder enc = new BlobEncoder(bb).MethodSpecificationSignature(cm.TypeArguments.Length);
+            foreach (TypeSymbol a in cm.TypeArguments)
+            {
+                EncodeType(enc.AddArgument(), a);
+            }
+
+            BlobHandle blob = Metadata.GetOrAddBlob(bb);
+            (EntityHandle baseHandle, string, bool) key = (baseHandle, string.Join(",", cm.TypeArguments.Select(a => a.ToDisplayString())), _classTypeParameterMap != null);
+            if (!_methodSpecs.TryGetValue(key, out MethodSpecificationHandle spec))
             {
                 spec = Metadata.AddMethodSpecification(baseHandle, blob);
                 _methodSpecs[key] = spec;
             }
             return spec;
         }
-        var def = m.OriginalDefinition;
-        var container = m.ContainingSymbol as NamedTypeSymbol;
+        MethodSymbol def = m.OriginalDefinition;
+        NamedTypeSymbol? container = m.ContainingSymbol as NamedTypeSymbol;
         // members of a generic type are always referenced through the type's own instantiation (Box<!0>::m), even inside the type
-        var isOnConstructedType = container is ConstructedNamedType || container is { IsGenericType: true };
-        if (!isOnConstructedType && _methodDefs.TryGetValue(def, out var md)) return md;
-        if (_memberRefs.TryGetValue((m, _classTypeParameterMap != null), out var existing)) return existing;
-        var parent = container != null ? GetTypeEntity(container) : throw new InvalidOperationException("Method without container: " + m.Name);
-        var name = def.MetadataName;
-        var savedMap = _classTypeParameterMap;
+        bool isOnConstructedType = container is ConstructedNamedType or { IsGenericType: true };
+        if (!isOnConstructedType && _methodDefs.TryGetValue(def, out MethodDefinitionHandle md))
+        {
+            return md;
+        }
+
+        if (_memberRefs.TryGetValue((m, _classTypeParameterMap != null), out EntityHandle existing))
+        {
+            return existing;
+        }
+
+        EntityHandle parent = container != null ? GetTypeEntity(container) : throw new InvalidOperationException("Method without container: " + m.Name);
+        string name = def.MetadataName;
+        Dictionary<TypeParameterSymbol, int>? savedMap = _classTypeParameterMap;
         _classTypeParameterMap = (def.ContainingSymbol as SynthesizedNamedType)?.MethodTypeParameterMap;
-        var signature = EncodeMethodSignature(def);
+        BlobHandle signature = EncodeMethodSignature(def);
         _classTypeParameterMap = savedMap;
-        var handle = Metadata.AddMemberReference(parent, Metadata.GetOrAddString(name), signature);
+        MemberReferenceHandle handle = Metadata.AddMemberReference(parent, Metadata.GetOrAddString(name), signature);
         _memberRefs[(m, _classTypeParameterMap != null)] = handle;
         return handle;
     }
 
     public EntityHandle GetFieldEntity(FieldSymbol f)
     {
-        var def = f.OriginalDefinition;
-        var container = f.ContainingSymbol as NamedTypeSymbol;
-        var isOnConstructedType = container is ConstructedNamedType || container is { IsGenericType: true };
-        if (!isOnConstructedType && _fieldDefs.TryGetValue(def, out var fd)) return fd;
-        if (_memberRefs.TryGetValue((f, _classTypeParameterMap != null), out var existing)) return existing;
-        var parent = GetTypeEntity(container!);
-        var savedMap = _classTypeParameterMap;
+        FieldSymbol def = f.OriginalDefinition;
+        NamedTypeSymbol? container = f.ContainingSymbol as NamedTypeSymbol;
+        bool isOnConstructedType = container is ConstructedNamedType or { IsGenericType: true };
+        if (!isOnConstructedType && _fieldDefs.TryGetValue(def, out FieldDefinitionHandle fd))
+        {
+            return fd;
+        }
+
+        if (_memberRefs.TryGetValue((f, _classTypeParameterMap != null), out EntityHandle existing))
+        {
+            return existing;
+        }
+
+        EntityHandle parent = GetTypeEntity(container!);
+        Dictionary<TypeParameterSymbol, int>? savedMap = _classTypeParameterMap;
         _classTypeParameterMap = (def.ContainingSymbol as SynthesizedNamedType)?.MethodTypeParameterMap;
-        var signature = EncodeFieldSignature(def.Type);
+        BlobHandle signature = EncodeFieldSignature(def.Type);
         _classTypeParameterMap = savedMap;
-        var handle = Metadata.AddMemberReference(parent, Metadata.GetOrAddString(def.Name), signature);
+        MemberReferenceHandle handle = Metadata.AddMemberReference(parent, Metadata.GetOrAddString(def.Name), signature);
         _memberRefs[(f, _classTypeParameterMap != null)] = handle;
         return handle;
     }

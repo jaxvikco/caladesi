@@ -1,5 +1,4 @@
 using System.Collections.Immutable;
-using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using Caladesi.Compiler.Diagnostics;
 
@@ -14,7 +13,7 @@ public sealed class ReferenceSet
     private readonly Dictionary<string, MetadataAssemblySymbol> _byName = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, NamedTypeSymbol?> _typeCache = new(StringComparer.Ordinal);
     private readonly NamedTypeSymbol?[] _special = new NamedTypeSymbol?[Enum.GetValues<SpecialType>().Length + 1];
-    private readonly object _lock = new();
+    private readonly Lock _lock = new();
 
     private ReferenceSet()
     {
@@ -22,25 +21,36 @@ public sealed class ReferenceSet
     }
 
     public NamespaceSymbol GlobalNamespace { get; }
-    public ImmutableArray<MetadataAssemblySymbol> Assemblies { get; private set; } = ImmutableArray<MetadataAssemblySymbol>.Empty;
-    public ImmutableArray<string> Paths { get; private set; } = ImmutableArray<string>.Empty;
+    public ImmutableArray<MetadataAssemblySymbol> Assemblies { get; private set; } = [];
+    public ImmutableArray<string> Paths { get; private set; } = [];
 
     public static ReferenceSet Empty { get; } = new();
 
     public static ReferenceSet Create(IEnumerable<string> paths, DiagnosticBag? diagnostics = null)
     {
-        var set = new ReferenceSet();
-        var assemblies = ImmutableArray.CreateBuilder<MetadataAssemblySymbol>();
-        var pathList = ImmutableArray.CreateBuilder<string>();
-        foreach (var path in paths)
+        ArgumentNullException.ThrowIfNull(paths);
+        ReferenceSet set = new();
+        ImmutableArray<MetadataAssemblySymbol>.Builder assemblies = ImmutableArray.CreateBuilder<MetadataAssemblySymbol>();
+        ImmutableArray<string>.Builder pathList = ImmutableArray.CreateBuilder<string>();
+        foreach (string path in paths)
         {
             try
             {
-                var bytes = File.ReadAllBytes(path);
-                var pe = new PEReader(ImmutableArray.Create(bytes));
-                if (!pe.HasMetadata) throw new BadImageFormatException("no metadata");
-                var asm = new MetadataAssemblySymbol(set, pe, path);
-                if (set._byName.ContainsKey(asm.Name)) continue;
+                byte[] bytes = File.ReadAllBytes(path);
+#pragma warning disable CA2000 // ownership of the PEReader passes to MetadataAssemblySymbol, which keeps it alive for the compilation
+                PEReader pe = new(ImmutableArray.Create(bytes));
+#pragma warning restore CA2000
+                if (!pe.HasMetadata)
+                {
+                    throw new BadImageFormatException("no metadata");
+                }
+
+                MetadataAssemblySymbol asm = new(set, pe, path);
+                if (set._byName.ContainsKey(asm.Name))
+                {
+                    continue;
+                }
+
                 set._byName[asm.Name] = asm;
                 assemblies.Add(asm);
                 pathList.Add(path);
@@ -52,35 +62,47 @@ public sealed class ReferenceSet
         }
         set.Assemblies = assemblies.ToImmutable();
         set.Paths = pathList.ToImmutable();
-        foreach (var a in set.Assemblies) a.PopulateNamespaces(set.GlobalNamespace);
+        foreach (MetadataAssemblySymbol a in set.Assemblies)
+        {
+            a.PopulateNamespaces(set.GlobalNamespace);
+        }
+
         return set;
     }
 
-    public MetadataAssemblySymbol? FindAssembly(string name) => _byName.TryGetValue(name, out var a) ? a : null;
+    public MetadataAssemblySymbol? FindAssembly(string name)
+    {
+        return _byName.TryGetValue(name, out MetadataAssemblySymbol? a) ? a : null;
+    }
 
     /// <summary>Finds a type by metadata name, e.g. <c>System.Collections.Generic.List`1</c> or <c>A.B+C</c>.</summary>
     public NamedTypeSymbol? FindType(string metadataName)
     {
+        ArgumentNullException.ThrowIfNull(metadataName);
         lock (_lock)
         {
-            if (_typeCache.TryGetValue(metadataName, out var cached)) return cached;
+            if (_typeCache.TryGetValue(metadataName, out NamedTypeSymbol? cached))
+            {
+                return cached;
+            }
+
             NamedTypeSymbol? result = null;
-            var plus = metadataName.IndexOf('+');
+            int plus = metadataName.IndexOf('+');
             if (plus >= 0)
             {
-                var outer = FindType(metadataName[..plus]);
-                var inner = metadataName[(plus + 1)..];
+                NamedTypeSymbol? outer = FindType(metadataName[..plus]);
+                string inner = metadataName[(plus + 1)..];
                 result = outer?.GetMembers().OfType<NamedTypeSymbol>().FirstOrDefault(t => t.MetadataName == inner);
             }
             else
             {
-                var lastDot = metadataName.LastIndexOf('.');
-                var ns = lastDot < 0 ? "" : metadataName[..lastDot];
-                var name = lastDot < 0 ? metadataName : metadataName[(lastDot + 1)..];
-                var nsSym = GlobalNamespace.FindNamespace(ns);
-                var tick = name.IndexOf('`');
-                var arity = 0;
-                var simple = name;
+                int lastDot = metadataName.LastIndexOf('.');
+                string ns = lastDot < 0 ? "" : metadataName[..lastDot];
+                string name = lastDot < 0 ? metadataName : metadataName[(lastDot + 1)..];
+                NamespaceSymbol? nsSym = GlobalNamespace.FindNamespace(ns);
+                int tick = name.IndexOf('`');
+                int arity = 0;
+                string simple = name;
                 if (tick >= 0)
                 {
                     arity = int.Parse(name[(tick + 1)..], System.Globalization.CultureInfo.InvariantCulture);
@@ -95,12 +117,15 @@ public sealed class ReferenceSet
 
     public NamedTypeSymbol? GetSpecialType(SpecialType t)
     {
-        var i = (int)t;
-        var cached = _special[i];
-        if (cached != null) return cached;
-        var name = t.MetadataName();
-        if (name == null) return null;
-        return _special[i] = FindType(name);
+        int i = (int)t;
+        NamedTypeSymbol? cached = _special[i];
+        if (cached != null)
+        {
+            return cached;
+        }
+
+        string? name = t.MetadataName();
+        return name == null ? null : (_special[i] = FindType(name));
     }
 
     internal MetadataAssemblySymbol? CoreLibrary => FindAssembly("System.Runtime") ?? FindAssembly("System.Private.CoreLib") ?? FindAssembly("mscorlib") ?? FindAssembly("netstandard");

@@ -5,17 +5,10 @@ using Caladesi.Compiler.Syntax;
 namespace Caladesi.Compiler.Symbols.Source;
 
 /// <summary>The static class generated for a source file: holds its top-level functions, variables and entry point.</summary>
-public sealed class SourceModuleClassSymbol : SourceNamedType
+public sealed class SourceModuleClassSymbol(Compilation compilation, SourceFile file, string className) : SourceNamedType(compilation, file, null, className, file.Namespace, Accessibility.Public)
 {
-    private readonly string _className;
     private SourceMethodSymbol? _entry;
     private SourceMethodSymbol? _userMain;
-
-    public SourceModuleClassSymbol(Compilation compilation, SourceFile file, string className)
-        : base(compilation, file, null, className, file.Namespace, Accessibility.Public)
-    {
-        _className = className;
-    }
 
     public override TypeKind TypeKind => TypeKind.Class;
     public override bool IsAbstract => true;
@@ -27,83 +20,89 @@ public sealed class SourceModuleClassSymbol : SourceNamedType
     /// <summary>The compiler-generated entry method holding top-level statements, if this file has any.</summary>
     public SourceMethodSymbol? TopLevelEntry
     {
-        get { GetMembers(); return _entry; }
+        get { _ = GetMembers(); return _entry; }
     }
 
     public SourceMethodSymbol? UserMain
     {
-        get { GetMembers(); return _userMain; }
+        get { _ = GetMembers(); return _userMain; }
     }
 
     public ImmutableArray<(SourceFieldSymbol Field, VariableDeclaratorSyntax Declarator)> VariableInitializers { get; private set; } =
-        ImmutableArray<(SourceFieldSymbol, VariableDeclaratorSyntax)>.Empty;
+        [];
 
-    private bool HasTopLevelAwait() => TopLevelAwaitScanner.Contains(File.Tree.Root);
+    private bool HasTopLevelAwait()
+    {
+        return TopLevelAwaitScanner.Contains(File.Tree.Root);
+    }
 
     public bool HasExtensionMethods => GetMembers().OfType<MethodSymbol>().Any(m => m.IsExtensionMethod);
 
     protected override ImmutableArray<Symbol> BuildMembers()
     {
-        var b = ImmutableArray.CreateBuilder<Symbol>();
-        var vars = ImmutableArray.CreateBuilder<(SourceFieldSymbol, VariableDeclaratorSyntax)>();
-        var hasStatements = false;
+        ImmutableArray<Symbol>.Builder b = ImmutableArray.CreateBuilder<Symbol>();
+        ImmutableArray<(SourceFieldSymbol, VariableDeclaratorSyntax)>.Builder vars = ImmutableArray.CreateBuilder<(SourceFieldSymbol, VariableDeclaratorSyntax)>();
+        bool hasStatements = false;
 
-        foreach (var s in File.Tree.Root.Statements)
+        foreach (StatementSyntax s in File.Tree.Root.Statements)
         {
             switch (s)
             {
                 case FunctionDeclarationSyntax f when !f.Identifier.IsMissing:
-                {
-                    var mods = new ModifierSet(f.Modifiers);
-                    var isMain = f.Identifier.Text == "main" && mods.IsExport == false || f.Identifier.Text == "main";
-                    var m = new SourceMethodSymbol(Compilation, File, this, f.Identifier.Text, MethodKind.Ordinary, mods, f,
-                        mods.IsExport ? Accessibility.Public : Accessibility.Internal)
                     {
-                        IsStaticFlag = true,
-                        ParameterList = f.Parameters,
-                        TypeParameterList = f.TypeParameters,
-                        ReturnAnnotation = f.ReturnType,
-                        BodySyntax = f.Body,
-                        IsGeneratorSyntax = f.AsteriskToken != null,
-                    };
-                    b.Add(m);
-                    if (isMain && f.Identifier.Text == "main" && Compilation.Options.OutputKind == OutputKind.ConsoleApplication)
-                        _userMain ??= m;
-                    break;
-                }
-                case VariableStatementSyntax v:
-                {
-                    var mods = new ModifierSet(v.Modifiers);
-                    var decl = v.Declaration;
-                    if (decl.IsUsing)
-                    {
-                        hasStatements = true; // using at top level lives in the entry method
+                        ModifierSet mods = new(f.Modifiers);
+                        bool isMain = (f.Identifier.Text == "main" && !mods.IsExport) || f.Identifier.Text == "main";
+                        SourceMethodSymbol m = new(Compilation, File, this, f.Identifier.Text, MethodKind.Ordinary, mods, f,
+                            mods.IsExport ? Accessibility.Public : Accessibility.Internal)
+                        {
+                            IsStaticFlag = true,
+                            ParameterList = f.Parameters,
+                            TypeParameterList = f.TypeParameters,
+                            ReturnAnnotation = f.ReturnType,
+                            BodySyntax = f.Body,
+                            IsGeneratorSyntax = f.AsteriskToken != null,
+                        };
+                        b.Add(m);
+                        if (isMain && f.Identifier.Text == "main" && Compilation.Options.OutputKind == OutputKind.ConsoleApplication)
+                        {
+                            _userMain ??= m;
+                        }
+
                         break;
                     }
-                    foreach (var d in decl.Declarators)
+                case VariableStatementSyntax v:
                     {
-                        if (d.Identifier is not { IsMissing: false } id)
+                        ModifierSet mods = new(v.Modifiers);
+                        VariableDeclarationListSyntax decl = v.Declaration;
+                        if (decl.IsUsing)
                         {
-                            hasStatements = true; // destructuring declarations at top level run in the entry method
-                            continue;
+                            hasStatements = true; // using at top level lives in the entry method
+                            break;
                         }
-                        var acc = mods.IsExport ? Accessibility.Public : Accessibility.Internal;
-                        var dd = d;
-                        var isConst = decl.IsConst;
-                        var field = new SourceFieldSymbol(Compilation, File, this, id.Text, acc, true, false, false, d, null,
-                            f => SourceModuleVariables.BindType(this, f, dd))
+                        foreach (VariableDeclaratorSyntax d in decl.Declarators)
                         {
-                            IsModuleVariable = true,
-                            Declarator = d,
-                            IsConstDeclaration = isConst,
-                            ConstantFactory = isConst ? f => SourceModuleVariables.EvaluateConstant(this, f, dd) : null,
-                            InitializerSyntax = d.Initializer?.Value,
-                        };
-                        b.Add(field);
-                        vars.Add((field, d));
+                            if (d.Identifier is not { IsMissing: false } id)
+                            {
+                                hasStatements = true; // destructuring declarations at top level run in the entry method
+                                continue;
+                            }
+                            Accessibility acc = mods.IsExport ? Accessibility.Public : Accessibility.Internal;
+                            VariableDeclaratorSyntax dd = d;
+                            bool isConst = decl.IsConst;
+                            SourceFieldSymbol field = new(Compilation, File, this, id.Text, acc, true, false, false, d, null,
+                                f => SourceModuleVariables.BindType(this, f, dd))
+                            {
+                                IsModuleVariable = true,
+                                Declarator = d,
+                                IsConstDeclaration = isConst,
+                                ConstantFactory = isConst ? f => SourceModuleVariables.EvaluateConstant(this, f, dd) : null,
+                                InitializerSyntax = d.Initializer?.Value,
+                            };
+                            b.Add(field);
+                            vars.Add((field, d));
+                        }
+                        break;
                     }
-                    break;
-                }
                 case ImportDeclarationSyntax or TypeAliasDeclarationSyntax or ClassDeclarationSyntax or InterfaceDeclarationSyntax or EnumDeclarationSyntax:
                     break;
                 case EmptyStatementSyntax:
@@ -117,15 +116,14 @@ public sealed class SourceModuleClassSymbol : SourceNamedType
 
         if (hasStatements || File.TopLevelStatements.Length > 0)
         {
-            var isAsyncEntry = HasTopLevelAwait();
+            bool isAsyncEntry = HasTopLevelAwait();
             _entry = new SourceMethodSymbol(Compilation, File, this, "<Main>$", MethodKind.Ordinary, default, null, Accessibility.Private)
             {
                 IsStaticFlag = true,
                 ForceAsync = isAsyncEntry,
                 ExplicitReturnType = Compilation.GetSpecialType(isAsyncEntry ? SpecialType.Task : SpecialType.Void),
                 SynthesizedKind = SynthesizedBodyKind.Custom,
-                ExplicitParameters = ImmutableArray.Create<ParameterSymbol>(
-                    new ParameterSymbol("args", new ArrayTypeSymbol(Compilation.GetSpecialType(SpecialType.String), Compilation.GetSpecialType(SpecialType.Array)), 0, null)),
+                ExplicitParameters = [new ParameterSymbol("args", new ArrayTypeSymbol(Compilation.GetSpecialType(SpecialType.String), Compilation.GetSpecialType(SpecialType.Array)), 0, null)],
                 SyntheticBodyFactory = m => Compilation.CreateBinder(File, m, Compilation.BodyDiagnostics).BindTopLevelStatements(m, this),
             };
             b.Add(_entry);
@@ -136,7 +134,7 @@ public sealed class SourceModuleClassSymbol : SourceNamedType
             {
                 SynthesizedKind = SynthesizedBodyKind.StaticConstructor,
                 IsStaticFlag = true,
-                ExplicitParameters = ImmutableArray<ParameterSymbol>.Empty,
+                ExplicitParameters = [],
             });
         }
         return b.ToImmutable();
@@ -147,7 +145,7 @@ internal static class TopLevelAwaitScanner
 {
     public static bool Contains(SyntaxNode node)
     {
-        foreach (var c in node.ChildNodes())
+        foreach (SyntaxNode c in node.ChildNodes())
         {
             switch (c)
             {
@@ -156,7 +154,10 @@ internal static class TopLevelAwaitScanner
                 case ForOfStatementSyntax { AwaitKeyword: not null }: return true;
                 case VariableDeclarationListSyntax { AwaitKeyword: not null }: return true;
             }
-            if (Contains(c)) return true;
+            if (Contains(c))
+            {
+                return true;
+            }
         }
         return false;
     }
@@ -164,11 +165,15 @@ internal static class TopLevelAwaitScanner
 
 internal static class SourceModuleVariables
 {
-    public static TypeSymbol BindType(SourceNamedType container, SourceFieldSymbol field, VariableDeclaratorSyntax d)
+    public static TypeSymbol BindType(SourceNamedType container, SourceFieldSymbol _1, VariableDeclaratorSyntax d)
     {
-        var c = container.Compilation;
-        var binder = c.CreateBinder(container.File, container, c.DeclarationDiagnostics);
-        if (d.TypeAnnotation != null) return binder.BindType(d.TypeAnnotation.Type);
+        Compilation c = container.Compilation;
+        Binder binder = c.CreateBinder(container.File, container, c.DeclarationDiagnostics);
+        if (d.TypeAnnotation != null)
+        {
+            return binder.BindType(d.TypeAnnotation.Type);
+        }
+
         if (d.Initializer != null)
         {
             binder.EnableTopLevelAwait();
@@ -180,10 +185,14 @@ internal static class SourceModuleVariables
 
     public static ConstantValue? EvaluateConstant(SourceNamedType container, SourceFieldSymbol field, VariableDeclaratorSyntax d)
     {
-        if (d.Initializer == null) return null;
-        var c = container.Compilation;
-        var binder = c.CreateBinder(container.File, container, new DiagnosticBag());
-        var cv = binder.TryEvaluateConstant(d.Initializer.Value, field.Type);
+        if (d.Initializer == null)
+        {
+            return null;
+        }
+
+        Compilation c = container.Compilation;
+        Binder binder = c.CreateBinder(container.File, container, new DiagnosticBag());
+        ConstantValue? cv = binder.TryEvaluateConstant(d.Initializer.Value, field.Type);
         // IL literals exist only for primitives, strings and enums; decimal and bigint constants are initialized at run time
         return cv is { Value: decimal or System.Numerics.BigInteger } ? null : cv;
     }

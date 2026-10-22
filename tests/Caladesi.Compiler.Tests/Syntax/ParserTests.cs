@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Caladesi.Compiler.Syntax;
 
 namespace Caladesi.Compiler.Tests.Syntax;
@@ -5,6 +6,8 @@ namespace Caladesi.Compiler.Tests.Syntax;
 [TestClass]
 public class ParserTests
 {
+    private static readonly string[] s_forInExportDiagnostics = ["CAL0026", "CAL0021"];
+
     internal static readonly string[] ValidSamples =
     [
         "import { List, Dictionary } from \"System.Collections.Generic\";\nimport * as IO from \"System.IO\";\nimport \"System.Linq\";\nimport type { Foo } from './foo';",
@@ -31,9 +34,9 @@ public class ParserTests
     [TestMethod]
     public void ValidSamples_RoundTripWithoutDiagnostics()
     {
-        foreach (var src in ValidSamples)
+        foreach (string src in ValidSamples)
         {
-            var tree = SyntaxTree.ParseText(src, "t.cala");
+            SyntaxTree tree = SyntaxTree.ParseText(src, "t.cala");
             Assert.AreEqual(src, tree.Root.ToFullString());
             Assert.IsEmpty(tree.Diagnostics, src + "\n" + string.Join("\n", tree.Diagnostics));
         }
@@ -42,34 +45,39 @@ public class ParserTests
     [TestMethod]
     public void EveryPrefixAndMutation_RoundTripsAndNeverThrows()
     {
-        foreach (var src in ValidSamples)
+        foreach (string src in ValidSamples)
         {
-            for (var n = 0; n <= src.Length; n += 3)
+            for (int n = 0; n <= src.Length; n += 3)
             {
-                var prefix = src[..n];
-                var tree = SyntaxTree.ParseText(prefix, "t.cala");
+                string prefix = src[..n];
+                SyntaxTree tree = SyntaxTree.ParseText(prefix, "t.cala");
                 Assert.AreEqual(prefix, tree.Root.ToFullString(), "input: [" + prefix + "]");
             }
-            for (var n = 0; n < src.Length; n += 7)
+            for (int n = 0; n < src.Length; n += 7)
             {
-                var cut = src.Remove(n, Math.Min(3, src.Length - n));
-                var tree = SyntaxTree.ParseText(cut, "t.cala");
+                string cut = src.Remove(n, Math.Min(3, src.Length - n));
+                SyntaxTree tree = SyntaxTree.ParseText(cut, "t.cala");
                 Assert.AreEqual(cut, tree.Root.ToFullString(), "input: [" + cut + "]");
             }
         }
     }
 
     [TestMethod]
+    [SuppressMessage("Security", "CA5394:Do not use insecure randomness", Justification = "Seeded Random keeps the garbage inputs reproducible; this is not security-sensitive.")]
     public void Garbage_DoesNotCrash()
     {
-        var rnd = new Random(42);
+        Random rnd = new(42);
         const string alphabet = "abc (){}[]<>;:,.=+-*/&|!?`'\"\n \t0123@#~^%";
-        for (var i = 0; i < 300; i++)
+        for (int i = 0; i < 300; i++)
         {
-            var chars = new char[rnd.Next(1, 80)];
-            for (var j = 0; j < chars.Length; j++) chars[j] = alphabet[rnd.Next(alphabet.Length)];
-            var s = new string(chars);
-            var tree = SyntaxTree.ParseText(s, "t.cala");
+            char[] chars = new char[rnd.Next(1, 80)];
+            for (int j = 0; j < chars.Length; j++)
+            {
+                chars[j] = alphabet[rnd.Next(alphabet.Length)];
+            }
+
+            string s = new(chars);
+            SyntaxTree tree = SyntaxTree.ParseText(s, "t.cala");
             Assert.AreEqual(s, tree.Root.ToFullString(), "input: [" + s + "]");
         }
     }
@@ -77,34 +85,34 @@ public class ParserTests
     [TestMethod]
     public void BinaryPrecedence_And_GreaterThanComposition()
     {
-        var tree = SyntaxTree.ParseText("const x = 1 + 2 * 3 >> 1;", "t.cala");
-        var bin = tree.Root.DescendantNodes().OfType<BinaryExpressionSyntax>().First();
+        SyntaxTree tree = SyntaxTree.ParseText("const x = 1 + 2 * 3 >> 1;", "t.cala");
+        BinaryExpressionSyntax bin = tree.Root.DescendantNodes().OfType<BinaryExpressionSyntax>().First();
         Assert.AreEqual(SyntaxKind.GreaterThanGreaterThanToken, bin.OperatorKind);
     }
 
     [TestMethod]
     public void NestedGenerics_DoNotConsumeShift()
     {
-        var tree = SyntaxTree.ParseText("let x: List<List<int>> = new List<List<int>>();", "t.cala");
+        SyntaxTree tree = SyntaxTree.ParseText("let x: List<List<int>> = new List<List<int>>();", "t.cala");
         Assert.IsEmpty(tree.Diagnostics);
-        Assert.AreEqual(2, tree.Root.DescendantNodes().OfType<GenericNameSyntax>().Count(g => g.Name == "List" && g.TypeArguments.Arguments.Count == 1 && g.TypeArguments.Arguments[0] is GenericNameSyntax) );
+        Assert.AreEqual(2, tree.Root.DescendantNodes().OfType<GenericNameSyntax>().Count(g => g.Name == "List" && g.TypeArguments.Arguments.Count == 1 && g.TypeArguments.Arguments[0] is GenericNameSyntax));
     }
 
     [TestMethod]
     public void ForIn_And_ExportDefault_ReportErrors()
     {
-        var tree = SyntaxTree.ParseText("export default function f() { } for (const k in o) { }", "t.cala");
-        CollectionAssert.IsSubsetOf(new[] { "CAL0026", "CAL0021" }, tree.Diagnostics.Select(d => d.Id).ToArray());
+        SyntaxTree tree = SyntaxTree.ParseText("export default function f() { } for (const k in o) { }", "t.cala");
+        CollectionAssert.IsSubsetOf(s_forInExportDiagnostics, tree.Diagnostics.Select(d => d.Id).ToArray());
     }
 
     [TestMethod]
     public void Spans_AreAccurate()
     {
-        var src = "  let abc = 12 ;";
-        var tree = SyntaxTree.ParseText(src, "t.cala");
-        var decl = tree.Root.DescendantNodes().OfType<VariableDeclaratorSyntax>().Single();
+        string src = "  let abc = 12 ;";
+        SyntaxTree tree = SyntaxTree.ParseText(src, "t.cala");
+        VariableDeclaratorSyntax decl = tree.Root.DescendantNodes().OfType<VariableDeclaratorSyntax>().Single();
         Assert.AreEqual("abc = 12", src.Substring(decl.Span.Start, decl.Span.Length));
-        var tok = tree.Root.FindToken(src.IndexOf("12", StringComparison.Ordinal))!;
+        SyntaxToken tok = tree.Root.FindToken(src.IndexOf("12", StringComparison.Ordinal))!;
         Assert.AreEqual("12", tok.Text);
     }
 }

@@ -11,25 +11,29 @@ public static class TestEntryPoint
 {
     public static SyntaxTree Create(CompilationOptions options, IEnumerable<string> hookTypes)
     {
-        var hooks = hookTypes.Where(h => h.Contains('.')).Distinct().ToList();
+        ArgumentNullException.ThrowIfNull(options);
+        List<string> hooks = [.. hookTypes.Where(h => h.Contains('.')).Distinct()];
         // the MSTest registration has to come last
         hooks = [.. hooks.Where(h => !h.EndsWith("UnitTesting.TestingPlatformBuilderHook", StringComparison.Ordinal)),
                  .. hooks.Where(h => h.EndsWith("UnitTesting.TestingPlatformBuilderHook", StringComparison.Ordinal))];
-        var sb = new StringBuilder();
-        sb.AppendLine("import { TestApplication } from \"Microsoft.Testing.Platform.Builder\";");
-        for (var i = 0; i < hooks.Count; i++)
+        StringBuilder sb = new();
+        _ = sb.AppendLine("import { TestApplication } from \"Microsoft.Testing.Platform.Builder\";");
+        for (int i = 0; i < hooks.Count; i++)
         {
-            var ns = hooks[i][..hooks[i].LastIndexOf('.')];
-            sb.AppendLine($"import * as __hook{i} from \"{ns}\";");
+            string ns = hooks[i][..hooks[i].LastIndexOf('.')];
+            _ = sb.AppendLine($"import * as __hook{i} from \"{ns}\";");
         }
-        sb.AppendLine("async function main(args: string[]): Task<int> {");
-        sb.AppendLine("  const builder = await TestApplication.CreateBuilderAsync(args);");
-        for (var i = 0; i < hooks.Count; i++)
-            sb.AppendLine($"  __hook{i}.{hooks[i][(hooks[i].LastIndexOf('.') + 1)..]}.AddExtensions(builder, args);");
-        sb.AppendLine("  using app = await builder.BuildAsync();");
-        sb.AppendLine("  return await app.RunAsync();");
-        sb.AppendLine("}");
-        var dir = options.ProjectDirectory ?? Directory.GetCurrentDirectory();
+        _ = sb.AppendLine("async function main(args: string[]): Task<int> {");
+        _ = sb.AppendLine("  const builder = await TestApplication.CreateBuilderAsync(args);");
+        for (int i = 0; i < hooks.Count; i++)
+        {
+            _ = sb.AppendLine($"  __hook{i}.{hooks[i][(hooks[i].LastIndexOf('.') + 1)..]}.AddExtensions(builder, args);");
+        }
+
+        _ = sb.AppendLine("  using app = await builder.BuildAsync();");
+        _ = sb.AppendLine("  return await app.RunAsync();");
+        _ = sb.AppendLine("}");
+        string dir = options.ProjectDirectory ?? Directory.GetCurrentDirectory();
         return SyntaxTree.ParseText(sb.ToString(), Path.Combine(dir, "obj", "CaladesiTestEntryPoint.cala"));
     }
 }

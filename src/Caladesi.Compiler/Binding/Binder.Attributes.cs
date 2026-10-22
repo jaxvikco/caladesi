@@ -24,15 +24,15 @@ public sealed partial class Binder
     /// </summary>
     internal BoundAttribute? BindDecorator(DecoratorSyntax d)
     {
-        var expr = d.Expression;
+        ExpressionSyntax expr = d.Expression;
         ExpressionSyntax callee = expr;
-        var argSyntax = new List<ExpressionSyntax>();
+        List<ExpressionSyntax> argSyntax = [];
         if (expr is InvocationExpressionSyntax inv)
         {
             callee = inv.Expression;
             argSyntax.AddRange(inv.Arguments.Arguments);
         }
-        var attrType = ResolveAttributeType(callee);
+        NamedTypeSymbol? attrType = ResolveAttributeType(callee);
         if (attrType == null)
         {
             Report(Descriptors.AttributeNotFound, callee, callee.ToFullString().Trim());
@@ -45,37 +45,59 @@ public sealed partial class Binder
             namedLiteral = lit;
             argSyntax.RemoveAt(argSyntax.Count - 1);
         }
-        var args = ImmutableArray.CreateBuilder<BoundExpression>();
-        foreach (var a in argSyntax)
+        ImmutableArray<BoundExpression>.Builder args = ImmutableArray.CreateBuilder<BoundExpression>();
+        foreach (ExpressionSyntax a in argSyntax)
         {
-            var b = BindValue(a);
-            if (b is BoundUnbound u && !u.IsLambda) b = u.BindToType(null);
-            if (b is BoundBadExpression) return null;
+            BoundExpression b = BindValue(a);
+            if (b is BoundUnbound u && !u.IsLambda)
+            {
+                b = u.BindToType(null);
+            }
+
+            if (b is BoundBadExpression)
+            {
+                return null;
+            }
+
             args.Add(b);
         }
-        var ctors = attrType.InstanceConstructors.Where(c => c.DeclaredAccessibility == Accessibility.Public).ToImmutableArray();
-        var res = ResolveOverloads(ctors, args.ToImmutable(), ImmutableArray<TypeSymbol>.Empty, d, attrType.Name, report: true);
-        if (res == null) return null;
-        foreach (var a in res.Arguments)
+        ImmutableArray<MethodSymbol> ctors = [.. attrType.InstanceConstructors.Where(c => c.DeclaredAccessibility == Accessibility.Public)];
+        ResolvedCall? res = ResolveOverloads(ctors, args.ToImmutable(), [], d, attrType.Name, report: true);
+        if (res == null)
+        {
+            return null;
+        }
+
+        foreach (BoundExpression a in res.Arguments)
+        {
             if (!IsAttributeConstant(a))
             {
                 Report(Descriptors.AttributeArgumentNotConstant, a.Syntax ?? d);
                 return null;
             }
+        }
 
-        var named = ImmutableArray.CreateBuilder<(Symbol, BoundExpression)>();
+        ImmutableArray<(Symbol, BoundExpression)>.Builder named = ImmutableArray.CreateBuilder<(Symbol, BoundExpression)>();
         if (namedLiteral != null)
         {
-            foreach (var m in namedLiteral.Members)
+            foreach (SyntaxNode m in namedLiteral.Members)
             {
-                if (m is not PropertyAssignmentSyntax pa) continue;
-                var name = pa.NameToken.ValueText;
+                if (m is not PropertyAssignmentSyntax pa)
+                {
+                    continue;
+                }
+
+                string name = pa.NameToken.ValueText;
                 Symbol? member = LookupMembers(attrType, name).FirstOrDefault(x => x is PropertySymbol { SetMethod: not null } or FieldSymbol { IsReadOnly: false, IsConst: false })
                     ?? LookupMembers(attrType, NameUtilities.FlipFirstCase(name)).FirstOrDefault(x => x is PropertySymbol { SetMethod: not null } or FieldSymbol { IsReadOnly: false, IsConst: false });
                 if (member == null) { Report(Descriptors.AttributeMemberNotFound, pa.NameToken.Parent ?? pa, name, attrType.Name); continue; }
-                var memberType = member is PropertySymbol p ? p.Type : ((FieldSymbol)member).Type;
-                var v = ConvertImplicit(BindValue(pa.Value, memberType), memberType, pa.Value);
-                if (v.HasErrors) continue;
+                TypeSymbol memberType = member is PropertySymbol p ? p.Type : ((FieldSymbol)member).Type;
+                BoundExpression v = ConvertImplicit(BindValue(pa.Value, memberType), memberType, pa.Value);
+                if (v.HasErrors)
+                {
+                    continue;
+                }
+
                 if (!IsAttributeConstant(v)) { Report(Descriptors.AttributeArgumentNotConstant, pa.Value); continue; }
                 named.Add((member, v));
             }
@@ -83,40 +105,58 @@ public sealed partial class Binder
         return new BoundAttribute(attrType, res.Method, res.Arguments, named.ToImmutable());
     }
 
-    private static bool IsAttributeConstant(BoundExpression e) => e switch
+    private static bool IsAttributeConstant(BoundExpression e)
     {
-        _ when e.ConstantValue != null => true,
-        BoundTypeOf => true,
-        BoundArrayCreation ac => ac.Initializers.All(IsAttributeConstant),
-        BoundConversion { Kind: ConversionKind.Boxing or ConversionKind.ImplicitReference or ConversionKind.Identity } c => IsAttributeConstant(c.Operand),
-        BoundLiteral => true,
-        _ => false,
-    };
+        return e switch
+        {
+            _ when e.ConstantValue != null => true,
+            BoundTypeOf => true,
+            BoundArrayCreation ac => ac.Initializers.All(IsAttributeConstant),
+            BoundConversion { Kind: ConversionKind.Boxing or ConversionKind.ImplicitReference or ConversionKind.Identity } c => IsAttributeConstant(c.Operand),
+            BoundLiteral => true,
+            _ => false,
+        };
+    }
 
     private NamedTypeSymbol? ResolveAttributeType(ExpressionSyntax callee)
     {
-        var baseAttr = _c.GetWellKnownType("System.Attribute");
+        NamedTypeSymbol? baseAttr = Compilation.GetWellKnownType("System.Attribute");
         bool IsAttribute(NamedTypeSymbol t)
         {
-            for (var x = t; x != null; x = x.BaseType)
-                if (baseAttr != null && ReferenceEquals(x.OriginalDefinition, baseAttr.OriginalDefinition)) return true;
+            for (NamedTypeSymbol? x = t; x != null; x = x.BaseType)
+            {
+                if (baseAttr != null && ReferenceEquals(x.OriginalDefinition, baseAttr.OriginalDefinition))
+                {
+                    return true;
+                }
+            }
+
             return false;
         }
         if (callee is IdentifierNameSyntax id)
         {
-            foreach (var name in new[] { id.Identifier.Text, id.Identifier.Text + "Attribute" })
+            foreach (string? name in new[] { id.Identifier.Text, id.Identifier.Text + "Attribute" })
             {
-                foreach (var c in _file.Scope.Lookup(name))
-                    if (c is NamedTypeSymbol nt && nt.OwnArity == 0 && IsAttribute(nt)) return nt;
+                foreach (Symbol c in File.Scope.Lookup(name))
+                {
+                    if (c is NamedTypeSymbol nt && nt.OwnArity == 0 && IsAttribute(nt))
+                    {
+                        return nt;
+                    }
+                }
             }
             return null;
         }
-        var bound = Speculatively(() => BindExpression(callee));
-        if (bound is BoundTypeExpression { TypeSym: NamedTypeSymbol t } && IsAttribute(t)) return t;
+        BoundExpression bound = Speculatively(() => BindExpression(callee));
+        if (bound is BoundTypeExpression { TypeSym: NamedTypeSymbol t } && IsAttribute(t))
+        {
+            return t;
+        }
+
         if (callee is MemberAccessExpressionSyntax ma)
         {
-            var left = Speculatively(() => BindExpression(ma.Expression));
-            var sym = ma.Name.Identifier.Text + "Attribute";
+            BoundExpression left = Speculatively(() => BindExpression(ma.Expression));
+            string sym = ma.Name.Identifier.Text + "Attribute";
             switch (left)
             {
                 case BoundNamespaceExpression ns:

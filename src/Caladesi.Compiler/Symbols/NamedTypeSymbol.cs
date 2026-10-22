@@ -18,7 +18,7 @@ public abstract class NamedTypeSymbol : TypeSymbol
     {
         get
         {
-            var outer = ContainingType?.Arity ?? 0;
+            int outer = ContainingType?.Arity ?? 0;
             return Math.Max(0, Arity - outer);
         }
     }
@@ -27,7 +27,7 @@ public abstract class NamedTypeSymbol : TypeSymbol
     {
         get
         {
-            var skip = Arity - OwnArity;
+            int skip = Arity - OwnArity;
             return skip == 0 ? TypeArguments : TypeArguments.RemoveRange(0, skip);
         }
     }
@@ -40,7 +40,7 @@ public abstract class NamedTypeSymbol : TypeSymbol
     public virtual bool IsRecord => false;
     public virtual bool IsUnionType => false;
     public virtual bool IsAnonymousUnion => false;
-    public virtual ImmutableArray<TypeSymbol> UnionCases => ImmutableArray<TypeSymbol>.Empty;
+    public virtual ImmutableArray<TypeSymbol> UnionCases => [];
     public virtual bool IsTuple => false;
     public virtual ImmutableArray<string?> TupleElementNames => default;
     public virtual NamedTypeSymbol? EnumUnderlyingType => null;
@@ -51,33 +51,44 @@ public abstract class NamedTypeSymbol : TypeSymbol
     public override bool IsReferenceType => TypeKind is TypeKind.Class or TypeKind.Interface or TypeKind.Delegate or TypeKind.Error;
     public override bool IsValueType => TypeKind is TypeKind.Struct or TypeKind.Enum;
 
-    public ImmutableArray<NamedTypeSymbol> GetTypeMembers() =>
-        GetMembers().OfType<NamedTypeSymbol>().ToImmutableArray();
+    public ImmutableArray<NamedTypeSymbol> GetTypeMembers()
+    {
+        return [.. GetMembers().OfType<NamedTypeSymbol>()];
+    }
 
     public ImmutableArray<MethodSymbol> InstanceConstructors =>
-        GetMembers().OfType<MethodSymbol>().Where(m => m.MethodKind == MethodKind.Constructor).ToImmutableArray();
+        [.. GetMembers().OfType<MethodSymbol>().Where(m => m.MethodKind == MethodKind.Constructor)];
 
     public ImmutableArray<MethodSymbol> StaticConstructors =>
-        GetMembers().OfType<MethodSymbol>().Where(m => m.MethodKind == MethodKind.StaticConstructor).ToImmutableArray();
+        [.. GetMembers().OfType<MethodSymbol>().Where(m => m.MethodKind == MethodKind.StaticConstructor)];
 
     public NamedTypeSymbol Construct(ImmutableArray<TypeSymbol> typeArguments)
     {
-        if (typeArguments.Length != Arity) throw new ArgumentException("wrong number of type arguments");
-        var def = OriginalDefinition;
+        if (typeArguments.Length != Arity)
+        {
+            throw new ArgumentException("wrong number of type arguments");
+        }
+
+        NamedTypeSymbol def = OriginalDefinition;
         // Constructing with the type's own parameters yields the definition itself.
-        var same = true;
-        for (var i = 0; i < typeArguments.Length; i++)
+        bool same = true;
+        for (int i = 0; i < typeArguments.Length; i++)
+        {
             if (!ReferenceEquals(typeArguments[i], def.TypeParameters[i])) { same = false; break; }
-        if (same) return def;
-        return new ConstructedNamedType(def, typeArguments);
+        }
+
+        return same ? def : new ConstructedNamedType(def, typeArguments);
     }
 
-    public NamedTypeSymbol Construct(params TypeSymbol[] typeArguments) => Construct(typeArguments.ToImmutableArray());
+    public NamedTypeSymbol Construct(params TypeSymbol[] typeArguments)
+    {
+        return Construct(typeArguments.ToImmutableArray());
+    }
 
     public override string ToMetadataString()
     {
-        var sb = new StringBuilder();
-        var nt = OriginalDefinition;
+        StringBuilder sb = new();
+        NamedTypeSymbol nt = OriginalDefinition;
         AppendMetadataName(sb, nt);
         return sb.ToString();
     }
@@ -87,20 +98,20 @@ public abstract class NamedTypeSymbol : TypeSymbol
         if (nt.ContainingType != null)
         {
             AppendMetadataName(sb, nt.ContainingType.OriginalDefinition);
-            sb.Append('+');
+            _ = sb.Append('+');
         }
         else if (nt.ContainingNamespace is { IsGlobalNamespace: false } ns)
         {
-            sb.Append(ns.ToDisplayString()).Append('.');
+            _ = sb.Append(ns.ToDisplayString()).Append('.');
         }
-        sb.Append(nt.MetadataName);
+        _ = sb.Append(nt.MetadataName);
     }
 
     public override string MetadataName
     {
         get
         {
-            var own = OwnArity;
+            int own = OwnArity;
             return own > 0 ? Name + "`" + own : Name;
         }
     }
@@ -110,58 +121,86 @@ public abstract class NamedTypeSymbol : TypeSymbol
     {
         get
         {
-            var sb = new StringBuilder();
-            if (ContainingType != null) sb.Append(ContainingType.QualifiedName).Append('.');
-            else if (ContainingNamespace is { IsGlobalNamespace: false } ns) sb.Append(ns.ToDisplayString()).Append('.');
-            sb.Append(Name);
+            StringBuilder sb = new();
+            if (ContainingType != null)
+            {
+                _ = sb.Append(ContainingType.QualifiedName).Append('.');
+            }
+            else if (ContainingNamespace is { IsGlobalNamespace: false } ns)
+            {
+                _ = sb.Append(ns.ToDisplayString()).Append('.');
+            }
+
+            _ = sb.Append(Name);
             return sb.ToString();
         }
     }
 
     public override bool Equals(TypeSymbol? other)
     {
-        if (ReferenceEquals(this, other)) return true;
-        if (other is not NamedTypeSymbol o) return false;
-        if (IsDefinition && o.IsDefinition) return false;
-        if (!ReferenceEquals(OriginalDefinition, o.OriginalDefinition)) return false;
-        var a = TypeArguments;
-        var b = o.TypeArguments;
-        if (a.Length != b.Length) return false;
-        for (var i = 0; i < a.Length; i++)
-            if (!a[i].Equals(b[i])) return false;
+        if (ReferenceEquals(this, other))
+        {
+            return true;
+        }
+
+        if (other is not NamedTypeSymbol o)
+        {
+            return false;
+        }
+
+        if (IsDefinition && o.IsDefinition)
+        {
+            return false;
+        }
+
+        if (!ReferenceEquals(OriginalDefinition, o.OriginalDefinition))
+        {
+            return false;
+        }
+
+        ImmutableArray<TypeSymbol> a = TypeArguments;
+        ImmutableArray<TypeSymbol> b = o.TypeArguments;
+        if (a.Length != b.Length)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < a.Length; i++)
+        {
+            if (!a[i].Equals(b[i]))
+            {
+                return false;
+            }
+        }
+
         return true;
     }
 
     public override int GetHashCode()
     {
-        var h = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(OriginalDefinition);
-        foreach (var a in TypeArguments) h = h * 31 + a.GetHashCode();
+        int h = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(OriginalDefinition);
+        foreach (TypeSymbol a in TypeArguments)
+        {
+            h = (h * 31) + a.GetHashCode();
+        }
+
         return h;
     }
 }
 
 /// <summary>A generic type instantiated over type arguments; members are substituted lazily.</summary>
-public sealed class ConstructedNamedType : NamedTypeSymbol
+public sealed class ConstructedNamedType(NamedTypeSymbol definition, ImmutableArray<TypeSymbol> typeArguments, ImmutableArray<string?> tupleNames = default) : NamedTypeSymbol
 {
-    private readonly NamedTypeSymbol _definition;
-    private readonly ImmutableArray<TypeSymbol> _typeArguments;
-    private readonly TypeMap _map;
+    private readonly NamedTypeSymbol _definition = definition;
+    private readonly ImmutableArray<TypeSymbol> _typeArguments = typeArguments;
     private ImmutableArray<Symbol> _members;
     private Dictionary<string, ImmutableArray<Symbol>>? _byName;
     private NamedTypeSymbol? _base;
     private bool _baseResolved;
     private ImmutableArray<NamedTypeSymbol> _interfaces;
-    private ImmutableArray<string?> _tupleNames;
+    private readonly ImmutableArray<string?> _tupleNames = tupleNames;
 
-    public ConstructedNamedType(NamedTypeSymbol definition, ImmutableArray<TypeSymbol> typeArguments, ImmutableArray<string?> tupleNames = default)
-    {
-        _definition = definition;
-        _typeArguments = typeArguments;
-        _map = new TypeMap(definition.TypeParameters, typeArguments);
-        _tupleNames = tupleNames;
-    }
-
-    public TypeMap Map => _map;
+    public TypeMap Map { get; } = new TypeMap(definition.TypeParameters, typeArguments);
     public override NamedTypeSymbol OriginalDefinition => _definition;
     public override Symbol? ContainingSymbol => _definition.ContainingSymbol;
     public override string Name => _definition.Name;
@@ -182,16 +221,28 @@ public sealed class ConstructedNamedType : NamedTypeSymbol
     public override bool IsFromSource => _definition.IsFromSource;
     public override bool IsTuple => !_tupleNames.IsDefault || _definition.SpecialType == SpecialType.ValueTuple || _definition.ToMetadataString().StartsWith("System.ValueTuple`", StringComparison.Ordinal);
     public override ImmutableArray<string?> TupleElementNames => _tupleNames;
-    public override ImmutableArray<AttributeData> GetAttributes() => _definition.GetAttributes();
+    public override ImmutableArray<AttributeData> GetAttributes()
+    {
+        return _definition.GetAttributes();
+    }
+
     public override ImmutableArray<SourceLocation> Locations => _definition.Locations;
 
     public override ImmutableArray<TypeSymbol> UnionCases
     {
         get
         {
-            if (!_definition.IsUnionType) return ImmutableArray<TypeSymbol>.Empty;
-            var b = ImmutableArray.CreateBuilder<TypeSymbol>();
-            foreach (var c in _definition.UnionCases) b.Add(_map.Substitute(c));
+            if (!_definition.IsUnionType)
+            {
+                return [];
+            }
+
+            ImmutableArray<TypeSymbol>.Builder b = ImmutableArray.CreateBuilder<TypeSymbol>();
+            foreach (TypeSymbol c in _definition.UnionCases)
+            {
+                b.Add(Map.Substitute(c));
+            }
+
             return b.ToImmutable();
         }
     }
@@ -204,8 +255,8 @@ public sealed class ConstructedNamedType : NamedTypeSymbol
         {
             if (!_baseResolved)
             {
-                var b = _definition.BaseType;
-                _base = b == null ? null : _map.Substitute(b) as NamedTypeSymbol;
+                NamedTypeSymbol? b = _definition.BaseType;
+                _base = b == null ? null : Map.Substitute(b) as NamedTypeSymbol;
                 _baseResolved = true;
             }
             return _base;
@@ -217,38 +268,37 @@ public sealed class ConstructedNamedType : NamedTypeSymbol
         get
         {
             if (_interfaces.IsDefault)
-                _interfaces = _definition.Interfaces.Select(i => (NamedTypeSymbol)_map.Substitute(i)).ToImmutableArray();
+            {
+                _interfaces = [.. _definition.Interfaces.Select(i => (NamedTypeSymbol)Map.Substitute(i))];
+            }
+
             return _interfaces;
         }
     }
 
-    public override MethodSymbol? DelegateInvokeMethod
-    {
-        get
-        {
-            if (_definition.DelegateInvokeMethod == null) return null;
-            return GetMembers("Invoke").OfType<MethodSymbol>().FirstOrDefault();
-        }
-    }
+    public override MethodSymbol? DelegateInvokeMethod => _definition.DelegateInvokeMethod == null ? null : GetMembers("Invoke").OfType<MethodSymbol>().FirstOrDefault();
 
     public override ImmutableArray<Symbol> GetMembers()
     {
         if (_members.IsDefault)
         {
-            var b = ImmutableArray.CreateBuilder<Symbol>();
-            foreach (var m in _definition.GetMembers())
+            ImmutableArray<Symbol>.Builder b = ImmutableArray.CreateBuilder<Symbol>();
+            foreach (Symbol m in _definition.GetMembers())
             {
                 switch (m)
                 {
-                    case MethodSymbol ms: b.Add(new SubstitutedMethodSymbol(this, ms, _map)); break;
-                    case FieldSymbol fs: b.Add(new SubstitutedFieldSymbol(this, fs, _map)); break;
-                    case PropertySymbol ps: b.Add(new SubstitutedPropertySymbol(this, ps, _map)); break;
+                    case MethodSymbol ms: b.Add(new SubstitutedMethodSymbol(this, ms, Map)); break;
+                    case FieldSymbol fs: b.Add(new SubstitutedFieldSymbol(this, fs, Map)); break;
+                    case PropertySymbol ps: b.Add(new SubstitutedPropertySymbol(this, ps, Map)); break;
                     default: b.Add(m); break;
                 }
             }
             _members = b.ToImmutable();
             // link accessors to substituted properties
-            foreach (var p in _members.OfType<SubstitutedPropertySymbol>()) p.Link(_members);
+            foreach (SubstitutedPropertySymbol p in _members.OfType<SubstitutedPropertySymbol>())
+            {
+                p.Link(_members);
+            }
         }
         return _members;
     }
@@ -257,10 +307,14 @@ public sealed class ConstructedNamedType : NamedTypeSymbol
     {
         if (_byName == null)
         {
-            var d = new Dictionary<string, ImmutableArray<Symbol>>();
-            foreach (var g in GetMembers().GroupBy(m => m.Name)) d[g.Key] = g.ToImmutableArray();
+            Dictionary<string, ImmutableArray<Symbol>> d = [];
+            foreach (IGrouping<string, Symbol> g in GetMembers().GroupBy(m => m.Name))
+            {
+                d[g.Key] = [.. g];
+            }
+
             _byName = d;
         }
-        return _byName.TryGetValue(name, out var r) ? r : ImmutableArray<Symbol>.Empty;
+        return _byName.TryGetValue(name, out ImmutableArray<Symbol> r) ? r : [];
     }
 }

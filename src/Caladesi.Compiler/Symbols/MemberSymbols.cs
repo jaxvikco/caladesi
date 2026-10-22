@@ -8,7 +8,10 @@ public readonly record struct ConstantValue(object? Value)
 {
     public static readonly ConstantValue Null = new(null);
     public bool IsNull => Value == null;
-    public override string ToString() => Value?.ToString() ?? "null";
+    public override string ToString()
+    {
+        return Value?.ToString() ?? "null";
+    }
 }
 
 public enum MethodKind
@@ -23,7 +26,7 @@ public abstract class MethodSymbol : Symbol
     public abstract MethodKind MethodKind { get; }
     public abstract TypeSymbol ReturnType { get; }
     public abstract ImmutableArray<ParameterSymbol> Parameters { get; }
-    public virtual ImmutableArray<TypeParameterSymbol> TypeParameters => ImmutableArray<TypeParameterSymbol>.Empty;
+    public virtual ImmutableArray<TypeParameterSymbol> TypeParameters => [];
     public virtual ImmutableArray<TypeSymbol> TypeArguments => TypeParameters.CastArray<TypeSymbol>();
     public int Arity => TypeParameters.Length;
     public bool IsGenericMethod => Arity > 0;
@@ -39,35 +42,28 @@ public abstract class MethodSymbol : Symbol
     public new virtual MethodSymbol OriginalDefinition => this;
     public virtual MethodSymbol ConstructedFrom => this;
     public bool IsDefinition => ReferenceEquals(OriginalDefinition, this);
-    public virtual ImmutableArray<MethodSymbol> ExplicitInterfaceImplementations => ImmutableArray<MethodSymbol>.Empty;
+    public virtual ImmutableArray<MethodSymbol> ExplicitInterfaceImplementations => [];
     public bool HasParamsArray => Parameters.Length > 0 && Parameters[^1].IsParams;
 
     public MethodSymbol Construct(ImmutableArray<TypeSymbol> typeArguments)
     {
-        if (typeArguments.Length != Arity) throw new ArgumentException("wrong number of type arguments");
-        return new ConstructedMethodSymbol(this, typeArguments);
+        return typeArguments.Length != Arity
+            ? throw new ArgumentException("wrong number of type arguments")
+            : (MethodSymbol)new ConstructedMethodSymbol(this, typeArguments);
     }
 }
 
-public sealed class ConstructedMethodSymbol : MethodSymbol
+public sealed class ConstructedMethodSymbol(MethodSymbol definition, ImmutableArray<TypeSymbol> typeArguments) : MethodSymbol
 {
-    private readonly MethodSymbol _definition;
-    private readonly ImmutableArray<TypeSymbol> _typeArguments;
-    private readonly TypeMap _map;
+    private readonly MethodSymbol _definition = definition;
+    private readonly ImmutableArray<TypeSymbol> _typeArguments = typeArguments;
     private ImmutableArray<ParameterSymbol> _params;
-
-    public ConstructedMethodSymbol(MethodSymbol definition, ImmutableArray<TypeSymbol> typeArguments)
-    {
-        _definition = definition;
-        _typeArguments = typeArguments;
-        _map = new TypeMap(definition.TypeParameters, typeArguments);
-    }
 
     public override string Name => _definition.Name;
     public override string MetadataName => _definition.MetadataName;
     public override Symbol? ContainingSymbol => _definition.ContainingSymbol;
     public override MethodKind MethodKind => _definition.MethodKind;
-    public override TypeSymbol ReturnType => _map.Substitute(_definition.ReturnType);
+    public override TypeSymbol ReturnType => Map.Substitute(_definition.ReturnType);
     public override ImmutableArray<TypeSymbol> TypeArguments => _typeArguments;
     public override ImmutableArray<TypeParameterSymbol> TypeParameters => _definition.TypeParameters;
     public override MethodSymbol OriginalDefinition => _definition.OriginalDefinition;
@@ -83,38 +79,40 @@ public sealed class ConstructedMethodSymbol : MethodSymbol
     public override bool IsFromSource => _definition.IsFromSource;
     public override Symbol? AssociatedSymbol => _definition.AssociatedSymbol;
     public override ImmutableArray<SourceLocation> Locations => _definition.Locations;
-    public override ImmutableArray<AttributeData> GetAttributes() => _definition.GetAttributes();
-    public TypeMap Map => _map;
+    public override ImmutableArray<AttributeData> GetAttributes()
+    {
+        return _definition.GetAttributes();
+    }
+
+    public TypeMap Map { get; } = new TypeMap(definition.TypeParameters, typeArguments);
 
     public override ImmutableArray<ParameterSymbol> Parameters
     {
         get
         {
             if (_params.IsDefault)
-                _params = _definition.Parameters.Select(p => p.WithType(_map.Substitute(p.Type), this)).ToImmutableArray();
+            {
+                _params = [.. _definition.Parameters.Select(p => p.WithType(Map.Substitute(p.Type), this))];
+            }
+
             return _params;
         }
     }
 }
 
-public sealed class SubstitutedMethodSymbol : MethodSymbol
+public sealed class SubstitutedMethodSymbol(ConstructedNamedType container, MethodSymbol original, TypeMap map) : MethodSymbol
 {
-    private readonly ConstructedNamedType _container;
-    private readonly MethodSymbol _original;
-    private readonly TypeMap _map;
+    private readonly ConstructedNamedType _container = container;
+    private readonly MethodSymbol _original = original;
+    private readonly TypeMap _map = map;
     private ImmutableArray<ParameterSymbol> _params;
     private ImmutableArray<TypeParameterSymbol> _typeParams;
-    private TypeMap? _fullMap;
     private Symbol? _associated;
 
-    public SubstitutedMethodSymbol(ConstructedNamedType container, MethodSymbol original, TypeMap map)
+    internal void SetAssociated(Symbol s)
     {
-        _container = container;
-        _original = original;
-        _map = map;
+        _associated = s;
     }
-
-    internal void SetAssociated(Symbol s) => _associated = s;
 
     public override string Name => _original.Name;
     public override string MetadataName => _original.MetadataName;
@@ -131,20 +129,31 @@ public sealed class SubstitutedMethodSymbol : MethodSymbol
     public override bool IsInitOnly => _original.IsInitOnly;
     public override bool IsFromSource => _original.IsFromSource;
     public override Symbol? AssociatedSymbol => _associated ?? _original.AssociatedSymbol;
-    public override ImmutableArray<AttributeData> GetAttributes() => _original.GetAttributes();
+    public override ImmutableArray<AttributeData> GetAttributes()
+    {
+        return _original.GetAttributes();
+    }
+
     public override ImmutableArray<SourceLocation> Locations => _original.Locations;
 
     private TypeMap FullMap
     {
         get
         {
-            if (_fullMap != null) return _fullMap;
-            if (_original.Arity == 0) return _fullMap = _map;
+            if (field != null)
+            {
+                return field;
+            }
+
+            if (_original.Arity == 0)
+            {
+                return field = _map;
+            }
             // method type parameters are re-created so constructed generic methods substitute correctly
-            var tps = TypeParameters;
-            var from = _original.TypeParameters;
-            var to = tps.CastArray<TypeSymbol>();
-            return _fullMap = _map.Extend(from, to);
+            ImmutableArray<TypeParameterSymbol> tps = TypeParameters;
+            ImmutableArray<TypeParameterSymbol> from = _original.TypeParameters;
+            ImmutableArray<TypeSymbol> to = tps.CastArray<TypeSymbol>();
+            return field = _map.Extend(from, to);
         }
     }
 
@@ -152,18 +161,26 @@ public sealed class SubstitutedMethodSymbol : MethodSymbol
     {
         get
         {
-            if (_original.Arity == 0) return ImmutableArray<TypeParameterSymbol>.Empty;
+            if (_original.Arity == 0)
+            {
+                return [];
+            }
+
             if (_typeParams.IsDefault)
             {
-                var b = ImmutableArray.CreateBuilder<TypeParameterSymbol>();
-                foreach (var tp in _original.TypeParameters)
+                ImmutableArray<TypeParameterSymbol>.Builder b = ImmutableArray.CreateBuilder<TypeParameterSymbol>();
+                foreach (TypeParameterSymbol tp in _original.TypeParameters)
                 {
-                    var o = tp;
+                    TypeParameterSymbol o = tp;
                     b.Add(new TypeParameterSymbol(o.Name, o.Ordinal, this, o.Variance, self =>
                     {
-                        var t = new List<TypeSymbol>();
-                        foreach (var c in o.ConstraintTypes) t.Add(FullMap.Substitute(c));
-                        return new TypeParameterConstraints(o.HasReferenceTypeConstraint, o.HasValueTypeConstraint, o.HasConstructorConstraint && !o.HasValueTypeConstraint, o.HasNotNullConstraint, t.ToImmutableArray());
+                        List<TypeSymbol> t = [];
+                        foreach (TypeSymbol c in o.ConstraintTypes)
+                        {
+                            t.Add(FullMap.Substitute(c));
+                        }
+
+                        return new TypeParameterConstraints(o.HasReferenceTypeConstraint, o.HasValueTypeConstraint, o.HasConstructorConstraint && !o.HasValueTypeConstraint, o.HasNotNullConstraint, [.. t]);
                     }));
                 }
                 _typeParams = b.ToImmutable();
@@ -179,7 +196,10 @@ public sealed class SubstitutedMethodSymbol : MethodSymbol
         get
         {
             if (_params.IsDefault)
-                _params = _original.Parameters.Select(p => p.WithType(FullMap.Substitute(p.Type), this)).ToImmutableArray();
+            {
+                _params = [.. _original.Parameters.Select(p => p.WithType(FullMap.Substitute(p.Type), this))];
+            }
+
             return _params;
         }
     }
@@ -187,35 +207,22 @@ public sealed class SubstitutedMethodSymbol : MethodSymbol
     public override MethodSymbol? OverriddenMethod => _original.OverriddenMethod;
 }
 
-public class ParameterSymbol : Symbol
+public class ParameterSymbol(string name, TypeSymbol type, int ordinal, Symbol? container, RefKind refKind = RefKind.None,
+    bool isParams = false, ConstantValue? defaultValue = null, bool isOptional = false, bool isThis = false) : Symbol
 {
-    public ParameterSymbol(string name, TypeSymbol type, int ordinal, Symbol? container, RefKind refKind = RefKind.None,
-        bool isParams = false, ConstantValue? defaultValue = null, bool isOptional = false, bool isThis = false)
-    {
-        Name_ = name;
-        Type = type;
-        Ordinal = ordinal;
-        Container = container;
-        RefKind = refKind;
-        IsParams = isParams;
-        DefaultValue = defaultValue;
-        IsOptional = isOptional || defaultValue.HasValue;
-        IsThis = isThis;
-    }
-
-    private string Name_ { get; }
+    private string Name_ { get; } = name;
     public override string Name => Name_;
     public override SymbolKind Kind => SymbolKind.Parameter;
-    public TypeSymbol Type { get; internal set; }
-    public int Ordinal { get; }
-    public Symbol? Container { get; }
+    public TypeSymbol Type { get; internal set; } = type;
+    public int Ordinal { get; } = ordinal;
+    public Symbol? Container { get; } = container;
     public override Symbol? ContainingSymbol => Container;
-    public RefKind RefKind { get; }
-    public bool IsParams { get; }
-    public ConstantValue? DefaultValue { get; }
-    public bool IsOptional { get; }
+    public RefKind RefKind { get; } = refKind;
+    public bool IsParams { get; } = isParams;
+    public ConstantValue? DefaultValue { get; } = defaultValue;
+    public bool IsOptional { get; } = isOptional || defaultValue.HasValue;
     /// <summary>True for the <c>this</c> parameter of an extension method.</summary>
-    public bool IsThis { get; }
+    public bool IsThis { get; } = isThis;
     public ParameterSymbol? OriginalParameter { get; internal set; }
     public SyntaxNode? DeclaringSyntax { get; init; }
     /// <summary>Set by closure analysis when the parameter is captured by a lambda.</summary>
@@ -224,11 +231,16 @@ public class ParameterSymbol : Symbol
     public bool IsFromSourceParam { get; init; }
     public override bool IsFromSource => IsFromSourceParam;
 
-    public virtual ParameterSymbol WithType(TypeSymbol type, Symbol container) =>
-        new(Name, type, Ordinal, container, RefKind, IsParams, DefaultValue, IsOptional, IsThis)
+    public virtual ParameterSymbol WithType(TypeSymbol type, Symbol container)
+    {
+        return new(Name, type, Ordinal, container, RefKind, IsParams, DefaultValue, IsOptional, IsThis)
         { OriginalParameter = OriginalParameter ?? this, DeclaringSyntax = DeclaringSyntax, IsFromSourceParam = IsFromSourceParam };
+    }
 
-    public override string ToString() => Name + ": " + Type.ToDisplayString();
+    public override string ToString()
+    {
+        return Name + ": " + Type.ToDisplayString();
+    }
 }
 
 public abstract class FieldSymbol : Symbol
@@ -242,18 +254,11 @@ public abstract class FieldSymbol : Symbol
     public virtual Symbol? AssociatedSymbol => null;
 }
 
-public sealed class SubstitutedFieldSymbol : FieldSymbol
+public sealed class SubstitutedFieldSymbol(ConstructedNamedType container, FieldSymbol original, TypeMap map) : FieldSymbol
 {
-    private readonly ConstructedNamedType _container;
-    private readonly FieldSymbol _original;
-    private readonly TypeMap _map;
-
-    public SubstitutedFieldSymbol(ConstructedNamedType container, FieldSymbol original, TypeMap map)
-    {
-        _container = container;
-        _original = original;
-        _map = map;
-    }
+    private readonly ConstructedNamedType _container = container;
+    private readonly FieldSymbol _original = original;
+    private readonly TypeMap _map = map;
 
     public override string Name => _original.Name;
     public override Symbol? ContainingSymbol => _container;
@@ -264,7 +269,10 @@ public sealed class SubstitutedFieldSymbol : FieldSymbol
     public override ConstantValue? ConstantValue => _original.ConstantValue;
     public override bool IsReadOnly => _original.IsReadOnly;
     public override Accessibility DeclaredAccessibility => _original.DeclaredAccessibility;
-    public override ImmutableArray<AttributeData> GetAttributes() => _original.GetAttributes();
+    public override ImmutableArray<AttributeData> GetAttributes()
+    {
+        return _original.GetAttributes();
+    }
 }
 
 public abstract class PropertySymbol : Symbol
@@ -273,7 +281,7 @@ public abstract class PropertySymbol : Symbol
     public abstract TypeSymbol Type { get; }
     public abstract MethodSymbol? GetMethod { get; }
     public abstract MethodSymbol? SetMethod { get; }
-    public virtual ImmutableArray<ParameterSymbol> Parameters => ImmutableArray<ParameterSymbol>.Empty;
+    public virtual ImmutableArray<ParameterSymbol> Parameters => [];
     public bool IsIndexer => Parameters.Length > 0;
     public new virtual PropertySymbol OriginalDefinition => this;
     public virtual PropertySymbol? OverriddenProperty => null;
@@ -281,26 +289,23 @@ public abstract class PropertySymbol : Symbol
     public bool IsInitOnly => SetMethod?.IsInitOnly == true;
 }
 
-public sealed class SubstitutedPropertySymbol : PropertySymbol
+public sealed class SubstitutedPropertySymbol(ConstructedNamedType container, PropertySymbol original, TypeMap map) : PropertySymbol
 {
-    private readonly ConstructedNamedType _container;
-    private readonly PropertySymbol _original;
-    private readonly TypeMap _map;
+    private readonly ConstructedNamedType _container = container;
+    private readonly PropertySymbol _original = original;
+    private readonly TypeMap _map = map;
     private MethodSymbol? _get, _set;
     private ImmutableArray<ParameterSymbol> _params;
 
-    public SubstitutedPropertySymbol(ConstructedNamedType container, PropertySymbol original, TypeMap map)
-    {
-        _container = container;
-        _original = original;
-        _map = map;
-    }
-
     internal void Link(ImmutableArray<Symbol> members)
     {
-        foreach (var m in members)
+        foreach (Symbol m in members)
         {
-            if (m is not SubstitutedMethodSymbol sm) continue;
+            if (m is not SubstitutedMethodSymbol sm)
+            {
+                continue;
+            }
+
             if (ReferenceEquals(sm.OriginalDefinition, _original.GetMethod?.OriginalDefinition)) { _get = sm; sm.SetAssociated(this); }
             else if (ReferenceEquals(sm.OriginalDefinition, _original.SetMethod?.OriginalDefinition)) { _set = sm; sm.SetAssociated(this); }
         }
@@ -317,45 +322,45 @@ public sealed class SubstitutedPropertySymbol : PropertySymbol
     public override bool IsOverride => _original.IsOverride;
     public override Accessibility DeclaredAccessibility => _original.DeclaredAccessibility;
     public override PropertySymbol OriginalDefinition => _original.OriginalDefinition;
-    public override ImmutableArray<AttributeData> GetAttributes() => _original.GetAttributes();
+    public override ImmutableArray<AttributeData> GetAttributes()
+    {
+        return _original.GetAttributes();
+    }
 
     public override ImmutableArray<ParameterSymbol> Parameters
     {
         get
         {
             if (_params.IsDefault)
-                _params = _original.Parameters.Select(p => p.WithType(_map.Substitute(p.Type), this)).ToImmutableArray();
+            {
+                _params = [.. _original.Parameters.Select(p => p.WithType(_map.Substitute(p.Type), this))];
+            }
+
             return _params;
         }
     }
 }
 
-public sealed class LocalSymbol : Symbol
+public sealed class LocalSymbol(string name, TypeSymbol type, bool isConst, Symbol? container, SyntaxNode? declaration = null) : Symbol
 {
-    public LocalSymbol(string name, TypeSymbol type, bool isConst, Symbol? container, SyntaxNode? declaration = null)
-    {
-        Name_ = name;
-        Type = type;
-        IsConst = isConst;
-        Container = container;
-        DeclaringSyntax = declaration;
-    }
-
-    private string Name_ { get; }
+    private string Name_ { get; } = name;
     public override string Name => Name_;
     public override SymbolKind Kind => SymbolKind.Local;
-    public TypeSymbol Type { get; set; }
-    public bool IsConst { get; }
-    public Symbol? Container { get; set; }
+    public TypeSymbol Type { get; set; } = type;
+    public bool IsConst { get; } = isConst;
+    public Symbol? Container { get; set; } = container;
     public override Symbol? ContainingSymbol => Container;
-    public SyntaxNode? DeclaringSyntax { get; }
+    public SyntaxNode? DeclaringSyntax { get; } = declaration;
     public ConstantValue? ConstantValue { get; set; }
     public bool IsCaptured { get; set; }
     public bool IsReassigned { get; set; }
     public bool IsUsingVariable { get; set; }
     public bool IsSynthesized { get; init; }
     public bool IsFixedUp { get; set; }
-    public override string ToString() => Name + ": " + Type.ToDisplayString();
+    public override string ToString()
+    {
+        return Name + ": " + Type.ToDisplayString();
+    }
 }
 
 public sealed class LabelSymbol(string name) : Symbol
@@ -368,8 +373,12 @@ internal static class ImmutableArrayExtensions
 {
     public static ImmutableArray<TBase> CastArray<TBase>(this ImmutableArray<TypeParameterSymbol> a) where TBase : class
     {
-        var b = ImmutableArray.CreateBuilder<TBase>(a.Length);
-        foreach (var x in a) b.Add((TBase)(object)x);
+        ImmutableArray<TBase>.Builder b = ImmutableArray.CreateBuilder<TBase>(a.Length);
+        foreach (TypeParameterSymbol x in a)
+        {
+            b.Add((TBase)(object)x);
+        }
+
         return b.MoveToImmutable();
     }
 }

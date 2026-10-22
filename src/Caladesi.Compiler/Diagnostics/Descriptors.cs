@@ -3,8 +3,10 @@ namespace Caladesi.Compiler.Diagnostics;
 /// <summary>The catalog of every diagnostic the compiler can produce. Codes are stable.</summary>
 public static class Descriptors
 {
-    private static DiagnosticDescriptor E(int n, string msg) => new($"CAL{n:D4}", DiagnosticSeverity.Error, msg);
-    private static DiagnosticDescriptor W(int n, string msg) => new($"CAL{n:D4}", DiagnosticSeverity.Warning, msg);
+    private static DiagnosticDescriptor E(int n, string msg)
+    {
+        return new($"CAL{n:D4}", DiagnosticSeverity.Error, msg);
+    }
 
     // ---- Lexical / syntax (0001-0099)
     public static readonly DiagnosticDescriptor UnexpectedCharacter = E(1, "Unexpected character '{0}'.");

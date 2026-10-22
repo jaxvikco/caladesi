@@ -4,6 +4,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <RootNamespace>Caladesi_E2E</RootNamespace>
+    <RootNamespace>Caladesi.E2E</RootNamespace>
+    <!-- MSTest requires public test classes. -->
+    <NoWarn>$(NoWarn);CA1515</NoWarn>
   </PropertyGroup>
 </Project>

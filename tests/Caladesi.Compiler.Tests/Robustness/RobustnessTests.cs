@@ -1,88 +1,110 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Text;
 using Caladesi.Compiler.Diagnostics;
+using Caladesi.Compiler.Emit;
 
 namespace Caladesi.Compiler.Tests.Robustness;
 
 [TestClass]
 public class RobustnessTests
 {
-    private static int FuzzIterations => int.TryParse(Environment.GetEnvironmentVariable("CALADESI_FUZZ"), out var n) ? n : 25;
+    private static int FuzzIterations => int.TryParse(Environment.GetEnvironmentVariable("CALADESI_FUZZ"), out int n) ? n : 25;
 
     private static string RepoRoot()
     {
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "Caladesi.slnx"))) dir = dir.Parent;
+        DirectoryInfo? dir = new(AppContext.BaseDirectory);
+        while (dir != null && !File.Exists(Path.Combine(dir.FullName, "Caladesi.slnx")))
+        {
+            dir = dir.Parent;
+        }
+
         return dir?.FullName ?? throw new InvalidOperationException("repository root not found");
     }
 
-    private static IEnumerable<string> SampleSources() =>
-        Directory.GetFiles(Path.Combine(RepoRoot(), "samples"), "Program.cala", SearchOption.AllDirectories)
+    private static IEnumerable<string> SampleSources()
+    {
+        return Directory.GetFiles(Path.Combine(RepoRoot(), "samples"), "Program.cala", SearchOption.AllDirectories)
             .Where(f => !f.Contains("errors-"))
             .Select(File.ReadAllText);
+    }
 
     private static readonly string[] s_fragments =
         ["(", ")", "{", "}", "[", "]", "<", ">", ";", ",", ".", "?", "=>", "=", "await ", "yield ", "class ", "function ", "let ", "import ", "@", "`${", "\"", "'", "/*", "|", "&", "!", "...", "0x", "1e", "\\"];
 
     [TestMethod]
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The test exists to detect any exception escaping the compiler.")]
     public void MutatedSourcesNeverCrashTheCompiler()
     {
-        var rng = new Random(int.TryParse(Environment.GetEnvironmentVariable("CALADESI_FUZZ_SEED"), out var seed) ? seed : 12345);
-        var failures = new List<string>();
-        var count = 0;
-        foreach (var source in SampleSources())
+        Random rng = new(int.TryParse(Environment.GetEnvironmentVariable("CALADESI_FUZZ_SEED"), out int seed) ? seed : 12345);
+        List<string> failures = [];
+        int count = 0;
+        foreach (string source in SampleSources())
         {
-            for (var i = 0; i < FuzzIterations; i++)
+            for (int i = 0; i < FuzzIterations; i++)
             {
-                var text = Mutate(source, rng);
+                string text = Mutate(source, rng);
                 count++;
                 string? failure = null;
-                var worker = new Thread(() =>
+                Thread worker = new(() =>
                 {
                     try
                     {
-                        var comp = TestCompiler.Create(text);
-                        var diags = comp.GetDiagnostics();
+                        Compilation comp = TestCompiler.Create(text);
+                        System.Collections.Immutable.ImmutableArray<Diagnostic> diags = comp.GetDiagnostics();
                         if (!diags.Any(d => d.EffectiveSeverity == DiagnosticSeverity.Error))
                         {
-                            using var pe = new MemoryStream();
-                            comp.Emit(pe);
+                            using MemoryStream pe = new();
+                            _ = comp.Emit(pe);
                         }
                     }
                     catch (Exception ex)
                     {
                         failure = ex.GetType().Name + ": " + ex.Message + "\n" + string.Join("\n", (ex.StackTrace ?? "").Split('\n').Take(6));
                     }
-                }, 64 * 1024 * 1024) { IsBackground = true };
+                }, 64 * 1024 * 1024)
+                { IsBackground = true };
                 worker.Start();
-                if (!worker.Join(TimeSpan.FromSeconds(20))) failure = "HANG (no result after 20s)";
+                if (!worker.Join(TimeSpan.FromSeconds(20)))
+                {
+                    failure = "HANG (no result after 20s)";
+                }
+
                 if (failure != null)
                 {
                     failures.Add(failure + "\n--- source ---\n" + text);
-                    if (failures.Count >= 3) break;
+                    if (failures.Count >= 3)
+                    {
+                        break;
+                    }
                 }
             }
-            if (failures.Count >= 3) break;
+            if (failures.Count >= 3)
+            {
+                break;
+            }
         }
         Assert.IsEmpty(failures, $"{failures.Count} crashes in {count} runs:\n" + string.Join("\n=====\n", failures));
     }
 
+    [SuppressMessage("Security", "CA5394:Do not use insecure randomness", Justification = "Seeded Random keeps the fuzz mutations reproducible; this is not security-sensitive.")]
     private static string Mutate(string s, Random rng)
     {
-        var sb = new System.Text.StringBuilder(s);
-        var edits = rng.Next(1, 4);
-        for (var e = 0; e < edits && sb.Length > 0; e++)
+        StringBuilder sb = new(s);
+        int edits = rng.Next(1, 4);
+        for (int e = 0; e < edits && sb.Length > 0; e++)
         {
-            var pos = rng.Next(sb.Length);
+            int pos = rng.Next(sb.Length);
             switch (rng.Next(4))
             {
-                case 0: sb.Remove(pos, Math.Min(rng.Next(1, 6), sb.Length - pos)); break;
-                case 1: sb.Insert(pos, s_fragments[rng.Next(s_fragments.Length)]); break;
+                case 0: _ = sb.Remove(pos, Math.Min(rng.Next(1, 6), sb.Length - pos)); break;
+                case 1: _ = sb.Insert(pos, s_fragments[rng.Next(s_fragments.Length)]); break;
                 case 2:
-                {
-                    var len = Math.Min(rng.Next(1, 20), sb.Length - pos);
-                    var piece = sb.ToString(pos, len);
-                    sb.Insert(rng.Next(sb.Length), piece);
-                    break;
-                }
+                    {
+                        int len = Math.Min(rng.Next(1, 20), sb.Length - pos);
+                        string piece = sb.ToString(pos, len);
+                        _ = sb.Insert(rng.Next(sb.Length), piece);
+                        break;
+                    }
                 default: sb.Length = Math.Max(1, pos); break;
             }
         }
@@ -92,14 +114,17 @@ public class RobustnessTests
     [TestMethod]
     public void EmitIsDeterministic()
     {
-        foreach (var source in SampleSources().Take(6))
+        foreach (string? source in SampleSources().Take(6))
         {
-            using var a = new MemoryStream();
-            using var b = new MemoryStream();
-            var ra = TestCompiler.Create(source).Emit(a);
-            var rb = TestCompiler.Create(source).Emit(b);
+            using MemoryStream a = new();
+            using MemoryStream b = new();
+            EmitResult ra = TestCompiler.Create(source).Emit(a);
+            EmitResult rb = TestCompiler.Create(source).Emit(b);
             Assert.AreEqual(ra.Success, rb.Success);
-            if (ra.Success) CollectionAssert.AreEqual(a.ToArray(), b.ToArray());
+            if (ra.Success)
+            {
+                CollectionAssert.AreEqual(a.ToArray(), b.ToArray());
+            }
         }
     }
 }

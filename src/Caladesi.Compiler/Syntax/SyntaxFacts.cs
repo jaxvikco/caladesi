@@ -4,27 +4,63 @@ public static class SyntaxFacts
 {
     private static readonly Dictionary<string, SyntaxKind> s_keywords = new(StringComparer.Ordinal)
     {
-        ["break"] = SyntaxKind.BreakKeyword, ["case"] = SyntaxKind.CaseKeyword, ["catch"] = SyntaxKind.CatchKeyword,
-        ["class"] = SyntaxKind.ClassKeyword, ["const"] = SyntaxKind.ConstKeyword, ["continue"] = SyntaxKind.ContinueKeyword,
-        ["default"] = SyntaxKind.DefaultKeyword, ["do"] = SyntaxKind.DoKeyword,
-        ["else"] = SyntaxKind.ElseKeyword, ["enum"] = SyntaxKind.EnumKeyword, ["export"] = SyntaxKind.ExportKeyword,
-        ["extends"] = SyntaxKind.ExtendsKeyword, ["false"] = SyntaxKind.FalseKeyword, ["finally"] = SyntaxKind.FinallyKeyword,
-        ["for"] = SyntaxKind.ForKeyword, ["function"] = SyntaxKind.FunctionKeyword, ["if"] = SyntaxKind.IfKeyword,
-        ["import"] = SyntaxKind.ImportKeyword, ["in"] = SyntaxKind.InKeyword, ["instanceof"] = SyntaxKind.InstanceOfKeyword,
-        ["interface"] = SyntaxKind.InterfaceKeyword, ["let"] = SyntaxKind.LetKeyword, ["new"] = SyntaxKind.NewKeyword,
-        ["null"] = SyntaxKind.NullKeyword, ["return"] = SyntaxKind.ReturnKeyword, ["super"] = SyntaxKind.SuperKeyword,
-        ["switch"] = SyntaxKind.SwitchKeyword, ["this"] = SyntaxKind.ThisKeyword, ["throw"] = SyntaxKind.ThrowKeyword,
-        ["true"] = SyntaxKind.TrueKeyword, ["try"] = SyntaxKind.TryKeyword, ["typeof"] = SyntaxKind.TypeOfKeyword,
-        ["void"] = SyntaxKind.VoidKeyword, ["while"] = SyntaxKind.WhileKeyword,
-        ["await"] = SyntaxKind.AwaitKeyword, ["yield"] = SyntaxKind.YieldKeyword,
+        ["break"] = SyntaxKind.BreakKeyword,
+        ["case"] = SyntaxKind.CaseKeyword,
+        ["catch"] = SyntaxKind.CatchKeyword,
+        ["class"] = SyntaxKind.ClassKeyword,
+        ["const"] = SyntaxKind.ConstKeyword,
+        ["continue"] = SyntaxKind.ContinueKeyword,
+        ["default"] = SyntaxKind.DefaultKeyword,
+        ["do"] = SyntaxKind.DoKeyword,
+        ["else"] = SyntaxKind.ElseKeyword,
+        ["enum"] = SyntaxKind.EnumKeyword,
+        ["export"] = SyntaxKind.ExportKeyword,
+        ["extends"] = SyntaxKind.ExtendsKeyword,
+        ["false"] = SyntaxKind.FalseKeyword,
+        ["finally"] = SyntaxKind.FinallyKeyword,
+        ["for"] = SyntaxKind.ForKeyword,
+        ["function"] = SyntaxKind.FunctionKeyword,
+        ["if"] = SyntaxKind.IfKeyword,
+        ["import"] = SyntaxKind.ImportKeyword,
+        ["in"] = SyntaxKind.InKeyword,
+        ["instanceof"] = SyntaxKind.InstanceOfKeyword,
+        ["interface"] = SyntaxKind.InterfaceKeyword,
+        ["let"] = SyntaxKind.LetKeyword,
+        ["new"] = SyntaxKind.NewKeyword,
+        ["null"] = SyntaxKind.NullKeyword,
+        ["return"] = SyntaxKind.ReturnKeyword,
+        ["super"] = SyntaxKind.SuperKeyword,
+        ["switch"] = SyntaxKind.SwitchKeyword,
+        ["this"] = SyntaxKind.ThisKeyword,
+        ["throw"] = SyntaxKind.ThrowKeyword,
+        ["true"] = SyntaxKind.TrueKeyword,
+        ["try"] = SyntaxKind.TryKeyword,
+        ["typeof"] = SyntaxKind.TypeOfKeyword,
+        ["void"] = SyntaxKind.VoidKeyword,
+        ["while"] = SyntaxKind.WhileKeyword,
+        ["await"] = SyntaxKind.AwaitKeyword,
+        ["yield"] = SyntaxKind.YieldKeyword,
 
-        ["abstract"] = SyntaxKind.AbstractKeyword, ["as"] = SyntaxKind.AsKeyword, ["async"] = SyntaxKind.AsyncKeyword,
-        ["from"] = SyntaxKind.FromKeyword, ["get"] = SyntaxKind.GetKeyword,
-        ["implements"] = SyntaxKind.ImplementsKeyword, ["internal"] = SyntaxKind.InternalKeyword, ["of"] = SyntaxKind.OfKeyword,
-        ["out"] = SyntaxKind.OutKeyword, ["override"] = SyntaxKind.OverrideKeyword, ["private"] = SyntaxKind.PrivateKeyword,
-        ["protected"] = SyntaxKind.ProtectedKeyword, ["public"] = SyntaxKind.PublicKeyword, ["readonly"] = SyntaxKind.ReadonlyKeyword,
-        ["satisfies"] = SyntaxKind.SatisfiesKeyword, ["sealed"] = SyntaxKind.SealedKeyword, ["set"] = SyntaxKind.SetKeyword,
-        ["static"] = SyntaxKind.StaticKeyword, ["struct"] = SyntaxKind.StructKeyword, ["type"] = SyntaxKind.TypeKeyword,
+        ["abstract"] = SyntaxKind.AbstractKeyword,
+        ["as"] = SyntaxKind.AsKeyword,
+        ["async"] = SyntaxKind.AsyncKeyword,
+        ["from"] = SyntaxKind.FromKeyword,
+        ["get"] = SyntaxKind.GetKeyword,
+        ["implements"] = SyntaxKind.ImplementsKeyword,
+        ["internal"] = SyntaxKind.InternalKeyword,
+        ["of"] = SyntaxKind.OfKeyword,
+        ["out"] = SyntaxKind.OutKeyword,
+        ["override"] = SyntaxKind.OverrideKeyword,
+        ["private"] = SyntaxKind.PrivateKeyword,
+        ["protected"] = SyntaxKind.ProtectedKeyword,
+        ["public"] = SyntaxKind.PublicKeyword,
+        ["readonly"] = SyntaxKind.ReadonlyKeyword,
+        ["satisfies"] = SyntaxKind.SatisfiesKeyword,
+        ["sealed"] = SyntaxKind.SealedKeyword,
+        ["set"] = SyntaxKind.SetKeyword,
+        ["static"] = SyntaxKind.StaticKeyword,
+        ["struct"] = SyntaxKind.StructKeyword,
+        ["type"] = SyntaxKind.TypeKeyword,
         ["using"] = SyntaxKind.UsingKeyword,
         ["constructor"] = SyntaxKind.ConstructorKeyword,
     };
@@ -33,9 +69,17 @@ public static class SyntaxFacts
 
     private static Dictionary<SyntaxKind, string> BuildTexts()
     {
-        var d = new Dictionary<SyntaxKind, string>();
-        foreach (var kv in s_keywords) d[kv.Value] = kv.Key;
-        void P(SyntaxKind k, string t) => d[k] = t;
+        Dictionary<SyntaxKind, string> d = [];
+        foreach (KeyValuePair<string, SyntaxKind> kv in s_keywords)
+        {
+            d[kv.Value] = kv.Key;
+        }
+
+        void P(SyntaxKind k, string t)
+        {
+            d[k] = t;
+        }
+
         P(SyntaxKind.OpenBraceToken, "{"); P(SyntaxKind.CloseBraceToken, "}"); P(SyntaxKind.OpenParenToken, "(");
         P(SyntaxKind.CloseParenToken, ")"); P(SyntaxKind.OpenBracketToken, "["); P(SyntaxKind.CloseBracketToken, "]");
         P(SyntaxKind.DotToken, "."); P(SyntaxKind.DotDotDotToken, "..."); P(SyntaxKind.SemicolonToken, ";");
@@ -63,59 +107,85 @@ public static class SyntaxFacts
         return d;
     }
 
-    public static SyntaxKind GetKeywordKind(string text) =>
-        s_keywords.TryGetValue(text, out var k) ? k : SyntaxKind.IdentifierToken;
+    public static SyntaxKind GetKeywordKind(string text)
+    {
+        return s_keywords.TryGetValue(text, out SyntaxKind k) ? k : SyntaxKind.IdentifierToken;
+    }
 
-    public static string GetText(SyntaxKind kind) => s_texts.TryGetValue(kind, out var t) ? t : kind.ToString();
+    public static string GetText(SyntaxKind kind)
+    {
+        return s_texts.TryGetValue(kind, out string? t) ? t : kind.ToString();
+    }
 
-    public static bool IsKeyword(SyntaxKind k) => k >= SyntaxKind.BreakKeyword && k <= SyntaxKind.ConstructorKeyword;
+    public static bool IsKeyword(SyntaxKind k)
+    {
+        return k is >= SyntaxKind.BreakKeyword and <= SyntaxKind.ConstructorKeyword;
+    }
 
-    public static bool IsReservedKeyword(SyntaxKind k) => k >= SyntaxKind.BreakKeyword && k <= SyntaxKind.YieldKeyword;
+    public static bool IsReservedKeyword(SyntaxKind k)
+    {
+        return k is >= SyntaxKind.BreakKeyword and <= SyntaxKind.YieldKeyword;
+    }
 
-    public static bool IsContextualKeyword(SyntaxKind k) => k >= SyntaxKind.AbstractKeyword && k <= SyntaxKind.ConstructorKeyword;
+    public static bool IsContextualKeyword(SyntaxKind k)
+    {
+        return k is >= SyntaxKind.AbstractKeyword and <= SyntaxKind.ConstructorKeyword;
+    }
 
     /// <summary>Tokens that can be used as an identifier in a binding position.</summary>
-    public static bool IsIdentifierLike(SyntaxKind k) => k == SyntaxKind.IdentifierToken || IsContextualKeyword(k);
-
-    public static bool IsAssignmentOperator(SyntaxKind k) => k switch
+    public static bool IsIdentifierLike(SyntaxKind k)
     {
-        SyntaxKind.EqualsToken or SyntaxKind.PlusEqualsToken or SyntaxKind.MinusEqualsToken or SyntaxKind.AsteriskEqualsToken
-            or SyntaxKind.AsteriskAsteriskEqualsToken or SyntaxKind.SlashEqualsToken or SyntaxKind.PercentEqualsToken
-            or SyntaxKind.AmpersandEqualsToken or SyntaxKind.BarEqualsToken or SyntaxKind.CaretEqualsToken
-            or SyntaxKind.AmpersandAmpersandEqualsToken or SyntaxKind.BarBarEqualsToken or SyntaxKind.QuestionQuestionEqualsToken
-            or SyntaxKind.LessThanLessThanEqualsToken or SyntaxKind.GreaterThanGreaterThanEqualsToken
-            or SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken => true,
-        _ => false,
-    };
+        return k == SyntaxKind.IdentifierToken || IsContextualKeyword(k);
+    }
 
-    public static bool IsModifier(SyntaxKind k) => k switch
+    public static bool IsAssignmentOperator(SyntaxKind k)
     {
-        SyntaxKind.AbstractKeyword or SyntaxKind.AsyncKeyword or SyntaxKind.ExportKeyword
-            or SyntaxKind.InternalKeyword or SyntaxKind.OverrideKeyword or SyntaxKind.PrivateKeyword
-            or SyntaxKind.ProtectedKeyword or SyntaxKind.PublicKeyword or SyntaxKind.ReadonlyKeyword
-            or SyntaxKind.SealedKeyword or SyntaxKind.StaticKeyword or SyntaxKind.StructKeyword
-            or SyntaxKind.ConstKeyword => true,
-        _ => false,
-    };
+        return k switch
+        {
+            SyntaxKind.EqualsToken or SyntaxKind.PlusEqualsToken or SyntaxKind.MinusEqualsToken or SyntaxKind.AsteriskEqualsToken
+                or SyntaxKind.AsteriskAsteriskEqualsToken or SyntaxKind.SlashEqualsToken or SyntaxKind.PercentEqualsToken
+                or SyntaxKind.AmpersandEqualsToken or SyntaxKind.BarEqualsToken or SyntaxKind.CaretEqualsToken
+                or SyntaxKind.AmpersandAmpersandEqualsToken or SyntaxKind.BarBarEqualsToken or SyntaxKind.QuestionQuestionEqualsToken
+                or SyntaxKind.LessThanLessThanEqualsToken or SyntaxKind.GreaterThanGreaterThanEqualsToken
+                or SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken => true,
+            _ => false,
+        };
+    }
+
+    public static bool IsModifier(SyntaxKind k)
+    {
+        return k switch
+        {
+            SyntaxKind.AbstractKeyword or SyntaxKind.AsyncKeyword or SyntaxKind.ExportKeyword
+                or SyntaxKind.InternalKeyword or SyntaxKind.OverrideKeyword or SyntaxKind.PrivateKeyword
+                or SyntaxKind.ProtectedKeyword or SyntaxKind.PublicKeyword or SyntaxKind.ReadonlyKeyword
+                or SyntaxKind.SealedKeyword or SyntaxKind.StaticKeyword or SyntaxKind.StructKeyword
+                or SyntaxKind.ConstKeyword => true,
+            _ => false,
+        };
+    }
 
     /// <summary>Returns the binary operator precedence (higher binds tighter) or 0 if not a binary operator.</summary>
-    public static int GetBinaryPrecedence(SyntaxKind k) => k switch
+    public static int GetBinaryPrecedence(SyntaxKind k)
     {
-        SyntaxKind.QuestionQuestionToken => 1,
-        SyntaxKind.BarBarToken => 2,
-        SyntaxKind.AmpersandAmpersandToken => 3,
-        SyntaxKind.BarToken => 4,
-        SyntaxKind.CaretToken => 5,
-        SyntaxKind.AmpersandToken => 6,
-        SyntaxKind.EqualsEqualsToken or SyntaxKind.ExclamationEqualsToken => 7,
-        SyntaxKind.LessThanToken or SyntaxKind.GreaterThanToken or SyntaxKind.LessThanEqualsToken
-            or SyntaxKind.GreaterThanEqualsToken or SyntaxKind.InstanceOfKeyword or SyntaxKind.AsKeyword
-            or SyntaxKind.SatisfiesKeyword => 8,
-        SyntaxKind.LessThanLessThanToken or SyntaxKind.GreaterThanGreaterThanToken
-            or SyntaxKind.GreaterThanGreaterThanGreaterThanToken => 9,
-        SyntaxKind.PlusToken or SyntaxKind.MinusToken => 10,
-        SyntaxKind.AsteriskToken or SyntaxKind.SlashToken or SyntaxKind.PercentToken => 11,
-        SyntaxKind.AsteriskAsteriskToken => 12,
-        _ => 0,
-    };
+        return k switch
+        {
+            SyntaxKind.QuestionQuestionToken => 1,
+            SyntaxKind.BarBarToken => 2,
+            SyntaxKind.AmpersandAmpersandToken => 3,
+            SyntaxKind.BarToken => 4,
+            SyntaxKind.CaretToken => 5,
+            SyntaxKind.AmpersandToken => 6,
+            SyntaxKind.EqualsEqualsToken or SyntaxKind.ExclamationEqualsToken => 7,
+            SyntaxKind.LessThanToken or SyntaxKind.GreaterThanToken or SyntaxKind.LessThanEqualsToken
+                or SyntaxKind.GreaterThanEqualsToken or SyntaxKind.InstanceOfKeyword or SyntaxKind.AsKeyword
+                or SyntaxKind.SatisfiesKeyword => 8,
+            SyntaxKind.LessThanLessThanToken or SyntaxKind.GreaterThanGreaterThanToken
+                or SyntaxKind.GreaterThanGreaterThanGreaterThanToken => 9,
+            SyntaxKind.PlusToken or SyntaxKind.MinusToken => 10,
+            SyntaxKind.AsteriskToken or SyntaxKind.SlashToken or SyntaxKind.PercentToken => 11,
+            SyntaxKind.AsteriskAsteriskToken => 12,
+            _ => 0,
+        };
+    }
 }

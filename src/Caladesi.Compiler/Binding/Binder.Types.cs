@@ -13,37 +13,37 @@ public sealed partial class Binder
 
     internal TypeSymbol? PredefinedType(string name)
     {
-        switch (name)
+        return name switch
         {
-            case "double": return Special(SpecialType.Double);
-            case "string": return Special(SpecialType.String);
-            case "bool": return Special(SpecialType.Boolean);
-            case "object": return Special(SpecialType.Object);
-            case "never": return NeverTypeSymbol.Instance;
-            case "bigint": return Special(SpecialType.BigInteger);
-            case "int": return Special(SpecialType.Int32);
-            case "long": return Special(SpecialType.Int64);
-            case "short": return Special(SpecialType.Int16);
-            case "byte": return Special(SpecialType.Byte);
-            case "sbyte": return Special(SpecialType.SByte);
-            case "uint": return Special(SpecialType.UInt32);
-            case "ulong": return Special(SpecialType.UInt64);
-            case "ushort": return Special(SpecialType.UInt16);
-            case "float": return Special(SpecialType.Single);
-            case "decimal": return Special(SpecialType.Decimal);
-            case "nint": return Special(SpecialType.IntPtr);
-            case "nuint": return Special(SpecialType.UIntPtr);
-            case "char": return Special(SpecialType.Char);
-        }
-        return null;
+            "double" => Special(SpecialType.Double),
+            "string" => Special(SpecialType.String),
+            "bool" => Special(SpecialType.Boolean),
+            "object" => Special(SpecialType.Object),
+            "never" => NeverTypeSymbol.Instance,
+            "bigint" => Special(SpecialType.BigInteger),
+            "int" => Special(SpecialType.Int32),
+            "long" => Special(SpecialType.Int64),
+            "short" => Special(SpecialType.Int16),
+            "byte" => Special(SpecialType.Byte),
+            "sbyte" => Special(SpecialType.SByte),
+            "uint" => Special(SpecialType.UInt32),
+            "ulong" => Special(SpecialType.UInt64),
+            "ushort" => Special(SpecialType.UInt16),
+            "float" => Special(SpecialType.Single),
+            "decimal" => Special(SpecialType.Decimal),
+            "nint" => Special(SpecialType.IntPtr),
+            "nuint" => Special(SpecialType.UIntPtr),
+            "char" => Special(SpecialType.Char),
+            _ => null,
+        };
     }
 
     // ------------------------------------------------------------------ BindType
 
     public TypeSymbol BindType(TypeSyntax syntax, bool allowVoid = false)
     {
-        var t = BindTypeCore(syntax, allowVoid);
-        if (TypeMap != null) TypeMap[syntax] = t;
+        TypeSymbol t = BindTypeCore(syntax, allowVoid);
+        TypeMap?[syntax] = t;
         return t;
     }
 
@@ -52,49 +52,52 @@ public sealed partial class Binder
         switch (syntax)
         {
             case IdentifierNameSyntax id:
-            {
-                var text = id.Identifier.Text;
-                if (id.Identifier.Kind == SyntaxKind.VoidKeyword)
                 {
-                    if (!allowVoid) { Report(Descriptors.VoidNotAllowed, syntax); return ErrorType; }
-                    return VoidType;
+                    string text = id.Identifier.Text;
+                    if (id.Identifier.Kind == SyntaxKind.VoidKeyword)
+                    {
+                        if (!allowVoid) { Report(Descriptors.VoidNotAllowed, syntax); return ErrorType; }
+                        return VoidType;
+                    }
+                    return id.Identifier.IsMissing ? ErrorType : BindSimpleTypeName(text, [], syntax, id.Identifier.Span);
                 }
-                if (id.Identifier.IsMissing) return ErrorType;
-                return BindSimpleTypeName(text, ImmutableArray<TypeSymbol>.Empty, syntax, id.Identifier.Span);
-            }
             case GenericNameSyntax g:
-            {
-                var args = BindTypeArguments(g.TypeArguments);
-                return BindSimpleTypeName(g.Name, args, syntax, g.Identifier.Span);
-            }
+                {
+                    ImmutableArray<TypeSymbol> args = BindTypeArguments(g.TypeArguments);
+                    return BindSimpleTypeName(g.Name, args, syntax, g.Identifier.Span);
+                }
             case QualifiedNameSyntax q:
                 return BindQualifiedTypeName(q);
             case ArrayTypeSyntax a:
-            {
-                var e = BindType(a.ElementType);
-                if (e.IsVoid) { Report(Descriptors.VoidNotAllowed, a.ElementType); return ErrorType; }
-                return _c.CreateArrayType(e);
-            }
-            case ReadonlyArrayTypeSyntax ra:
-            {
-                var inner = BindType(ra.Type);
-                if (inner is ArrayTypeSymbol at)
                 {
-                    var rol = _c.GetWellKnownType("System.Collections.Generic.IReadOnlyList`1");
-                    return rol == null ? ErrorType : rol.Construct(at.ElementType);
+                    TypeSymbol e = BindType(a.ElementType);
+                    if (e.IsVoid) { Report(Descriptors.VoidNotAllowed, a.ElementType); return ErrorType; }
+                    return Compilation.CreateArrayType(e);
                 }
-                if (!inner.IsErrorType) Report(Descriptors.ReadonlyOnlyArrays, syntax);
-                return inner;
-            }
+            case ReadonlyArrayTypeSyntax ra:
+                {
+                    TypeSymbol inner = BindType(ra.Type);
+                    if (inner is ArrayTypeSymbol at)
+                    {
+                        NamedTypeSymbol? rol = Compilation.GetWellKnownType("System.Collections.Generic.IReadOnlyList`1");
+                        return rol == null ? ErrorType : rol.Construct(at.ElementType);
+                    }
+                    if (!inner.IsErrorType)
+                    {
+                        Report(Descriptors.ReadonlyOnlyArrays, syntax);
+                    }
+
+                    return inner;
+                }
             case TupleTypeSyntax tt:
                 return BindTupleType(tt);
             case UnionTypeSyntax u:
                 return BindUnionType(u);
             case NullableTypeSyntax n:
-            {
-                var e = BindType(n.ElementType);
-                return MakeNullable(e, n);
-            }
+                {
+                    TypeSymbol e = BindType(n.ElementType);
+                    return MakeNullable(e, n);
+                }
             case FunctionTypeSyntax f:
                 return BindFunctionType(f);
             case ObjectTypeSyntax:
@@ -118,7 +121,11 @@ public sealed partial class Binder
 
     private TypeSymbol MakeNullable(TypeSymbol e, SyntaxNode? at)
     {
-        if (e.IsErrorType || e is NullableTypeSymbol) return e;
+        if (e.IsErrorType || e is NullableTypeSymbol)
+        {
+            return e;
+        }
+
         if (e.IsVoid || e.IsNullType || e.IsNeverType)
         {
             Report(Descriptors.CannotBeNullable, at, e.ToDisplayString());
@@ -129,8 +136,12 @@ public sealed partial class Binder
 
     private ImmutableArray<TypeSymbol> BindTypeArguments(TypeArgumentListSyntax list, bool allowVoid = false)
     {
-        var b = ImmutableArray.CreateBuilder<TypeSymbol>(list.Arguments.Count);
-        foreach (var a in list.Arguments) b.Add(BindType(a, allowVoid));
+        ImmutableArray<TypeSymbol>.Builder b = ImmutableArray.CreateBuilder<TypeSymbol>(list.Arguments.Count);
+        foreach (TypeSyntax a in list.Arguments)
+        {
+            b.Add(BindType(a, allowVoid));
+        }
+
         return b.MoveToImmutable();
     }
 
@@ -155,9 +166,9 @@ public sealed partial class Binder
             Report(Descriptors.FeatureNotSupported, f.TypeParameters, "Generic function types");
             return ErrorType;
         }
-        var ps = f.Parameters.Parameters;
-        var args = ImmutableArray.CreateBuilder<TypeSymbol>();
-        foreach (var p in ps)
+        SeparatedSyntaxList<ParameterSyntax> ps = f.Parameters.Parameters;
+        ImmutableArray<TypeSymbol>.Builder args = ImmutableArray.CreateBuilder<TypeSymbol>();
+        foreach (ParameterSyntax p in ps)
         {
             if (p.TypeAnnotation == null)
             {
@@ -166,12 +177,16 @@ public sealed partial class Binder
             }
             else
             {
-                var pt = BindType(p.TypeAnnotation.Type);
-                if (p.QuestionToken != null) pt = MakeNullable(pt, p);
+                TypeSymbol pt = BindType(p.TypeAnnotation.Type);
+                if (p.QuestionToken != null)
+                {
+                    pt = MakeNullable(pt, p);
+                }
+
                 args.Add(pt);
             }
         }
-        var ret = BindType(f.ReturnType, allowVoid: true);
+        TypeSymbol ret = BindType(f.ReturnType, allowVoid: true);
         return MakeDelegateType(args.ToImmutable(), ret, f);
     }
 
@@ -184,25 +199,32 @@ public sealed partial class Binder
         }
         if (returnType.IsVoid)
         {
-            if (parameters.Length == 0) return _c.GetWellKnownType("System.Action") ?? ErrorType;
-            var a = _c.GetWellKnownType("System.Action`" + parameters.Length);
+            if (parameters.Length == 0)
+            {
+                return Compilation.GetWellKnownType("System.Action") ?? ErrorType;
+            }
+
+            NamedTypeSymbol? a = Compilation.GetWellKnownType("System.Action`" + parameters.Length);
             return a == null ? ErrorType : a.Construct(parameters);
         }
-        var f = _c.GetWellKnownType("System.Func`" + (parameters.Length + 1));
+        NamedTypeSymbol? f = Compilation.GetWellKnownType("System.Func`" + (parameters.Length + 1));
         return f == null ? ErrorType : f.Construct(parameters.Add(returnType));
     }
 
     private TypeSymbol BindTupleType(TupleTypeSyntax tt)
     {
-        var args = ImmutableArray.CreateBuilder<TypeSymbol>();
-        var names = ImmutableArray.CreateBuilder<string?>();
-        var any = false;
-        foreach (var e in tt.Elements)
+        ImmutableArray<TypeSymbol>.Builder args = ImmutableArray.CreateBuilder<TypeSymbol>();
+        ImmutableArray<string?>.Builder names = ImmutableArray.CreateBuilder<string?>();
+        bool any = false;
+        foreach (TupleElementSyntax e in tt.Elements)
         {
             args.Add(BindType(e.Type));
-            var n = e.NameToken?.Text;
+            string? n = e.NameToken?.Text;
             names.Add(n);
-            if (n != null) any = true;
+            if (n != null)
+            {
+                any = true;
+            }
         }
         return MakeTuple(args.ToImmutable(), any ? names.ToImmutable() : default, tt);
     }
@@ -214,19 +236,21 @@ public sealed partial class Binder
             Report(Descriptors.TupleSize, at);
             return ErrorType;
         }
-        var vt = _c.GetWellKnownType("System.ValueTuple`" + elements.Length);
-        if (vt == null) return ErrorType;
-        return new ConstructedNamedType(vt, elements, names);
+        NamedTypeSymbol? vt = Compilation.GetWellKnownType("System.ValueTuple`" + elements.Length);
+        return vt == null ? ErrorType : new ConstructedNamedType(vt, elements, names);
     }
 
     private TypeSymbol BindUnionType(UnionTypeSyntax u)
     {
-        var cases = new List<TypeSymbol>();
-        var hasNull = false;
-        var allStringLiterals = u.Types.Count > 0;
-        foreach (var t in u.Types)
+        List<TypeSymbol> cases = [];
+        bool hasNull = false;
+        bool allStringLiterals = u.Types.Count > 0;
+        foreach (TypeSyntax t in u.Types)
         {
-            if (t is not LiteralTypeSyntax { Literal.Kind: SyntaxKind.StringLiteralExpression }) allStringLiterals = false;
+            if (t is not LiteralTypeSyntax { Literal.Kind: SyntaxKind.StringLiteralExpression })
+            {
+                allStringLiterals = false;
+            }
         }
         if (allStringLiterals)
         {
@@ -239,20 +263,39 @@ public sealed partial class Binder
             if (t is NullableTypeSymbol n) { hasNull = true; Add(n.Underlying); return; }
             if (t is NamedTypeSymbol { IsUnionType: true } un && !t.IsErrorType)
             {
-                foreach (var c in un.UnionCases) Add(c);
+                foreach (TypeSymbol c in un.UnionCases)
+                {
+                    Add(c);
+                }
+
                 return;
             }
-            foreach (var e in cases) if (e.Equals(t)) return;
+            foreach (TypeSymbol e in cases)
+            {
+                if (e.Equals(t))
+                {
+                    return;
+                }
+            }
+
             cases.Add(t);
         }
-        foreach (var t in u.Types)
+        foreach (TypeSyntax t in u.Types)
         {
-            var bound = BindType(t);
-            if (bound.IsErrorType) return ErrorType;
+            TypeSymbol bound = BindType(t);
+            if (bound.IsErrorType)
+            {
+                return ErrorType;
+            }
+
             if (bound.IsVoid) { Report(Descriptors.VoidNotAllowed, t); return ErrorType; }
             Add(bound);
         }
-        if (cases.Count == 0) return NullTypeSymbol.Instance;
+        if (cases.Count == 0)
+        {
+            return NullTypeSymbol.Instance;
+        }
+
         TypeSymbol result = cases.Count == 1 ? cases[0] : MakeAnonymousUnion(cases, u);
         return hasNull ? MakeNullable(result, u) : result;
     }
@@ -266,7 +309,7 @@ public sealed partial class Binder
             return ErrorType;
         }
         cases.Sort((a, b) => string.CompareOrdinal(a.ToMetadataKey(), b.ToMetadataKey()));
-        var def = _c.GetWellKnownType("Caladesi.Runtime.Union`" + cases.Count);
+        NamedTypeSymbol? def = Compilation.GetWellKnownType("Caladesi.Runtime.Union`" + cases.Count);
         if (def == null)
         {
             Report(Descriptors.RuntimeMissing, at, "Caladesi.Runtime.Union`" + cases.Count);
@@ -279,16 +322,20 @@ public sealed partial class Binder
 
     private TypeSymbol BindSimpleTypeName(string name, ImmutableArray<TypeSymbol> args, SyntaxNode syntax, Text.TextSpan span)
     {
-        if (args.IsDefault) args = ImmutableArray<TypeSymbol>.Empty;
-        if (args.Length == 0 && _typeParams.TryGetValue(name, out var tp)) { Record(syntax, tp); return tp; }
+        if (args.IsDefault)
+        {
+            args = [];
+        }
 
-        var candidates = _file.Scope.Lookup(name);
+        if (args.Length == 0 && _typeParams.TryGetValue(name, out TypeParameterSymbol? tp)) { Record(syntax, tp); return tp; }
+
+        ImmutableArray<Symbol> candidates = File.Scope.Lookup(name);
         if (candidates.Length > 0)
         {
             TypeSymbol? found = null;
-            var sawWrongArity = false;
-            var sawNonType = false;
-            foreach (var c in candidates)
+            bool sawWrongArity = false;
+            bool sawNonType = false;
+            foreach (Symbol c in candidates)
             {
                 switch (c)
                 {
@@ -308,7 +355,10 @@ public sealed partial class Binder
                         sawNonType = true;
                         break;
                 }
-                if (found != null) break;
+                if (found != null)
+                {
+                    break;
+                }
             }
             if (found != null)
             {
@@ -317,9 +367,16 @@ public sealed partial class Binder
             }
             if (sawWrongArity)
             {
-                var generic = candidates.OfType<NamedTypeSymbol>().FirstOrDefault();
-                if (args.Length == 0) Report(Descriptors.TypeRequiresArguments, span, name, generic?.OwnArity ?? 1);
-                else Report(Descriptors.TypeNotGeneric, span, name, args.Length);
+                NamedTypeSymbol? generic = candidates.OfType<NamedTypeSymbol>().FirstOrDefault();
+                if (args.Length == 0)
+                {
+                    Report(Descriptors.TypeRequiresArguments, span, name, generic?.OwnArity ?? 1);
+                }
+                else
+                {
+                    Report(Descriptors.TypeNotGeneric, span, name, args.Length);
+                }
+
                 return ErrorType;
             }
             if (sawNonType)
@@ -331,8 +388,12 @@ public sealed partial class Binder
 
         if (args.Length == 0)
         {
-            var p = PredefinedType(name);
-            if (p != null) return p;
+            TypeSymbol? p = PredefinedType(name);
+            if (p != null)
+            {
+                return p;
+            }
+
             if (name == "any") { Report(Descriptors.AnyNotAllowed, span); return ErrorType; }
             if (name == "undefined") { Report(Descriptors.UndefinedNotAllowed, span); return ErrorType; }
         }
@@ -341,32 +402,47 @@ public sealed partial class Binder
     }
 
     /// <summary>A named union that includes null (<c>type T = A | B | null</c>) is referenced as its nullable form.</summary>
-    private TypeSymbol NamedOrNullable(NamedTypeSymbol nt) =>
-        nt is SourceUnionSymbol { IncludesNull: true } ? new NullableTypeSymbol(nt) : nt;
-
-    private TypeSymbol ConstructNamed(NamedTypeSymbol def, ImmutableArray<TypeSymbol> args, SyntaxNode syntax)
+    private static TypeSymbol NamedOrNullable(NamedTypeSymbol nt)
     {
-        foreach (var a in args)
-            if (a.IsErrorType) return ErrorType;
+        return nt is SourceUnionSymbol { IncludesNull: true } ? new NullableTypeSymbol(nt) : nt;
+    }
+
+    private static TypeSymbol ConstructNamed(NamedTypeSymbol def, ImmutableArray<TypeSymbol> args, SyntaxNode _1)
+    {
+        foreach (TypeSymbol a in args)
+        {
+            if (a.IsErrorType)
+            {
+                return ErrorType;
+            }
+        }
         // nested generic types' arguments include the outer type's; only top-level generic types are constructed from syntax
         return def.Construct(args);
     }
 
-    private TypeSymbol ExpandAlias(TypeAliasSymbol alias, ImmutableArray<TypeSymbol> args)
+    private static TypeSymbol ExpandAlias(TypeAliasSymbol alias, ImmutableArray<TypeSymbol> args)
     {
-        var target = alias.Target;
-        if (args.Length == 0 || target.IsErrorType) return target;
-        var map = new TypeMap(alias.TypeParameters, args);
+        TypeSymbol target = alias.Target;
+        if (args.Length == 0 || target.IsErrorType)
+        {
+            return target;
+        }
+
+        TypeMap map = new(alias.TypeParameters, args);
         return map.Substitute(target);
     }
 
     private TypeSymbol BindQualifiedTypeName(QualifiedNameSyntax q)
     {
-        var left = ResolveNamespaceOrType(q.Left);
-        if (left == null) return ErrorType;
-        var right = q.Right;
-        var arity = right is GenericNameSyntax gn ? gn.TypeArguments.Arguments.Count : 0;
-        var args = right is GenericNameSyntax g2 ? BindTypeArguments(g2.TypeArguments) : ImmutableArray<TypeSymbol>.Empty;
+        Symbol? left = ResolveNamespaceOrType(q.Left);
+        if (left == null)
+        {
+            return ErrorType;
+        }
+
+        SimpleNameSyntax right = q.Right;
+        int arity = right is GenericNameSyntax gn ? gn.TypeArguments.Arguments.Count : 0;
+        ImmutableArray<TypeSymbol> args = right is GenericNameSyntax g2 ? BindTypeArguments(g2.TypeArguments) : [];
         NamedTypeSymbol? found = null;
         switch (left)
         {
@@ -377,16 +453,19 @@ public sealed partial class Binder
                 found = nt.GetMembers(right.Name).OfType<NamedTypeSymbol>().FirstOrDefault(x => x.OwnArity == arity);
                 break;
             case FileModuleSymbol fm:
-            {
-                var t = fm.File.Scope.GetExports(right.Name).OfType<NamedTypeSymbol>().FirstOrDefault(x => x.OwnArity == arity);
-                found = t;
-                if (found == null)
                 {
-                    var al = fm.File.Scope.GetExports(right.Name).OfType<TypeAliasSymbol>().FirstOrDefault(x => x.TypeParameters.Length == arity);
-                    if (al != null) return ExpandAlias(al, args);
+                    NamedTypeSymbol? t = fm.File.Scope.GetExports(right.Name).OfType<NamedTypeSymbol>().FirstOrDefault(x => x.OwnArity == arity);
+                    found = t;
+                    if (found == null)
+                    {
+                        TypeAliasSymbol? al = fm.File.Scope.GetExports(right.Name).OfType<TypeAliasSymbol>().FirstOrDefault(x => x.TypeParameters.Length == arity);
+                        if (al != null)
+                        {
+                            return ExpandAlias(al, args);
+                        }
+                    }
+                    break;
                 }
-                break;
-            }
         }
         if (found == null)
         {
@@ -403,76 +482,106 @@ public sealed partial class Binder
         switch (name)
         {
             case IdentifierNameSyntax id:
-            {
-                var text = id.Identifier.Text;
-                if (_typeParams.TryGetValue(text, out var tp)) return tp;
-                var cands = _file.Scope.Lookup(text);
-                foreach (var c in cands)
-                    if (c is NamespaceSymbol or FileModuleSymbol) { Record(name, c); return c; }
-                foreach (var c in cands)
-                    if (c is NamedTypeSymbol nt && nt.OwnArity == 0) { Record(name, c); return c; }
-                Report(Descriptors.NameNotFound, id.Identifier.Span, text);
-                return null;
-            }
-            case QualifiedNameSyntax q:
-            {
-                var left = ResolveNamespaceOrType(q.Left);
-                if (left == null) return null;
-                var rightName = q.Right.Name;
-                switch (left)
                 {
-                    case NamespaceSymbol ns:
+                    string text = id.Identifier.Text;
+                    if (_typeParams.TryGetValue(text, out TypeParameterSymbol? tp))
                     {
-                        var child = ns.GetNamespaceMember(rightName);
-                        if (child != null) { Record(name, child); return child; }
-                        var t = ns.GetTypeMember(rightName, 0);
-                        if (t != null) { Record(name, t); return t; }
-                        break;
+                        return tp;
                     }
-                    case NamedTypeSymbol nt:
+
+                    ImmutableArray<Symbol> cands = File.Scope.Lookup(text);
+                    foreach (Symbol c in cands)
                     {
-                        var t = nt.GetMembers(rightName).OfType<NamedTypeSymbol>().FirstOrDefault();
-                        if (t != null) { Record(name, t); return t; }
-                        break;
+                        if (c is NamespaceSymbol or FileModuleSymbol) { Record(name, c); return c; }
                     }
+
+                    foreach (Symbol c in cands)
+                    {
+                        if (c is NamedTypeSymbol nt && nt.OwnArity == 0) { Record(name, c); return c; }
+                    }
+
+                    Report(Descriptors.NameNotFound, id.Identifier.Span, text);
+                    return null;
                 }
-                Report(Descriptors.NameNotFound, q.Right.Span, rightName);
-                return null;
-            }
+            case QualifiedNameSyntax q:
+                {
+                    Symbol? left = ResolveNamespaceOrType(q.Left);
+                    if (left == null)
+                    {
+                        return null;
+                    }
+
+                    string rightName = q.Right.Name;
+                    switch (left)
+                    {
+                        case NamespaceSymbol ns:
+                            {
+                                NamespaceSymbol? child = ns.GetNamespaceMember(rightName);
+                                if (child != null) { Record(name, child); return child; }
+                                NamedTypeSymbol? t = ns.GetTypeMember(rightName, 0);
+                                if (t != null) { Record(name, t); return t; }
+                                break;
+                            }
+                        case NamedTypeSymbol nt:
+                            {
+                                NamedTypeSymbol? t = nt.GetMembers(rightName).OfType<NamedTypeSymbol>().FirstOrDefault();
+                                if (t != null) { Record(name, t); return t; }
+                                break;
+                            }
+                    }
+                    Report(Descriptors.NameNotFound, q.Right.Span, rightName);
+                    return null;
+                }
             case GenericNameSyntax g:
-            {
-                var t = BindType(g);
-                return t as NamedTypeSymbol;
-            }
+                {
+                    TypeSymbol t = BindType(g);
+                    return t as NamedTypeSymbol;
+                }
         }
         return null;
     }
 
     private void Record(SyntaxNode syntax, Symbol symbol)
     {
-        if (SymbolMap != null) SymbolMap[syntax] = symbol;
+        SymbolMap?[syntax] = symbol;
     }
 
     // ------------------------------------------------------------------ constraints
 
-    internal TypeParameterConstraints BindConstraints(TypeParameterSyntax syntax, TypeParameterSymbol symbol)
+    internal TypeParameterConstraints BindConstraints(TypeParameterSyntax syntax, TypeParameterSymbol _1)
     {
-        if (syntax.Constraint == null) return TypeParameterConstraints.None;
+        if (syntax.Constraint == null)
+        {
+            return TypeParameterConstraints.None;
+        }
+
         bool cls = false, st = false, nw = false, notnull = false;
-        var types = ImmutableArray.CreateBuilder<TypeSymbol>();
+        ImmutableArray<TypeSymbol>.Builder types = ImmutableArray.CreateBuilder<TypeSymbol>();
 
         void Visit(TypeSyntax t)
         {
             switch (t)
             {
                 case IntersectionTypeSyntax inter:
-                    foreach (var x in inter.Types) Visit(x);
+                    foreach (TypeSyntax x in inter.Types)
+                    {
+                        Visit(x);
+                    }
+
                     break;
                 case ParenthesizedTypeSyntax p:
                     Visit(p.Type);
                     break;
                 case SpecialConstraintTypeSyntax sc:
-                    if (sc.Keyword.Kind == SyntaxKind.ClassKeyword) cls = true; else st = true;
+                    if (sc.Keyword.Kind == SyntaxKind.ClassKeyword)
+                    {
+                        cls = true;
+                    }
+                    else
+                    {
+                        st = true;
+                    }
+
                     break;
                 case NewConstraintTypeSyntax:
                     nw = true;
@@ -481,11 +590,15 @@ public sealed partial class Binder
                     notnull = true;
                     break;
                 default:
-                {
-                    var bound = BindType(t);
-                    if (!bound.IsErrorType) types.Add(bound);
-                    break;
-                }
+                    {
+                        TypeSymbol bound = BindType(t);
+                        if (!bound.IsErrorType)
+                        {
+                            types.Add(bound);
+                        }
+
+                        break;
+                    }
             }
         }
         Visit(syntax.Constraint);
@@ -496,20 +609,28 @@ public sealed partial class Binder
 
     internal ImmutableArray<ParameterSymbol> BindParameters(Symbol owner, ParameterListSyntax list)
     {
-        var b = ImmutableArray.CreateBuilder<ParameterSymbol>(list.Parameters.Count);
-        var names = new HashSet<string>();
-        var seenOptional = false;
-        for (var i = 0; i < list.Parameters.Count; i++)
+        ImmutableArray<ParameterSymbol>.Builder b = ImmutableArray.CreateBuilder<ParameterSymbol>(list.Parameters.Count);
+        HashSet<string> names = [];
+        bool seenOptional = false;
+        for (int i = 0; i < list.Parameters.Count; i++)
         {
-            var p = list.Parameters[i];
-            var name = p.Identifier?.Text ?? ("<p" + i + ">");
-            if (p.Identifier != null && !names.Add(name)) Report(Descriptors.DuplicateParameter, p.Identifier, name);
-            var isThis = p.Modifiers.Any(m => m.Kind == SyntaxKind.ThisKeyword);
-            if (isThis && i != 0) Report(Descriptors.ThisParameterPosition, p);
-            var isParams = p.DotDotDotToken != null;
+            ParameterSyntax p = list.Parameters[i];
+            string name = p.Identifier?.Text ?? ("<p" + i + ">");
+            if (p.Identifier != null && !names.Add(name))
+            {
+                Report(Descriptors.DuplicateParameter, p.Identifier, name);
+            }
+
+            bool isThis = p.Modifiers.Any(m => m.Kind == SyntaxKind.ThisKeyword);
+            if (isThis && i != 0)
+            {
+                Report(Descriptors.ThisParameterPosition, p);
+            }
+
+            bool isParams = p.DotDotDotToken != null;
             TypeSymbol type;
             ConstantValue? def = null;
-            var optional = false;
+            bool optional = false;
             if (p.TypeAnnotation != null)
             {
                 type = BindType(p.TypeAnnotation.Type);
@@ -546,12 +667,21 @@ public sealed partial class Binder
                     Report(Descriptors.RestMustBeArray, p);
                     type = ErrorType;
                 }
-                if (i != list.Parameters.Count - 1) Report(Descriptors.RestMustBeLast, p);
+                if (i != list.Parameters.Count - 1)
+                {
+                    Report(Descriptors.RestMustBeLast, p);
+                }
             }
-            else if (optional) seenOptional = true;
-            else if (seenOptional && !isParams) Report(Descriptors.RequiredAfterOptional, p, name);
+            else if (optional)
+            {
+                seenOptional = true;
+            }
+            else if (seenOptional && !isParams)
+            {
+                Report(Descriptors.RequiredAfterOptional, p, name);
+            }
 
-            var ps = new ParameterSymbol(name, type, i, owner, RefKind.None, isParams, optional ? def : null, optional, isThis)
+            ParameterSymbol ps = new(name, type, i, owner, RefKind.None, isParams, optional ? def : null, optional, isThis)
             {
                 DeclaringSyntax = p,
                 IsFromSourceParam = true,
@@ -563,7 +693,11 @@ public sealed partial class Binder
 
     internal TypeSymbol AdjustDeclaredReturnType(SourceMethodSymbol method, TypeSymbol t, TypeSyntax syntax)
     {
-        if (t.IsErrorType) return t;
+        if (t.IsErrorType)
+        {
+            return t;
+        }
+
         if (method.IsAsync && !method.IsIterator)
         {
             if (!IsTaskLike(t)) { Report(Descriptors.MustReturnTask, syntax); return ErrorType; }
@@ -575,13 +709,19 @@ public sealed partial class Binder
         return t;
     }
 
-    internal bool IsTaskLike(TypeSymbol t) =>
-        t is NamedTypeSymbol n && n.OriginalDefinition.SpecialType is SpecialType.Task or SpecialType.TaskT or SpecialType.ValueTask or SpecialType.ValueTaskT;
-
-    internal bool IsIteratorReturnType(TypeSymbol t, bool isAsync)
+    internal static bool IsTaskLike(TypeSymbol t)
     {
-        if (t is not NamedTypeSymbol n) return false;
-        var def = n.OriginalDefinition.ToMetadataString();
+        return t is NamedTypeSymbol n && n.OriginalDefinition.SpecialType is SpecialType.Task or SpecialType.TaskT or SpecialType.ValueTask or SpecialType.ValueTaskT;
+    }
+
+    internal static bool IsIteratorReturnType(TypeSymbol t, bool isAsync)
+    {
+        if (t is not NamedTypeSymbol n)
+        {
+            return false;
+        }
+
+        string def = n.OriginalDefinition.ToMetadataString();
         return isAsync
             ? def is "System.Collections.Generic.IAsyncEnumerable`1" or "System.Collections.Generic.IAsyncEnumerator`1"
             : def is "System.Collections.Generic.IEnumerable`1" or "System.Collections.Generic.IEnumerator`1" or "System.Collections.IEnumerable" or "System.Collections.IEnumerator";
@@ -591,18 +731,26 @@ public sealed partial class Binder
 
     public TypeSymbol InferVariableType(ExpressionSyntax initializer)
     {
-        var inferred = Speculatively(() =>
+        TypeSymbol inferred = Speculatively(() =>
         {
-            var bound = BindExpression(initializer);
-            if (bound is BoundUnbound u && HasNaturalType(u)) bound = u.BindToType(null);
+            BoundExpression bound = BindExpression(initializer);
+            if (bound is BoundUnbound u && HasNaturalType(u))
+            {
+                bound = u.BindToType(null);
+            }
+
             return WidenInferredType(bound, initializer, report: false);
         });
         if (inferred.IsErrorType)
         {
             // the speculative pass hides diagnostics; bind again so the user learns why the type could not be inferred
-            var bound = BindExpression(initializer);
-            if (bound is BoundUnbound u && HasNaturalType(u)) bound = u.BindToType(null);
-            WidenInferredType(bound, initializer, report: true);
+            BoundExpression bound = BindExpression(initializer);
+            if (bound is BoundUnbound u && HasNaturalType(u))
+            {
+                bound = u.BindToType(null);
+            }
+
+            _ = WidenInferredType(bound, initializer, report: true);
         }
         return inferred;
     }
@@ -612,36 +760,59 @@ public sealed partial class Binder
     {
         if (e is BoundUnbound u)
         {
-            if (u.Type != null) return u.Type;
-            if (report) Report(Descriptors.CannotInferType, at);
+            if (u.Type != null)
+            {
+                return u.Type;
+            }
+
+            if (report)
+            {
+                Report(Descriptors.CannotInferType, at);
+            }
+
             return ErrorType;
         }
-        var t = e.Type;
+        TypeSymbol? t = e.Type;
         if (t == null || e is BoundMethodGroup or BoundTypeExpression or BoundNamespaceExpression or BoundModuleExpression)
         {
-            if (report) Report(Descriptors.CannotInferType, at);
+            if (report)
+            {
+                Report(Descriptors.CannotInferType, at);
+            }
+
             return ErrorType;
         }
         if (t.IsNullType)
         {
-            if (report) Report(Descriptors.CannotInferNull, at);
+            if (report)
+            {
+                Report(Descriptors.CannotInferNull, at);
+            }
+
             return ErrorType;
         }
         if (t.IsVoid)
         {
-            if (report) Report(Descriptors.VoidNotAllowed, at);
+            if (report)
+            {
+                Report(Descriptors.VoidNotAllowed, at);
+            }
+
             return ErrorType;
         }
-        if (t.IsNeverType) return ObjectType;
-        return t;
+        return t.IsNeverType ? ObjectType : t;
     }
 
-    internal ConstantValue? EvaluateEnumInitializer(SourceEnumSymbol enumType, ExpressionSyntax expr, SourceFieldSymbol[] previous)
+    internal ConstantValue? EvaluateEnumInitializer(SourceEnumSymbol _1, ExpressionSyntax expr, SourceFieldSymbol[] previous)
     {
-        PushScope(ScopeKind.Block);
+        _ = PushScope(ScopeKind.Block);
         try
         {
-            foreach (var p in previous) _scope.Symbols[p.Name] = p;
+            foreach (SourceFieldSymbol p in previous)
+            {
+                _scope.Symbols[p.Name] = p;
+            }
+
             return TryEvaluateConstant(expr, IntType);
         }
         finally { PopScope(); }
@@ -652,11 +823,14 @@ public sealed partial class Binder
     {
         return Speculatively(() =>
         {
-            var bound = BindExpression(expr, target);
-            if (bound.HasErrors) return (ConstantValue?)null;
-            var converted = ConvertImplicit(bound, target, expr, report: false);
-            if (converted.HasErrors) return null;
-            return converted.ConstantValue;
+            BoundExpression bound = BindExpression(expr, target);
+            if (bound.HasErrors)
+            {
+                return null;
+            }
+
+            BoundExpression converted = ConvertImplicit(bound, target, expr, report: false);
+            return converted.HasErrors ? null : converted.ConstantValue;
         });
     }
 }
@@ -664,5 +838,8 @@ public sealed partial class Binder
 internal static class TypeKeyExtensions
 {
     /// <summary>A stable ordering key for canonicalizing union case order.</summary>
-    public static string ToMetadataKey(this TypeSymbol t) => t.ToDisplayString();
+    public static string ToMetadataKey(this TypeSymbol t)
+    {
+        return t.ToDisplayString();
+    }
 }

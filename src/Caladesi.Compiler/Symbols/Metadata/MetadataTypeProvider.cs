@@ -8,7 +8,7 @@ internal sealed class GenericContext(ImmutableArray<TypeParameterSymbol> typePar
 {
     public ImmutableArray<TypeParameterSymbol> TypeParameters { get; } = typeParameters;
     public ImmutableArray<TypeParameterSymbol> MethodParameters { get; } = methodParameters;
-    public static readonly GenericContext Empty = new(ImmutableArray<TypeParameterSymbol>.Empty, ImmutableArray<TypeParameterSymbol>.Empty);
+    public static readonly GenericContext Empty = new([], []);
 }
 
 /// <summary>Wraps a by-ref type during signature decoding; unwrapped into <see cref="RefKind"/> by callers.</summary>
@@ -20,8 +20,15 @@ internal sealed class ByRefTypeSymbol(TypeSymbol element) : TypeSymbol
     public override TypeKind TypeKind => TypeKind.Error;
     public override bool IsReferenceType => false;
     public override bool IsValueType => false;
-    public override bool Equals(TypeSymbol? other) => other is ByRefTypeSymbol b && b.Element.Equals(Element);
-    public override int GetHashCode() => Element.GetHashCode() + 1;
+    public override bool Equals(TypeSymbol? other)
+    {
+        return other is ByRefTypeSymbol b && b.Element.Equals(Element);
+    }
+
+    public override int GetHashCode()
+    {
+        return Element.GetHashCode() + 1;
+    }
 }
 
 /// <summary>Pointers and function pointers; members mentioning these are unsupported and hidden.</summary>
@@ -29,10 +36,17 @@ public sealed class UnsupportedTypeSymbol(string name) : NamedTypeSymbol
 {
     public override string Name => name;
     public override TypeKind TypeKind => TypeKind.Error;
-    public override ImmutableArray<TypeParameterSymbol> TypeParameters => ImmutableArray<TypeParameterSymbol>.Empty;
-    public override ImmutableArray<TypeSymbol> TypeArguments => ImmutableArray<TypeSymbol>.Empty;
-    public override bool Equals(TypeSymbol? other) => ReferenceEquals(this, other);
-    public override int GetHashCode() => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(this);
+    public override ImmutableArray<TypeParameterSymbol> TypeParameters => [];
+    public override ImmutableArray<TypeSymbol> TypeArguments => [];
+    public override bool Equals(TypeSymbol? other)
+    {
+        return ReferenceEquals(this, other);
+    }
+
+    public override int GetHashCode()
+    {
+        return System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(this);
+    }
 }
 
 internal sealed class MetadataTypeProvider(MetadataAssemblySymbol assembly) : ISignatureTypeProvider<TypeSymbol, GenericContext>
@@ -44,38 +58,61 @@ internal sealed class MetadataTypeProvider(MetadataAssemblySymbol assembly) : IS
 
     public TypeSymbol GetPrimitiveType(PrimitiveTypeCode typeCode)
     {
-        var st = typeCode switch
+        SpecialType st = typeCode switch
         {
-            PrimitiveTypeCode.Boolean => SpecialType.Boolean, PrimitiveTypeCode.Char => SpecialType.Char,
-            PrimitiveTypeCode.SByte => SpecialType.SByte, PrimitiveTypeCode.Byte => SpecialType.Byte,
-            PrimitiveTypeCode.Int16 => SpecialType.Int16, PrimitiveTypeCode.UInt16 => SpecialType.UInt16,
-            PrimitiveTypeCode.Int32 => SpecialType.Int32, PrimitiveTypeCode.UInt32 => SpecialType.UInt32,
-            PrimitiveTypeCode.Int64 => SpecialType.Int64, PrimitiveTypeCode.UInt64 => SpecialType.UInt64,
-            PrimitiveTypeCode.Single => SpecialType.Single, PrimitiveTypeCode.Double => SpecialType.Double,
-            PrimitiveTypeCode.String => SpecialType.String, PrimitiveTypeCode.Object => SpecialType.Object,
-            PrimitiveTypeCode.Void => SpecialType.Void, PrimitiveTypeCode.IntPtr => SpecialType.IntPtr,
-            PrimitiveTypeCode.UIntPtr => SpecialType.UIntPtr, PrimitiveTypeCode.TypedReference => SpecialType.None,
+            PrimitiveTypeCode.Boolean => SpecialType.Boolean,
+            PrimitiveTypeCode.Char => SpecialType.Char,
+            PrimitiveTypeCode.SByte => SpecialType.SByte,
+            PrimitiveTypeCode.Byte => SpecialType.Byte,
+            PrimitiveTypeCode.Int16 => SpecialType.Int16,
+            PrimitiveTypeCode.UInt16 => SpecialType.UInt16,
+            PrimitiveTypeCode.Int32 => SpecialType.Int32,
+            PrimitiveTypeCode.UInt32 => SpecialType.UInt32,
+            PrimitiveTypeCode.Int64 => SpecialType.Int64,
+            PrimitiveTypeCode.UInt64 => SpecialType.UInt64,
+            PrimitiveTypeCode.Single => SpecialType.Single,
+            PrimitiveTypeCode.Double => SpecialType.Double,
+            PrimitiveTypeCode.String => SpecialType.String,
+            PrimitiveTypeCode.Object => SpecialType.Object,
+            PrimitiveTypeCode.Void => SpecialType.Void,
+            PrimitiveTypeCode.IntPtr => SpecialType.IntPtr,
+            PrimitiveTypeCode.UIntPtr => SpecialType.UIntPtr,
+            PrimitiveTypeCode.TypedReference => SpecialType.None,
             _ => SpecialType.None,
         };
         if (st == SpecialType.None) { SawUnsupported = true; return new UnsupportedTypeSymbol("typedref"); }
         return (TypeSymbol?)Set.GetSpecialType(st) ?? new ErrorTypeSymbol(st.MetadataName() ?? "?");
     }
 
-    public TypeSymbol GetTypeFromDefinition(MetadataReader reader, TypeDefinitionHandle handle, byte rawTypeKind) =>
-        assembly.GetTypeDefinition(handle);
+    public TypeSymbol GetTypeFromDefinition(MetadataReader reader, TypeDefinitionHandle handle, byte rawTypeKind)
+    {
+        return assembly.GetTypeDefinition(handle);
+    }
 
-    public TypeSymbol GetTypeFromReference(MetadataReader reader, TypeReferenceHandle handle, byte rawTypeKind) =>
-        assembly.ResolveTypeReference(handle);
+    public TypeSymbol GetTypeFromReference(MetadataReader reader, TypeReferenceHandle handle, byte rawTypeKind)
+    {
+        return assembly.ResolveTypeReference(handle);
+    }
 
-    public TypeSymbol GetTypeFromSpecification(MetadataReader reader, GenericContext genericContext, TypeSpecificationHandle handle, byte rawTypeKind) =>
-        reader.GetTypeSpecification(handle).DecodeSignature(this, genericContext);
+    public TypeSymbol GetTypeFromSpecification(MetadataReader reader, GenericContext genericContext, TypeSpecificationHandle handle, byte rawTypeKind)
+    {
+        return reader.GetTypeSpecification(handle).DecodeSignature(this, genericContext);
+    }
 
-    public TypeSymbol GetSZArrayType(TypeSymbol elementType) => new ArrayTypeSymbol(elementType, Set.GetSpecialType(SpecialType.Array));
+    public TypeSymbol GetSZArrayType(TypeSymbol elementType)
+    {
+        return new ArrayTypeSymbol(elementType, Set.GetSpecialType(SpecialType.Array));
+    }
 
-    public TypeSymbol GetArrayType(TypeSymbol elementType, ArrayShape shape) =>
-        new ArrayTypeSymbol(elementType, Set.GetSpecialType(SpecialType.Array), shape.Rank);
+    public TypeSymbol GetArrayType(TypeSymbol elementType, ArrayShape shape)
+    {
+        return new ArrayTypeSymbol(elementType, Set.GetSpecialType(SpecialType.Array), shape.Rank);
+    }
 
-    public TypeSymbol GetByReferenceType(TypeSymbol elementType) => new ByRefTypeSymbol(elementType);
+    public TypeSymbol GetByReferenceType(TypeSymbol elementType)
+    {
+        return new ByRefTypeSymbol(elementType);
+    }
 
     public TypeSymbol GetPointerType(TypeSymbol elementType)
     {
@@ -89,25 +126,37 @@ internal sealed class MetadataTypeProvider(MetadataAssemblySymbol assembly) : IS
         return new UnsupportedTypeSymbol("function pointer");
     }
 
-    public TypeSymbol GetPinnedType(TypeSymbol elementType) => elementType;
+    public TypeSymbol GetPinnedType(TypeSymbol elementType)
+    {
+        return elementType;
+    }
 
     public TypeSymbol GetModifiedType(TypeSymbol modifier, TypeSymbol unmodifiedType, bool isRequired)
     {
-        if (modifier is NamedTypeSymbol m && m.Name == "IsExternalInit") SawIsExternalInit = true;
+        if (modifier is NamedTypeSymbol m && m.Name == "IsExternalInit")
+        {
+            SawIsExternalInit = true;
+        }
+
         return unmodifiedType;
     }
 
     public TypeSymbol GetGenericInstantiation(TypeSymbol genericType, ImmutableArray<TypeSymbol> typeArguments)
     {
-        if (genericType is not NamedTypeSymbol nt || nt is ErrorTypeSymbol) return genericType;
-        if (nt.Arity != typeArguments.Length) return new ErrorTypeSymbol(nt.Name);
-        if (nt.SpecialType == SpecialType.Nullable) return new NullableTypeSymbol(typeArguments[0]);
-        return nt.Construct(typeArguments);
+        return genericType is not NamedTypeSymbol nt || nt is ErrorTypeSymbol
+            ? genericType
+            : nt.Arity != typeArguments.Length
+            ? new ErrorTypeSymbol(nt.Name)
+            : nt.SpecialType == SpecialType.Nullable ? new NullableTypeSymbol(typeArguments[0]) : nt.Construct(typeArguments);
     }
 
-    public TypeSymbol GetGenericMethodParameter(GenericContext genericContext, int index) =>
-        index < genericContext.MethodParameters.Length ? genericContext.MethodParameters[index] : new ErrorTypeSymbol("!!" + index);
+    public TypeSymbol GetGenericMethodParameter(GenericContext genericContext, int index)
+    {
+        return index < genericContext.MethodParameters.Length ? genericContext.MethodParameters[index] : new ErrorTypeSymbol("!!" + index);
+    }
 
-    public TypeSymbol GetGenericTypeParameter(GenericContext genericContext, int index) =>
-        index < genericContext.TypeParameters.Length ? genericContext.TypeParameters[index] : new ErrorTypeSymbol("!" + index);
+    public TypeSymbol GetGenericTypeParameter(GenericContext genericContext, int index)
+    {
+        return index < genericContext.TypeParameters.Length ? genericContext.TypeParameters[index] : new ErrorTypeSymbol("!" + index);
+    }
 }

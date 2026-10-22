@@ -9,22 +9,15 @@ namespace Caladesi.Compiler.Syntax;
 /// text round-trips to the input; unexpected tokens are preserved as skipped-token trivia and missing
 /// tokens are synthesized with zero width.
 /// </summary>
-public sealed partial class Parser
+#pragma warning disable CA1002 // token list is owned and indexed by the parser
+public sealed partial class Parser(string path, List<SyntaxToken> tokens, DiagnosticBag diagnostics)
+#pragma warning restore CA1002
 {
-    private readonly SourceText _source;
-    private readonly string _path;
-    private readonly List<SyntaxToken> _tokens;
-    private readonly DiagnosticBag _diagnostics;
+    private readonly string _path = path;
+    private readonly List<SyntaxToken> _tokens = tokens;
+    private readonly DiagnosticBag _diagnostics = diagnostics;
     private int _i;
     private int _speculating;
-
-    public Parser(SourceText source, string path, List<SyntaxToken> tokens, DiagnosticBag diagnostics)
-    {
-        _source = source;
-        _path = path;
-        _tokens = tokens;
-        _diagnostics = diagnostics;
-    }
 
     // ------------------------------------------------------------------ token access
 
@@ -34,40 +27,57 @@ public sealed partial class Parser
 
     private SyntaxToken PeekToken(int n)
     {
-        var idx = _i + n;
+        int idx = _i + n;
         return idx < _tokens.Count ? _tokens[idx] : _tokens[^1];
     }
 
-    private SyntaxKind PeekKind(int n) => PeekToken(n).Kind;
-
-    private bool At(SyntaxKind k) => Kind == k;
+    private SyntaxKind PeekKind(int n)
+    {
+        return PeekToken(n).Kind;
+    }
 
     private SyntaxToken Eat()
     {
-        var t = _tokens[_i];
-        if (t.Kind != SyntaxKind.EndOfFileToken) _i++;
+        SyntaxToken t = _tokens[_i];
+        if (t.Kind != SyntaxKind.EndOfFileToken)
+        {
+            _i++;
+        }
+
         return t;
     }
 
-    private SyntaxToken? TryEat(SyntaxKind k) => Kind == k ? Eat() : null;
+    private SyntaxToken? TryEat(SyntaxKind k)
+    {
+        return Kind == k ? Eat() : null;
+    }
 
     private SyntaxToken Expect(SyntaxKind k)
     {
-        if (Kind == k) return Eat();
+        if (Kind == k)
+        {
+            return Eat();
+        }
+
         ReportExpected(SyntaxFacts.GetText(k));
         return Missing(k);
     }
 
-    private SyntaxToken Missing(SyntaxKind k) =>
-        new(k, "", Current.FullStart, ImmutableArray<SyntaxTrivia>.Empty, ImmutableArray<SyntaxTrivia>.Empty, null, isMissing: true);
+    private SyntaxToken Missing(SyntaxKind k)
+    {
+        return new(k, "", Current.FullStart, [], [], null, isMissing: true);
+    }
 
     private void ReportExpected(string what)
     {
-        var pos = ErrorPosition();
+        int pos = ErrorPosition();
         Report(Descriptors.ExpectedToken, new TextSpan(pos, 0), what);
     }
 
-    private int ErrorPosition() => _i > 0 && _speculating == 0 ? Previous.End : Current.Start;
+    private int ErrorPosition()
+    {
+        return _i > 0 && _speculating == 0 ? Previous.End : Current.Start;
+    }
 
     private void Report(DiagnosticDescriptor d, TextSpan span, params object?[] args)
     {
@@ -75,47 +85,67 @@ public sealed partial class Parser
         _diagnostics.Add(Diagnostic.Create(d, _path, span, args));
     }
 
-    private void ReportAtCurrent(DiagnosticDescriptor d, params object?[] args) =>
+    private void ReportAtCurrent(DiagnosticDescriptor d, params object?[] args)
+    {
         Report(d, Current.Span.IsEmpty && Kind == SyntaxKind.EndOfFileToken ? new TextSpan(Current.Start, 0) : Current.Span, args);
+    }
 
     /// <summary>Skips the current token, folding its text into the next token's leading trivia.</summary>
     private void SkipCurrent()
     {
-        if (Kind == SyntaxKind.EndOfFileToken) return;
+        if (Kind == SyntaxKind.EndOfFileToken)
+        {
+            return;
+        }
+
         if (_speculating > 0) { _i++; return; }
-        var skipped = Current;
-        var next = _tokens[_i + 1];
-        var trivia = ImmutableArray.CreateBuilder<SyntaxTrivia>();
-        trivia.Add(new SyntaxTrivia(SyntaxKind.SkippedTokensTrivia, skipped.ToFullString()));
-        trivia.AddRange(next.LeadingTrivia);
-        _tokens[_i + 1] = new SyntaxToken(next.Kind, next.Text, skipped.FullStart, trivia.ToImmutable(), next.TrailingTrivia, next.Value, next.IsMissingToken);
+        SyntaxToken skipped = Current;
+        SyntaxToken next = _tokens[_i + 1];
+        _tokens[_i + 1] = new SyntaxToken(next.Kind, next.Text, skipped.FullStart, [new SyntaxTrivia(SyntaxKind.SkippedTokensTrivia, skipped.ToFullString()), .. next.LeadingTrivia], next.TrailingTrivia, next.Value, next.IsMissingToken);
         _i++;
     }
 
     /// <summary>Folds a token that has no place in the tree into the leading trivia of <paramref name="next"/>.</summary>
     private static SyntaxToken Absorb(SyntaxToken skipped, SyntaxToken next)
     {
-        var trivia = ImmutableArray.CreateBuilder<SyntaxTrivia>();
+        ImmutableArray<SyntaxTrivia>.Builder trivia = ImmutableArray.CreateBuilder<SyntaxTrivia>();
         trivia.Add(new SyntaxTrivia(SyntaxKind.SkippedTokensTrivia, skipped.ToFullString()));
         trivia.AddRange(next.LeadingTrivia);
-        var start = skipped.IsMissing ? next.FullStart : skipped.FullStart;
+        int start = skipped.IsMissing ? next.FullStart : skipped.FullStart;
         return new SyntaxToken(next.Kind, next.Text, start, trivia.ToImmutable(), next.TrailingTrivia, next.Value, next.IsMissingToken);
     }
 
     private bool HasNewlineBefore(int index)
     {
-        var t = _tokens[index];
-        foreach (var tr in t.LeadingTrivia)
-            if (tr.Kind == SyntaxKind.EndOfLineTrivia || (tr.Kind == SyntaxKind.MultiLineCommentTrivia && tr.Text.Contains('\n'))) return true;
+        SyntaxToken t = _tokens[index];
+        foreach (SyntaxTrivia tr in t.LeadingTrivia)
+        {
+            if (tr.Kind == SyntaxKind.EndOfLineTrivia || (tr.Kind == SyntaxKind.MultiLineCommentTrivia && tr.Text.Contains('\n')))
+            {
+                return true;
+            }
+        }
+
         if (index > 0)
-            foreach (var tr in _tokens[index - 1].TrailingTrivia)
-                if (tr.Kind == SyntaxKind.EndOfLineTrivia) return true;
+        {
+            foreach (SyntaxTrivia tr in _tokens[index - 1].TrailingTrivia)
+            {
+                if (tr.Kind == SyntaxKind.EndOfLineTrivia)
+                {
+                    return true;
+                }
+            }
+        }
+
         return false;
     }
 
     private bool NewlineBeforeCurrent => HasNewlineBefore(_i);
 
-    private bool NewlineBeforePeek(int n) => HasNewlineBefore(Math.Min(_i + n, _tokens.Count - 1));
+    private bool NewlineBeforePeek(int n)
+    {
+        return HasNewlineBefore(Math.Min(_i + n, _tokens.Count - 1));
+    }
 
     // ------------------------------------------------------------------ speculation
 
@@ -126,13 +156,13 @@ public sealed partial class Parser
     /// </summary>
     private T? Speculate<T>(Func<T?> parse) where T : class
     {
-        var save = _i;
-        var errors = _specErrors;
+        int save = _i;
+        int errors = _specErrors;
         _speculating++;
         T? result;
         try { result = parse(); }
         finally { _speculating--; }
-        var failed = result == null || _specErrors != errors;
+        bool failed = result == null || _specErrors != errors;
         _specErrors = errors;
         _i = save;
         return failed ? null : parse();
@@ -140,19 +170,28 @@ public sealed partial class Parser
 
     // ------------------------------------------------------------------ list helpers
 
-    private static SyntaxNode MakeList(List<SyntaxElement> items) => new ListNode(SyntaxKind.List, items.ToArray());
-    private static SyntaxNode MakeSepList(List<SyntaxElement> items) => new ListNode(SyntaxKind.SeparatedList, items.ToArray());
-    private static SyntaxNode EmptyList() => new ListNode(SyntaxKind.List, Array.Empty<SyntaxElement>());
-
-    private SyntaxNode ParseSeparatedList<T>(Func<T> parseElement, Func<bool> isEnd, Func<bool>? isStartOfElement = null) where T : SyntaxElement
+    private static ListNode MakeList(List<SyntaxElement> items)
     {
-        var items = new List<SyntaxElement>();
+        return new ListNode(SyntaxKind.List, [.. items]);
+    }
+
+    private static ListNode MakeSepList(List<SyntaxElement> items)
+    {
+        return new ListNode(SyntaxKind.SeparatedList, [.. items]);
+    }
+
+    private ListNode ParseSeparatedList<T>(Func<T> parseElement, Func<bool> isEnd, Func<bool>? isStartOfElement = null) where T : SyntaxElement
+    {
+        List<SyntaxElement> items = [];
         while (!isEnd() && Kind != SyntaxKind.EndOfFileToken)
         {
-            var before = _i;
+            int before = _i;
             items.Add(parseElement());
             if (Kind == SyntaxKind.CommaToken) { items.Add(Eat()); continue; }
-            if (isEnd()) break;
+            if (isEnd())
+            {
+                break;
+            }
             // missing comma: if the next token could start another element, report and continue; otherwise stop
             if (isStartOfElement != null && isStartOfElement() && _i > before)
             {
@@ -169,21 +208,27 @@ public sealed partial class Parser
 
     public CompilationUnitSyntax ParseCompilationUnit()
     {
-        var statements = new List<SyntaxElement>();
+        List<SyntaxElement> statements = [];
         while (Kind != SyntaxKind.EndOfFileToken)
         {
-            var before = _i;
-            var s = ParseStatement(topLevel: true);
+            int before = _i;
+            StatementSyntax s = ParseStatement(true);
             statements.Add(s);
-            if (_i == before) SkipCurrent();
+            if (_i == before)
+            {
+                SkipCurrent();
+            }
         }
-        var eof = Expect(SyntaxKind.EndOfFileToken);
+        SyntaxToken eof = Expect(SyntaxKind.EndOfFileToken);
         return new CompilationUnitSyntax(MakeList(statements), eof);
     }
 
     private SyntaxToken ParseIdentifierToken()
     {
-        if (SyntaxFacts.IsIdentifierLike(Kind)) return Eat();
+        if (SyntaxFacts.IsIdentifierLike(Kind))
+        {
+            return Eat();
+        }
         // Reserved keywords used as identifiers: report but consume so progress is made in member positions.
         ReportExpected("identifier");
         return Missing(SyntaxKind.IdentifierToken);
@@ -192,8 +237,16 @@ public sealed partial class Parser
     /// <summary>Optional statement terminator with automatic semicolon insertion.</summary>
     private SyntaxToken? ParseSemicolon()
     {
-        if (Kind == SyntaxKind.SemicolonToken) return Eat();
-        if (Kind == SyntaxKind.CloseBraceToken || Kind == SyntaxKind.EndOfFileToken || NewlineBeforeCurrent) return null;
+        if (Kind == SyntaxKind.SemicolonToken)
+        {
+            return Eat();
+        }
+
+        if (Kind == SyntaxKind.CloseBraceToken || Kind == SyntaxKind.EndOfFileToken || NewlineBeforeCurrent)
+        {
+            return null;
+        }
+
         ReportExpected(";");
         return null;
     }

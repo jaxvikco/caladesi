@@ -1,4 +1,3 @@
-using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.PortableExecutable;
 using ILVerify;
@@ -12,52 +11,70 @@ internal static class ILVerifier
     {
         private static readonly string s_runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
 
-        private readonly Dictionary<string, PEReader?> _cache = new();
+        private readonly Dictionary<string, PEReader?> _cache = [];
 
         public PEReader? ResolveAssembly(AssemblyNameInfo assemblyName)
         {
-            var name = assemblyName.Name ?? "";
-            if (_cache.TryGetValue(name, out var cached)) return cached;
-            return _cache[name] = Load(name);
+            string name = assemblyName.Name ?? "";
+            return _cache.TryGetValue(name, out PEReader? cached) ? cached : (_cache[name] = Load(name));
         }
 
         private PEReader? Load(string name)
         {
-            if (name == selfName) return new PEReader(new MemoryStream(self));
-            var path = Path.Combine(s_runtimeDir, name + ".dll");
+            if (name == selfName)
+            {
+                return new PEReader(new MemoryStream(self));
+            }
+
+            string path = Path.Combine(s_runtimeDir, name + ".dll");
             if (!File.Exists(path))
             {
-                var local = Path.Combine(AppContext.BaseDirectory, name + ".dll");
-                if (!File.Exists(local)) return null;
+                string local = Path.Combine(AppContext.BaseDirectory, name + ".dll");
+                if (!File.Exists(local))
+                {
+                    return null;
+                }
+
                 path = local;
             }
             return new PEReader(File.OpenRead(path));
         }
 
-        public PEReader? ResolveModule(AssemblyNameInfo referencingAssembly, string fileName) => null;
+        public PEReader? ResolveModule(AssemblyNameInfo referencingAssembly, string fileName)
+        {
+            return null;
+        }
     }
 
     public static List<string> Verify(string assemblyName, byte[] image)
     {
-        var verifier = new Verifier(new Resolver(assemblyName, image), new VerifierOptions { IncludeMetadataTokensInErrorMessages = true });
+        Verifier verifier = new(new Resolver(assemblyName, image), new VerifierOptions { IncludeMetadataTokensInErrorMessages = true });
         verifier.SetSystemModuleName(new AssemblyNameInfo("System.Private.CoreLib"));
-        var errors = new List<string>();
-        using var reader = new PEReader(new MemoryStream(image));
-        var md = reader.GetMetadataReader();
-        var dumped = new HashSet<MethodDefinitionHandle>();
-        var dumps = new List<string>();
-        foreach (var r in verifier.Verify(reader))
+        List<string> errors = [];
+        using PEReader reader = new(new MemoryStream(image));
+        MetadataReader md = reader.GetMetadataReader();
+        HashSet<MethodDefinitionHandle> dumped = [];
+        List<string> dumps = [];
+        foreach (VerificationResult? r in verifier.Verify(reader))
         {
-            var where = "?";
+            string where = "?";
             if (!r.Method.IsNil)
             {
-                var m = md.GetMethodDefinition(r.Method);
+                MethodDefinition m = md.GetMethodDefinition(r.Method);
                 where = md.GetString(md.GetTypeDefinition(m.GetDeclaringType()).Name) + "." + md.GetString(m.Name);
             }
-            if (!r.Method.IsNil && dumped.Add(r.Method)) dumps.Add(ILDump.Method(reader, md, r.Method));
+            if (!r.Method.IsNil && dumped.Add(r.Method))
+            {
+                dumps.Add(ILDump.Method(reader, md, r.Method));
+            }
+
             errors.Add($"{r.Message} [{where}] ({r.Code}) {string.Join(", ", (r.ErrorArguments ?? []).Select(a => a.Name + "=" + a.Value))}");
         }
-        if (errors.Count > 0) errors.AddRange(dumps);
+        if (errors.Count > 0)
+        {
+            errors.AddRange(dumps);
+        }
+
         return errors;
     }
 }

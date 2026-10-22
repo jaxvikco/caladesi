@@ -5,6 +5,8 @@
     <Description>Runtime support library for assemblies produced by the Caladesi compiler.</Description>
     <RootNamespace>Caladesi.Runtime</RootNamespace>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- No XML docs shipped for the runtime; skip the IDE0005 prerequisite check. -->
+    <NoWarn>$(NoWarn);EnableGenerateDocumentationFile</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Caladesi.Runtime.Generators/Caladesi.Runtime.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />

@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
 using Caladesi.Compiler;
+using Caladesi.Compiler.Text;
 using Caladesi.LanguageServer.Protocol;
 
 namespace Caladesi.LanguageServer;
@@ -10,7 +12,7 @@ namespace Caladesi.LanguageServer;
 /// so the (non thread safe) compiler is only ever used from one thread. Diagnostics are computed once the queue has been quiet
 /// for <see cref="ServerOptions.DiagnosticsDelay"/>, which coalesces bursts of edits.
 /// </summary>
-public sealed partial class LanguageServer
+internal sealed partial class LanguageServer
 {
     private const int ParseError = -32700;
     private const int InvalidRequest = -32600;
@@ -20,6 +22,9 @@ public sealed partial class LanguageServer
     private const int ServerNotInitialized = -32002;
     private const int RequestCancelled = -32800;
 
+    private static readonly string[] WatchGlobs = ["**/*.calaproj", "**/*.cala", "**/obj/project.assets.json"];
+
+    [SuppressMessage("Design", "CA1032:Implement standard exception constructors", Justification = "Private control-flow exception that always carries a JSON-RPC error code.")]
     private sealed class RpcException(int code, string message) : Exception(message)
     {
         public int Code { get; } = code;
@@ -35,7 +40,7 @@ public sealed partial class LanguageServer
     private readonly MessageReader _reader;
     private readonly MessageWriter _writer;
     private readonly ServerOptions _options;
-    private readonly BlockingCollection<Incoming> _queue = new();
+    private readonly BlockingCollection<Incoming> _queue = [];
     private readonly ConcurrentDictionary<string, byte> _cancelled = new();
     private readonly Workspace _workspace;
     private bool _initialized;
@@ -61,27 +66,35 @@ public sealed partial class LanguageServer
     /// <summary>Serves requests until <c>exit</c> or the end of the input stream. Returns the process exit code.</summary>
     public int Run()
     {
-        var reader = new Thread(ReadLoop) { IsBackground = true, Name = "cala-ls reader" };
+        Thread reader = new(ReadLoop) { IsBackground = true, Name = "cala-ls reader" };
         reader.Start();
-        var exitCode = 0;
-        var worker = new Thread(() => exitCode = WorkLoop(), 128 * 1024 * 1024) { Name = "cala-ls worker" };
+        int exitCode = 0;
+        Thread worker = new(() => exitCode = WorkLoop(), 128 * 1024 * 1024) { Name = "cala-ls worker" };
         worker.Start();
         worker.Join();
         return exitCode;
     }
 
-    public Task<int> RunAsync() => Task.Factory.StartNew(Run, TaskCreationOptions.LongRunning);
+    public Task<int> RunAsync()
+    {
+        return Task.Factory.StartNew(Run, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+    }
 
     // ------------------------------------------------------------------ transport
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The reader thread must survive and log any failure so the server shuts down cleanly.")]
     private void ReadLoop()
     {
         try
         {
             while (true)
             {
-                var body = _reader.ReadMessage();
-                if (body == null) break;
+                byte[]? body = _reader.ReadMessage();
+                if (body == null)
+                {
+                    break;
+                }
+
                 JsonDocument document;
                 try { document = JsonDocument.Parse(body); }
                 catch (JsonException ex)
@@ -89,7 +102,7 @@ public sealed partial class LanguageServer
                     _queue.Add(new Incoming { Error = ex.Message });
                     continue;
                 }
-                if (IsCancelRequest(document.RootElement, out var key))
+                if (IsCancelRequest(document.RootElement, out string? key))
                 {
                     _cancelled[key] = 0;
                     document.Dispose();
@@ -115,13 +128,22 @@ public sealed partial class LanguageServer
     private static bool IsCancelRequest(JsonElement root, out string key)
     {
         key = "";
-        if (root.Get("method").GetString() != "$/cancelRequest") return false;
-        var id = root.Path("params", "id");
-        if (id == null) return false;
+        if (root.Get("method").GetString() != "$/cancelRequest")
+        {
+            return false;
+        }
+
+        JsonElement? id = root.Path("params", "id");
+        if (id == null)
+        {
+            return false;
+        }
+
         key = id.Value.GetRawText();
         return true;
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The worker thread must survive and log any failure so one bad message cannot stop the server.")]
     private int WorkLoop()
     {
         while (!_exitRequested)
@@ -137,18 +159,31 @@ public sealed partial class LanguageServer
                         continue;
                     }
                 }
-                else message = _queue.Take();
+                else
+                {
+                    message = _queue.Take();
+                }
             }
             catch (InvalidOperationException)
             {
                 break;
             }
 
-            if (message.EndOfStream) break;
+            if (message.EndOfStream)
+            {
+                break;
+            }
+
             try
             {
-                if (message.Error != null) SendError(null, ParseError, "Parse error: " + message.Error);
-                else Dispatch(message.Document!.RootElement);
+                if (message.Error != null)
+                {
+                    SendError(null, ParseError, "Parse error: " + message.Error);
+                }
+                else
+                {
+                    Dispatch(message.Document!.RootElement);
+                }
             }
             catch (Exception ex)
             {
@@ -162,7 +197,10 @@ public sealed partial class LanguageServer
         return _shutdownRequested ? 0 : 1;
     }
 
-    private void Send(Action<Utf8JsonWriter> body) => _writer.Write(Json.Build(body));
+    private void Send(Action<Utf8JsonWriter> body)
+    {
+        _writer.Write(Json.Build(body));
+    }
 
     private void SendResponse(JsonElement id, Action<Utf8JsonWriter>? result)
     {
@@ -173,8 +211,15 @@ public sealed partial class LanguageServer
             w.WritePropertyName("id");
             id.WriteTo(w);
             w.WritePropertyName("result");
-            if (result == null) w.WriteNullValue();
-            else result(w);
+            if (result == null)
+            {
+                w.WriteNullValue();
+            }
+            else
+            {
+                result(w);
+            }
+
             w.WriteEndObject();
         });
     }
@@ -186,8 +231,15 @@ public sealed partial class LanguageServer
             w.WriteStartObject();
             w.WriteString("jsonrpc", "2.0");
             w.WritePropertyName("id");
-            if (id == null) w.WriteNullValue();
-            else id.Value.WriteTo(w);
+            if (id == null)
+            {
+                w.WriteNullValue();
+            }
+            else
+            {
+                id.Value.WriteTo(w);
+            }
+
             w.WritePropertyName("error");
             w.WriteStartObject();
             w.WriteNumber("code", code);
@@ -212,7 +264,7 @@ public sealed partial class LanguageServer
 
     private void SendRequest(string method, Action<Utf8JsonWriter> parameters)
     {
-        var id = ++_nextRequestId;
+        int id = ++_nextRequestId;
         Send(w =>
         {
             w.WriteStartObject();
@@ -234,19 +286,29 @@ public sealed partial class LanguageServer
             SendError(null, InvalidRequest, "Invalid request: expected a JSON object");
             return;
         }
-        var id = root.Get("id");
-        var method = root.Get("method").GetString();
+        JsonElement? id = root.Get("id");
+        string? method = root.Get("method").GetString();
         if (method == null)
         {
-            if (id == null || root.Get("result") == null && root.Get("error") == null)
+            if (id == null || (root.Get("result") == null && root.Get("error") == null))
+            {
                 SendError(id, InvalidRequest, "Invalid request: missing method");
+            }
+
             return;
         }
-        var parameters = root.Get("params") ?? default;
-        if (id == null) HandleNotification(method, parameters);
-        else HandleRequest(id.Value, method, parameters);
+        JsonElement parameters = root.Get("params") ?? default;
+        if (id == null)
+        {
+            HandleNotification(method, parameters);
+        }
+        else
+        {
+            HandleRequest(id.Value, method, parameters);
+        }
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A failing request handler must become a JSON-RPC error response, never crash the server.")]
     private void HandleRequest(JsonElement id, string method, JsonElement p)
     {
         if (_cancelled.TryRemove(id.GetRawText(), out _))
@@ -303,6 +365,7 @@ public sealed partial class LanguageServer
         }
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A failing notification handler must be logged and must not crash the server.")]
     private void HandleNotification(string method, JsonElement p)
     {
         try
@@ -318,7 +381,10 @@ public sealed partial class LanguageServer
                 case "workspace/didChangeWatchedFiles": DidChangeWatchedFiles(p); break;
                 default:
                     if (!method.StartsWith("$/", StringComparison.Ordinal) && method != "workspace/didChangeConfiguration")
+                    {
                         Log.Write("ignoring notification " + method);
+                    }
+
                     break;
             }
         }
@@ -333,29 +399,56 @@ public sealed partial class LanguageServer
     private Action<Utf8JsonWriter> Initialize(JsonElement p)
     {
         _initialized = true;
-        foreach (var folder in p.Get("workspaceFolders").Items())
-            if (folder.Get("uri").GetString() is { } uri) AddRoot(uri);
+        foreach (JsonElement folder in p.Get("workspaceFolders").Items())
+        {
+            if (folder.Get("uri").GetString() is { } uri)
+            {
+                AddRoot(uri);
+            }
+        }
+
         if (_workspace.Roots.Count == 0)
         {
-            if (p.Get("rootUri").GetString() is { } rootUri) AddRoot(rootUri);
-            else if (p.Get("rootPath").GetString() is { } rootPath && Path.IsPathRooted(rootPath)) _workspace.Roots.Add(Path.GetFullPath(rootPath));
+            if (p.Get("rootUri").GetString() is { } rootUri)
+            {
+                AddRoot(rootUri);
+            }
+            else if (p.Get("rootPath").GetString() is { } rootPath && Path.IsPathRooted(rootPath))
+            {
+                _workspace.Roots.Add(Path.GetFullPath(rootPath));
+            }
         }
-        var options = p.Get("initializationOptions");
-        if (options.Get("runtimePath").GetString() is { Length: > 0 } runtimePath) _options.RuntimePath = runtimePath;
-        if (options.Get("dotnetPath").GetString() is { Length: > 0 } dotnetPath) _options.DotnetPath = dotnetPath;
+        JsonElement? options = p.Get("initializationOptions");
+        if (options.Get("runtimePath").GetString() is { Length: > 0 } runtimePath)
+        {
+            _options.RuntimePath = runtimePath;
+        }
+
+        if (options.Get("dotnetPath").GetString() is { Length: > 0 } dotnetPath)
+        {
+            _options.DotnetPath = dotnetPath;
+        }
+
         _supportsWatcherRegistration = p.Path("capabilities", "workspace", "didChangeWatchedFiles", "dynamicRegistration").GetBool();
         return WriteInitializeResult;
     }
 
     private void AddRoot(string uri)
     {
-        var path = Workspace.UriToPath(uri);
-        if (Path.IsPathRooted(path)) _workspace.Roots.Add(path.TrimEnd(Path.DirectorySeparatorChar));
+        string path = Workspace.UriToPath(uri);
+        if (Path.IsPathRooted(path))
+        {
+            _workspace.Roots.Add(path.TrimEnd(Path.DirectorySeparatorChar));
+        }
     }
 
     private void OnInitialized()
     {
-        if (!_supportsWatcherRegistration) return;
+        if (!_supportsWatcherRegistration)
+        {
+            return;
+        }
+
         SendRequest("client/registerCapability", w =>
         {
             w.WriteStartObject();
@@ -368,7 +461,7 @@ public sealed partial class LanguageServer
             w.WriteStartObject();
             w.WritePropertyName("watchers");
             w.WriteStartArray();
-            foreach (var glob in new[] { "**/*.calaproj", "**/*.cala", "**/obj/project.assets.json" })
+            foreach (string glob in WatchGlobs)
             {
                 w.WriteStartObject();
                 w.WriteString("globPattern", glob);
@@ -432,11 +525,19 @@ public sealed partial class LanguageServer
         w.WriteStartObject();
         w.WritePropertyName("tokenTypes");
         w.WriteStartArray();
-        foreach (var t in TokenTypes) w.WriteStringValue(t);
+        foreach (string t in TokenTypes)
+        {
+            w.WriteStringValue(t);
+        }
+
         w.WriteEndArray();
         w.WritePropertyName("tokenModifiers");
         w.WriteStartArray();
-        foreach (var m in TokenModifiers) w.WriteStringValue(m);
+        foreach (string m in TokenModifiers)
+        {
+            w.WriteStringValue(m);
+        }
+
         w.WriteEndArray();
         w.WriteEndObject();
         w.WriteBoolean("full", true);
@@ -454,50 +555,73 @@ public sealed partial class LanguageServer
 
     private void DidOpen(JsonElement p)
     {
-        var doc = p.Get("textDocument");
-        var uri = doc.Get("uri").GetString();
-        if (uri == null) return;
+        JsonElement? doc = p.Get("textDocument");
+        string? uri = doc.Get("uri").GetString();
+        if (uri == null)
+        {
+            return;
+        }
+
         _workspace.Open(uri, doc.Get("text").GetString() ?? "", doc.Get("version").GetInt() ?? 0);
     }
 
     private void DidChange(JsonElement p)
     {
-        var td = p.Get("textDocument");
-        var uri = td.Get("uri").GetString();
-        if (uri == null || _workspace.GetDocument(uri) is not { } document) return;
-        var text = document.Text;
-        foreach (var change in p.Get("contentChanges").Items())
+        JsonElement? td = p.Get("textDocument");
+        string? uri = td.Get("uri").GetString();
+        if (uri == null || _workspace.GetDocument(uri) is not { } document)
         {
-            var newText = change.Get("text").GetString() ?? "";
+            return;
+        }
+
+        string text = document.Text;
+        foreach (JsonElement change in p.Get("contentChanges").Items())
+        {
+            string newText = change.Get("text").GetString() ?? "";
             if (change.Get("range") is { } range)
             {
-                var source = Caladesi.Compiler.Text.SourceText.From(text);
-                var start = ReadPosition(range.Get("start"));
-                var end = ReadPosition(range.Get("end"));
-                var from = source.GetPosition(start);
-                var to = Math.Max(from, source.GetPosition(end));
+                SourceText source = SourceText.From(text);
+                LinePosition start = ReadPosition(range.Get("start"));
+                LinePosition end = ReadPosition(range.Get("end"));
+                int from = source.GetPosition(start);
+                int to = Math.Max(from, source.GetPosition(end));
                 text = string.Concat(text.AsSpan(0, from), newText, text.AsSpan(to));
             }
-            else text = newText;
+            else
+            {
+                text = newText;
+            }
         }
         _workspace.Change(document, text, td.Get("version").GetInt() ?? document.Version);
     }
 
     private void DidClose(JsonElement p)
     {
-        if (p.Path("textDocument", "uri").GetString() is { } uri) _workspace.Close(uri);
+        if (p.Path("textDocument", "uri").GetString() is { } uri)
+        {
+            _workspace.Close(uri);
+        }
     }
 
     private void DidSave(JsonElement p)
     {
-        if (p.Path("textDocument", "uri").GetString() is { } uri && _workspace.GetUnit(uri) is { } unit) _workspace.Dirty.Add(unit);
+        if (p.Path("textDocument", "uri").GetString() is { } uri && _workspace.GetUnit(uri) is { } unit)
+        {
+            _ = _workspace.Dirty.Add(unit);
+        }
     }
 
     private void DidChangeWatchedFiles(JsonElement p)
     {
-        var changes = new List<(string, int)>();
-        foreach (var change in p.Get("changes").Items())
-            if (change.Get("uri").GetString() is { } uri) changes.Add((Workspace.UriToPath(uri), change.Get("type").GetInt() ?? 2));
-        _workspace.FilesChanged(changes);
+        List<(string, int)> changes = [];
+        foreach (JsonElement change in p.Get("changes").Items())
+        {
+            if (change.Get("uri").GetString() is { } uri)
+            {
+                changes.Add((Workspace.UriToPath(uri), change.Get("type").GetInt() ?? 2));
+            }
+        }
+
+        _ = _workspace.FilesChanged(changes);
     }
 }

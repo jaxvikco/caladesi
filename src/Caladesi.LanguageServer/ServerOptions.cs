@@ -1,6 +1,6 @@
 namespace Caladesi.LanguageServer;
 
-public sealed class ServerOptions
+internal sealed class ServerOptions
 {
     /// <summary>Quiet period after the last edit before diagnostics are computed.</summary>
     public TimeSpan DiagnosticsDelay { get; init; } = TimeSpan.FromMilliseconds(150);
@@ -12,5 +12,5 @@ public sealed class ServerOptions
     public string? DotnetPath { get; set; }
 
     /// <summary>Extra environment variables for <c>dotnet</c> child processes (a null value removes the variable).</summary>
-    public Dictionary<string, string?> ChildEnvironment { get; } = new();
+    public Dictionary<string, string?> ChildEnvironment { get; } = [];
 }

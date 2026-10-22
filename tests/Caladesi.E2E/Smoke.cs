@@ -1,10 +1,13 @@
 [assembly: DoNotParallelize]
 
-namespace Caladesi_E2E;
+namespace Caladesi.E2E;
 
 [TestClass]
-public class Smoke
+public sealed class Smoke
 {
     [TestMethod]
-    public void Runs() => Assert.AreEqual(2, 1 + int.Parse("1"));
+    public void Runs()
+    {
+        Assert.AreEqual(2, 1 + int.Parse("1"));
+    }
 }
