@@ -68,11 +68,11 @@ public static class SyntaxFacts
 
     public static string GetText(SyntaxKind kind) => s_texts.TryGetValue(kind, out var t) ? t : kind.ToString();
 
-    public static bool IsKeyword(SyntaxKind k) => k >= SyntaxKind.BreakKeyword && k <= SyntaxKind.IsKeyword;
+    public static bool IsKeyword(SyntaxKind k) => k >= SyntaxKind.BreakKeyword && k <= SyntaxKind.ConstructorKeyword;
 
     public static bool IsReservedKeyword(SyntaxKind k) => k >= SyntaxKind.BreakKeyword && k <= SyntaxKind.YieldKeyword;
 
-    public static bool IsContextualKeyword(SyntaxKind k) => k >= SyntaxKind.AbstractKeyword && k <= SyntaxKind.IsKeyword;
+    public static bool IsContextualKeyword(SyntaxKind k) => k >= SyntaxKind.AbstractKeyword && k <= SyntaxKind.ConstructorKeyword;
 
     /// <summary>Tokens that can be used as an identifier in a binding position.</summary>
     public static bool IsIdentifierLike(SyntaxKind k) => k == SyntaxKind.IdentifierToken || IsContextualKeyword(k);
