@@ -172,7 +172,12 @@ internal sealed class TestClient : IDisposable
     /// <summary>Sends a request and returns the whole response message (result or error).</summary>
     public async Task<JsonElement> RequestRaw(string method, string paramsJson = "{}")
     {
-        int id = Interlocked.Increment(ref _nextId);
+        return await RequestRawWithId(Interlocked.Increment(ref _nextId), method, paramsJson).ConfigureAwait(false);
+    }
+
+    /// <summary>Like <see cref="RequestRaw"/> with an id chosen by the caller (to reuse or cancel it).</summary>
+    public async Task<JsonElement> RequestRawWithId(int id, string method, string paramsJson = "{}")
+    {
         TaskCompletionSource<JsonElement> tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
         _pending[id] = tcs;
         Send($$$"""{"jsonrpc":"2.0","id":{{{id}}},"method":"{{{method}}}","params":{{{paramsJson}}}}""");

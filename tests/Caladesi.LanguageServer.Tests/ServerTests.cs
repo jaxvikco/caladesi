@@ -523,4 +523,42 @@ public class ServerTests
         _ = client.WaitForError(-32800, mark);
         await client.Shutdown().ConfigureAwait(false);
     }
+
+    [TestMethod]
+    public async Task Item39_CancellingAnAlreadyAnsweredRequestDoesNotPoisonALaterRequestWithThatId()
+    {
+        using TestClient client = await Started("const a = 1;\n").ConfigureAwait(false);
+        JsonElement first = await client.RequestRawWithId(4242, "textDocument/hover", TestClient.Position(Uri, 0, 0)).ConfigureAwait(false);
+        Assert.IsFalse(first.TryGetProperty("error", out _));
+        client.Notify("$/cancelRequest", /*lang=json,strict*/ """{"id":4242}""");
+        JsonElement second = await client.RequestRawWithId(4242, "textDocument/hover", TestClient.Position(Uri, 0, 0)).ConfigureAwait(false);
+        Assert.IsFalse(second.TryGetProperty("error", out JsonElement error), error.ToString());
+        await client.Shutdown().ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task Item39_UnicodeLineSeparatorsAreNotLineBreaksForPositions()
+    {
+        using TestClient client = await Started().ConfigureAwait(false);
+        string text = "const a = 1;\u2028let b: any = a;\n";
+        client.Open(Uri, text);
+        JsonElement published = client.WaitForDiagnostics(Uri, d => d.GetArrayLength() > 0);
+        JsonElement start = published.GetProperty("diagnostics")[0].GetProperty("range").GetProperty("start");
+        Assert.AreEqual(0, start.GetProperty("line").GetInt32());
+        Assert.AreEqual(text.IndexOf("any", StringComparison.Ordinal), start.GetProperty("character").GetInt32());
+        await client.Shutdown().ConfigureAwait(false);
+    }
+
+    [TestMethod]
+    public async Task Item39_ChangeRangePastEndOfLineClampsToTheLineEndNotTheNextLine()
+    {
+        using TestClient client = await Started().ConfigureAwait(false);
+        client.Open(Uri, "const a = 1;\nconst b = 2;\n");
+        _ = await client.Request("textDocument/documentSymbol", $$$"""{"textDocument":{"uri":"{{{Uri}}}"}}""").ConfigureAwait(false);
+        int mark = client.Mark();
+        client.Notify("textDocument/didChange", $$$"""{"textDocument":{"uri":"{{{Uri}}}","version":2},"contentChanges":[{"range":{"start":{"line":0,"character":99},"end":{"line":0,"character":99}},"text":" 1 1"}]}""");
+        JsonElement published = client.WaitForDiagnostics(Uri, d => d.GetArrayLength() > 0, mark);
+        Assert.AreEqual(0, published.GetProperty("diagnostics")[0].GetProperty("range").GetProperty("start").GetProperty("line").GetInt32());
+        await client.Shutdown().ConfigureAwait(false);
+    }
 }

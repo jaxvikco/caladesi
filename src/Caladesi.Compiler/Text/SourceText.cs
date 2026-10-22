@@ -54,7 +54,7 @@ public sealed class SourceText
 
                 builder.Add(i + 1);
             }
-            else if (c is '\n' or '\u2028' or '\u2029')
+            else if (c == '\n') // the line breaks of LSP clients: \n, \r\n and \r (not U+2028/U+2029)
             {
                 builder.Add(i + 1);
             }
@@ -113,6 +113,11 @@ public sealed class SourceText
 
         int start = _lineStarts[position.Line];
         int end = GetLineEnd(position.Line);
+        while (end > start && Text[end - 1] is '\n' or '\r')
+        {
+            end--; // a character past the end of the line stays on the line instead of eating its line break
+        }
+
         return Math.Min(start + position.Character, end);
     }
 }

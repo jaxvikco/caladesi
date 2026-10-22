@@ -30,6 +30,47 @@ internal sealed partial class LanguageServer
         public int Code { get; } = code;
     }
 
+    private const int MaxTrackedIds = 1024;
+
+    /// <summary>A bounded set of the most recently added request ids, so id bookkeeping cannot grow without limit.</summary>
+    private sealed class RecentIds(int capacity)
+    {
+        private readonly HashSet<string> _ids = [];
+        private readonly Queue<string> _order = new();
+        private readonly Lock _gate = new();
+
+        public void Add(string id)
+        {
+            lock (_gate)
+            {
+                if (_ids.Add(id))
+                {
+                    _order.Enqueue(id);
+                    while (_order.Count > capacity)
+                    {
+                        _ = _ids.Remove(_order.Dequeue());
+                    }
+                }
+            }
+        }
+
+        public bool Contains(string id)
+        {
+            lock (_gate)
+            {
+                return _ids.Contains(id);
+            }
+        }
+
+        public bool Remove(string id)
+        {
+            lock (_gate)
+            {
+                return _ids.Remove(id);
+            }
+        }
+    }
+
     private sealed class Incoming
     {
         public JsonDocument? Document { get; init; }
@@ -41,7 +82,8 @@ internal sealed partial class LanguageServer
     private readonly MessageWriter _writer;
     private readonly ServerOptions _options;
     private readonly BlockingCollection<Incoming> _queue = [];
-    private readonly ConcurrentDictionary<string, byte> _cancelled = new();
+    private readonly RecentIds _cancelled = new(MaxTrackedIds);
+    private readonly RecentIds _answered = new(MaxTrackedIds);
     private readonly Workspace _workspace;
     private bool _initialized;
     private bool _shutdownRequested;
@@ -104,7 +146,12 @@ internal sealed partial class LanguageServer
                 }
                 if (IsCancelRequest(document.RootElement, out string? key))
                 {
-                    _cancelled[key] = 0;
+                    // a cancellation for a request that was already answered has nothing to cancel and must not hit a later request with that id
+                    if (!_answered.Contains(key))
+                    {
+                        _cancelled.Add(key);
+                    }
+
                     document.Dispose();
                     continue;
                 }
@@ -204,6 +251,7 @@ internal sealed partial class LanguageServer
 
     private void SendResponse(JsonElement id, Action<Utf8JsonWriter>? result)
     {
+        _answered.Add(id.GetRawText());
         Send(w =>
         {
             w.WriteStartObject();
@@ -226,6 +274,11 @@ internal sealed partial class LanguageServer
 
     private void SendError(JsonElement? id, int code, string message)
     {
+        if (id != null)
+        {
+            _answered.Add(id.Value.GetRawText());
+        }
+
         Send(w =>
         {
             w.WriteStartObject();
@@ -311,7 +364,7 @@ internal sealed partial class LanguageServer
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A failing request handler must become a JSON-RPC error response, never crash the server.")]
     private void HandleRequest(JsonElement id, string method, JsonElement p)
     {
-        if (_cancelled.TryRemove(id.GetRawText(), out _))
+        if (_cancelled.Remove(id.GetRawText()))
         {
             SendError(id, RequestCancelled, "Request cancelled");
             return;
