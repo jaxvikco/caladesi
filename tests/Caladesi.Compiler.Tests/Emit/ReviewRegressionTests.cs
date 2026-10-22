@@ -401,4 +401,19 @@ public class ReviewRegressionTests
         Console.WriteLine(a == b);
         """, "Green\nGreen\nTrue\n");
     }
+
+    private static readonly string s_fixtures = typeof(Fixtures.MetadataDefaults).Assembly.Location;
+
+    [TestMethod]
+    public void Item42_DecimalAndDateTimeDefaultsOfMetadataParametersAreUsed()
+    {
+        (string output, int _) = EmitHarness.RunWithReferences("""
+        import { MetadataDefaults } from "Caladesi.Compiler.Tests.Fixtures";
+        Console.WriteLine(MetadataDefaults.Echo());
+        Console.WriteLine(MetadataDefaults.Negative());
+        Console.WriteLine(MetadataDefaults.Echo(2));
+        Console.WriteLine(MetadataDefaults.Ticks());
+        """, s_fixtures);
+        Assert.AreEqual("1.5\n-12.340\n2\n637000000000000000\n", output);
+    }
 }

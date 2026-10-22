@@ -391,4 +391,37 @@ public class BinderTests
         Assert.AreEqual(2, d.Count(x => x.Id == Descriptors.NotSupportedUseInstead.Id), TestCompiler.Format(d));
         Assert.IsFalse(d.Any(x => x.Id == Descriptors.NameNotFound.Id), TestCompiler.Format(d));
     }
+
+    [TestMethod]
+    public void Item42_OverridingASealedOverrideIsReported()
+    {
+        AssertError("""
+            class A { f(): int { return 1; } }
+            class B extends A { sealed override f(): int { return 2; } }
+            class C extends B { override f(): int { return 3; } }
+            """, Descriptors.OverrideOfSealedMember);
+    }
+
+    [TestMethod]
+    public void Item42_OverridingASealedOverrideFromMetadataIsReported()
+    {
+        List<string> paths = [.. TestReferences.Paths, typeof(Runtime.CaladesiUnionAttribute).Assembly.Location, typeof(Fixtures.SealedMiddle).Assembly.Location];
+        CompilationOptions options = new() { OutputKind = OutputKind.DynamicallyLinkedLibrary, AssemblyName = "Test", RootNamespace = "Test", ProjectDirectory = "/proj" };
+        Compilation comp = Compilation.Create(options, [Compiler.Syntax.SyntaxTree.ParseText("""
+            import { SealedMiddle } from "Caladesi.Compiler.Tests.Fixtures";
+            class D extends SealedMiddle { override name(): string { return "d"; } }
+            """, "/proj/main.cala")], Compiler.Symbols.Metadata.ReferenceSet.Create(paths));
+        ImmutableArray<Diagnostic> d = comp.GetDiagnostics();
+        Assert.IsTrue(d.Any(x => x.Id == Descriptors.OverrideOfSealedMember.Id), TestCompiler.Format(d));
+    }
+
+    [TestMethod]
+    public void Item42_OverridingASealedPropertyOverrideIsReported()
+    {
+        AssertError("""
+            class A { get v(): int { return 1; } }
+            class B extends A { sealed override get v(): int { return 2; } }
+            class C extends B { override get v(): int { return 3; } }
+            """, Descriptors.OverrideOfSealedMember);
+    }
 }

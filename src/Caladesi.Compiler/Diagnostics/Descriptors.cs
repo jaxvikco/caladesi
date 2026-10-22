@@ -200,5 +200,6 @@ public static class Descriptors
     public static readonly DiagnosticDescriptor NestingTooDeep = E(330, "The code is nested too deeply.");
     public static readonly DiagnosticDescriptor UnaryBeforeExponent = E(331, "A unary operator cannot be the left operand of '**'; enclose it in parentheses, e.g. '(-2) ** 2' or '-(2 ** 2)'.");
     public static readonly DiagnosticDescriptor NotSupportedUseInstead = E(332, "'{0}' is not supported; use '{1}'.");
+    public static readonly DiagnosticDescriptor OverrideOfSealedMember = E(333, "Cannot override '{0}' because it is sealed.");
     public static readonly DiagnosticDescriptor NoEntryPoint = E(170, "Program does not contain an entry point; add top-level statements or a 'main' function.");
 }

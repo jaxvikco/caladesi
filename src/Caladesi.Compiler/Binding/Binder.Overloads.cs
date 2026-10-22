@@ -724,6 +724,14 @@ public sealed partial class Binder
                 : new BoundDefaultValue(t) { Syntax = at };
         }
         TypeSymbol inner = t.StripNullable();
+        if (dv.Value.Value is DateTime when && inner is NamedTypeSymbol dateTimeType
+            && dateTimeType.InstanceConstructors.FirstOrDefault(c => c.Parameters.Length == 1 && c.Parameters[0].Type.SpecialType == SpecialType.Int64) is { } fromTicks)
+        {
+            // a DateTime default is a DateTimeConstantAttribute holding the ticks
+            BoundExpression created = new BoundObjectCreation(fromTicks, dateTimeType, [new BoundLiteral(new ConstantValue(when.Ticks), Special(SpecialType.Int64)) { Syntax = at }], []) { Syntax = at };
+            return t is NullableTypeSymbol ? new BoundConversion(created, ConversionKind.ToNullable, t) { Syntax = at } : created;
+        }
+
         TypeSymbol litType = inner.TypeKind == TypeKind.Enum ? inner : inner.SpecialType != SpecialType.None ? inner : TypeOfConstant(dv.Value.Value);
         BoundExpression lit = new BoundLiteral(dv.Value, litType) { Syntax = at };
         if (t is NullableTypeSymbol)

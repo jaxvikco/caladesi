@@ -223,6 +223,7 @@ public sealed class MetadataMethodSymbol : MethodSymbol
                 {
                     isParams = MetadataHelpers.FindAttribute(r, pa, "System", "ParamArrayAttribute") != null;
                     flag = NullableFlagOf(pa, ctxFlag);
+                    def ??= ReadAttributeDefault(r, pa);
                 }
             }
             pt = Nullability.Apply(pt, flag);
@@ -239,6 +240,35 @@ public sealed class MetadataMethodSymbol : MethodSymbol
             b.Add(new ParameterSymbol(name, pt, i, this, refKind, isParams, def, optional, isThis: isExt && i == 0));
         }
         _params = b.MoveToImmutable();
+    }
+
+    /// <summary>Defaults that have no metadata constant: C# stores decimal defaults in DecimalConstantAttribute and DateTime ones in DateTimeConstantAttribute.</summary>
+    private static ConstantValue? ReadAttributeDefault(MetadataReader r, CustomAttributeHandleCollection attributes)
+    {
+        if (MetadataHelpers.FindAttribute(r, attributes, "System.Runtime.CompilerServices", "DecimalConstantAttribute") is { } dec)
+        {
+            BlobReader br = r.GetBlobReader(dec.Value);
+            if (br.ReadUInt16() == 1)
+            {
+                byte scale = br.ReadByte();
+                byte sign = br.ReadByte();
+                int hi = br.ReadInt32();
+                int mid = br.ReadInt32();
+                int low = br.ReadInt32();
+                return new ConstantValue(new decimal(low, mid, hi, sign != 0, scale));
+            }
+        }
+
+        if (MetadataHelpers.FindAttribute(r, attributes, "System.Runtime.CompilerServices", "DateTimeConstantAttribute") is { } dt)
+        {
+            BlobReader br = r.GetBlobReader(dt.Value);
+            if (br.ReadUInt16() == 1)
+            {
+                return new ConstantValue(new DateTime(br.ReadInt64()));
+            }
+        }
+
+        return null;
     }
 
     internal static ConstantValue? ReadConstant(MetadataReader r, ConstantHandle dh, TypeSymbol _1)

@@ -185,6 +185,10 @@ internal sealed class DeclarationChecker(Compilation compilation)
                     {
                         Report(Descriptors.CannotOverrideSealed, type, span, o.Name);
                     }
+                    else if (o.IsSealed)
+                    {
+                        Report(Descriptors.OverrideOfSealedMember, type, span, o.ContainingType?.Name + "." + o.Name);
+                    }
 
                     if (!TypesMatchForImplementation(m.ReturnType, o.ReturnType))
                     {
@@ -228,6 +232,11 @@ internal sealed class DeclarationChecker(Compilation compilation)
             else
             {
                 p.Getter?.SetEmitName("get_" + o.Name);
+                if (o.IsSealed)
+                {
+                    Report(Descriptors.OverrideOfSealedMember, type, span, o.ContainingType?.Name + "." + o.Name);
+                }
+
                 if (!TypesMatchForImplementation(p.Type, o.Type))
                 {
                     Report(Descriptors.OverrideTypeMismatch, type, span, p.Name, p.Type.ToDisplayString(), o.ContainingType?.Name + "." + o.Name, o.Type.ToDisplayString());

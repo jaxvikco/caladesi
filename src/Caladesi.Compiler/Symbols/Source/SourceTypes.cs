@@ -401,6 +401,7 @@ public sealed class SourceClassSymbol(Compilation compilation, SourceFile file, 
         AccessorDeclarationSyntax? setter = group.FirstOrDefault(a => !a.IsGetter);
         bool isAbstract = mods.IsAbstract;
         bool isOverride = mods.IsOverride;
+        bool isSealed = mods.IsSealed && isOverride;
         bool isVirtual = !isStatic && !isAbstract && !isOverride && !IsSealed && acc != Accessibility.Private;
         SourcePropertySymbol prop = new(File, this, first.Identifier.Text, acc, isStatic, first, p =>
         {
@@ -411,16 +412,16 @@ public sealed class SourceClassSymbol(Compilation compilation, SourceFile file, 
                 ? binder.BindType(ta.Type)
                 : Compilation.GetSpecialType(SpecialType.Object);
         })
-        { IsAbstractFlag = isAbstract, IsVirtualFlag = isVirtual, IsOverrideFlag = isOverride };
+        { IsAbstractFlag = isAbstract, IsVirtualFlag = isVirtual, IsOverrideFlag = isOverride, IsSealedFlag = isSealed };
         List<Symbol> result = [prop];
         if (getter != null)
         {
-            prop.Getter = MemberFactory.Accessor(Compilation, File, this, prop, true, acc, isStatic, isAbstract, isVirtual, isOverride, false, SynthesizedBodyKind.None, getter);
+            prop.Getter = MemberFactory.Accessor(Compilation, File, this, prop, true, acc, isStatic, isAbstract, isVirtual, isOverride, isSealed, SynthesizedBodyKind.None, getter);
             result.Add(prop.Getter);
         }
         if (setter != null)
         {
-            prop.Setter = MemberFactory.Accessor(Compilation, File, this, prop, false, acc, isStatic, isAbstract, isVirtual, isOverride, false, SynthesizedBodyKind.None, setter);
+            prop.Setter = MemberFactory.Accessor(Compilation, File, this, prop, false, acc, isStatic, isAbstract, isVirtual, isOverride, isSealed, SynthesizedBodyKind.None, setter);
             result.Add(prop.Setter);
         }
         return result;
