@@ -6,4 +6,7 @@
     <RootNamespace>Caladesi.Runtime</RootNamespace>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Caladesi.Runtime.Generators/Caladesi.Runtime.Generators.csproj" OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
 </Project>
