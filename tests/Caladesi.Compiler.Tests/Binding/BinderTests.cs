@@ -381,6 +381,6 @@ public class BinderTests
     public void Item32_NonVoidMethodGroupDoesNotConvertToVoidDelegate()
     {
         AssertError("const a: Action = Console.ReadLine;", Descriptors.MethodGroupNotConvertible, OutputKind.ConsoleApplication);
-        AssertClean("const a: Action = Console.WriteLine;\nconst b: Func<string | null> = Console.ReadLine;", OutputKind.ConsoleApplication);
+        AssertClean("const a: Action = Console.WriteLine;\nconst b: Func<string | null> = Console.ReadLine;", OutputKind.DynamicallyLinkedLibrary);
     }
 }

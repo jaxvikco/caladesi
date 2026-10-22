@@ -388,4 +388,17 @@ public class ReviewRegressionTests
         Console.WriteLine(anon3.Equals(anon));
         """, "4\nn\n3\nTrue\n");
     }
+
+    [TestMethod]
+    public void Item33_IntegerPlusEnumIsSymmetric()
+    {
+        Check("""
+        enum Color { Red, Green, Blue }
+        const a = 1 + Color.Red;
+        const b = Color.Red + 1;
+        Console.WriteLine(a);
+        Console.WriteLine(b);
+        Console.WriteLine(a == b);
+        """, "Green\nGreen\nTrue\n");
+    }
 }

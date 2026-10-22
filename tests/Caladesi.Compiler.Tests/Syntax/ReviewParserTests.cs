@@ -59,4 +59,20 @@ public class ReviewParserTests
         Assert.IsEmpty(tree.Diagnostics, TestCompiler.Format(tree.Diagnostics));
         Assert.IsInstanceOfType<MemberAccessExpressionSyntax>(tree.Root.DescendantNodes().OfType<InvocationExpressionSyntax>().First().Arguments.Arguments[0]);
     }
+
+    [TestMethod]
+    public void Item34_UnaryOperandOfExponentiationMustBeParenthesized()
+    {
+        foreach (string src in new[] { "const x = -2 ** 2;", "const x = +a ** 2;", "const x = !a ** 2;", "async function f() { return await g() ** 2; }" })
+        {
+            SyntaxTree tree = Parse(src);
+            Assert.IsTrue(tree.Diagnostics.Any(d => d.Id == Descriptors.UnaryBeforeExponent.Id), src + "\n" + TestCompiler.Format(tree.Diagnostics));
+        }
+
+        foreach (string src in new[] { "const x = (-2) ** 2;", "const x = -(2 ** 2);", "const x = 2 ** -2;", "const x = a * -2 ** b;" })
+        {
+            SyntaxTree tree = Parse(src);
+            Assert.AreEqual(src.Contains("a * -2", StringComparison.Ordinal), tree.Diagnostics.Any(d => d.Id == Descriptors.UnaryBeforeExponent.Id), src);
+        }
+    }
 }

@@ -432,6 +432,12 @@ public sealed partial class Binder
             NamedTypeSymbol under = ((NamedTypeSymbol)lt).EnumUnderlyingType!;
             return MakeBinary(syntax, kind, left, ConvertImplicit(right, under, syntax), lt, under);
         }
+        else if (rt.TypeKind == TypeKind.Enum && lt.SpecialType.IsIntegral() && kind == BinaryOperatorKind.Add)
+        {
+            // `1 + Color.Red` : addition is symmetric, subtraction of an enum from a number is not defined
+            NamedTypeSymbol under = ((NamedTypeSymbol)rt).EnumUnderlyingType!;
+            return MakeBinary(syntax, kind, ConvertImplicit(left, under, syntax), right, rt, under);
+        }
         ReportBadOperands(syntax, kind, lt, rt);
         return Bad(syntax, left, right);
     }

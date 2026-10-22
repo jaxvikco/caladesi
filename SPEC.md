@@ -61,7 +61,8 @@ import type { Point } from "./geometry";              // erased; identical to a 
   (calls into referenced assemblies keep the narrowing). `x instanceof T` with no possible overlap is warning `CAL0241`.
 * Tuples support array-style destructuring and constant indexing: `const [a, b] = t; t[0]`.
 * Conversions: numeric widening is implicit; narrowing needs `as`. `as T` is a checked cast, `x satisfies T` a compile-time check.
-  `/` between integers is integer division. `**` is `Math.Pow` (`BigInteger.Pow` for bigint). `>>>` is an unsigned shift.
+  `/` between integers is integer division. `**` is `Math.Pow` (`BigInteger.Pow` for bigint); a unary operator directly before `**`
+  must be parenthesized (`CAL0331`). `>>>` is an unsigned shift.
 * `==` and `!=` are the equality operators (`op_Equality` when defined, else value/reference equality). There is no `===`/`!==`.
 
 ## 4. Declarations

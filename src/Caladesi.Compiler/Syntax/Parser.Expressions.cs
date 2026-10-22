@@ -214,6 +214,12 @@ public sealed partial class Parser
                     }
                 case SyntaxKind.AsteriskAsteriskToken:
                     {
+                        // `-2 ** 2` is ambiguous between (-2) ** 2 and -(2 ** 2); like TypeScript it must be parenthesized
+                        if (left is PrefixUnaryExpressionSyntax { OperatorToken.Kind: not (SyntaxKind.PlusPlusToken or SyntaxKind.MinusMinusToken) } or AwaitExpressionSyntax)
+                        {
+                            Report(Descriptors.UnaryBeforeExponent, op.Span);
+                        }
+
                         // right associative
                         ExpressionSyntax right = ParseBinaryExpression(prec - 1);
                         left = new BinaryExpressionSyntax(left, op, right);

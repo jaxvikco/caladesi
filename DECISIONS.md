@@ -54,6 +54,10 @@ Each entry records a choice that is not obvious from the language specification,
   `CAL0241` ("can never be an instance") is a warning, not an error; with unsound narrowing it was a hard error on correct code.
   Loops are not re-analysed for calls in their body.
 
+* **`-2 ** 2` is a syntax error (`CAL0331`)**, as in TypeScript. A prefix `+ - ! ~` or `await` directly left of `**` is ambiguous
+  between `(-2) ** 2` and `-(2 ** 2)`, and C# programmers and JavaScript programmers disagree on which one it means, so the
+  parentheses are required (`(-2) ** 2`, `-(2 ** 2)`). `2 ** -2` is fine; `++x ** 2` is fine.
+
 ## Unions and enums
 
 * **Named unions** (`type Shape = Circle | Square`) are generated readonly structs with fields `Tag` (1-based, 0 = empty) and
