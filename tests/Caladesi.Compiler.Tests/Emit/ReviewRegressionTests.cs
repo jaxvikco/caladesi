@@ -258,4 +258,26 @@ public class ReviewRegressionTests
         Console.WriteLine(s.Length);
         """, "1\n");
     }
+
+    [TestMethod]
+    public void Item21_TopLevelVariablesAfterUsingStayModuleFields()
+    {
+        Check("""
+        class Res implements IDisposable { Dispose(): void { Console.WriteLine("disp"); } }
+        using scope = new Res();
+        let counter = 1;
+        function bump(): void { counter++; }
+        bump();
+        Console.WriteLine(counter);
+        """, "2\ndisp\n");
+    }
+
+    [TestMethod]
+    public void Item22_LocalFunctionAfterUsingIsDeclaredOnce()
+    {
+        Check("""
+        function main(): void { using f = new System.IO.StringReader("x"); function helper(): int { return 1; } Console.WriteLine(helper()); }
+        main();
+        """, "1\n");
+    }
 }

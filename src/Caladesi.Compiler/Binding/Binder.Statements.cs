@@ -24,11 +24,15 @@ public sealed partial class Binder
         return result;
     }
 
-    private ImmutableArray<BoundStatement> BindStatementList(IReadOnlyList<StatementSyntax> statements, int start = 0)
+    private ImmutableArray<BoundStatement> BindStatementList(IReadOnlyList<StatementSyntax> statements, int start = 0, bool hoistFunctions = true)
     {
         ImmutableArray<BoundStatement>.Builder result = ImmutableArray.CreateBuilder<BoundStatement>();
-        // hoist nested function declarations of this block
-        HoistLocalFunctions(statements, start, result);
+        // hoist nested function declarations of this block (the statements after a `using` were hoisted with the ones before it)
+        if (hoistFunctions)
+        {
+            HoistLocalFunctions(statements, start, result);
+        }
+
         for (int i = start; i < statements.Count; i++)
         {
             StatementSyntax s = statements[i];
@@ -417,7 +421,7 @@ public sealed partial class Binder
 
     // ------------------------------------------------------------------ using
 
-    private BoundStatementList BindUsing(VariableStatementSyntax us, IReadOnlyList<StatementSyntax> all, int nextIndex)
+    private BoundStatementList BindUsing(VariableStatementSyntax us, IReadOnlyList<StatementSyntax> all, int nextIndex, Func<ImmutableArray<BoundStatement>>? bindRest = null)
     {
         VariableDeclarationListSyntax decl = us.Declaration;
         bool isAsync = decl.AwaitKeyword != null;
@@ -438,7 +442,7 @@ public sealed partial class Binder
                 locals.Add(l);
             }
         }
-        ImmutableArray<BoundStatement> rest = BindStatementList(all, nextIndex);
+        ImmutableArray<BoundStatement> rest = bindRest != null ? bindRest() : BindStatementList(all, nextIndex, hoistFunctions: false);
         BoundStatement result = new BoundBlock([], rest) { Syntax = us };
         // wrap from the last declared variable outwards
         for (int i = locals.Count - 1; i >= 0; i--)
