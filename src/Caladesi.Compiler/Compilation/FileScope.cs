@@ -128,6 +128,11 @@ public sealed class FileScope
                             _importDiagnostics.Add(new ImportDiagnostic(Descriptors.ModuleHasNoExport, spc.NameToken.Span, [spec, spc.NameToken.Text]));
                             continue;
                         }
+                        if (Compilation.Options.RecordSemanticInfo)
+                        {
+                            Compilation.EnsureRecording();
+                            Compilation.RecordedSymbols![spc] = members[0];
+                        }
                         var local = spc.LocalName;
                         if (!_named.TryGetValue(local, out var l)) _named[local] = l = new List<Symbol>();
                         l.AddRange(members);

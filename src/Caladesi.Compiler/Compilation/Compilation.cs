@@ -129,14 +129,19 @@ public sealed partial class Compilation
     /// <summary>Declared locals, parameters and local functions by (tree, identifier start).</summary>
     internal Dictionary<(SyntaxTree, int), Symbol>? RecordedDeclarations { get; private set; }
 
+    internal void EnsureRecording()
+    {
+        RecordedSymbols ??= new(ReferenceEqualityComparer.Instance);
+        RecordedTypes ??= new(ReferenceEqualityComparer.Instance);
+        RecordedDeclarations ??= new();
+    }
+
     internal Binder CreateBinder(SourceFile file, Symbol? containing, DiagnosticBag? diagnostics)
     {
         var binder = new Binder(this, file, containing, diagnostics);
         if (Options.RecordSemanticInfo)
         {
-            RecordedSymbols ??= new(ReferenceEqualityComparer.Instance);
-            RecordedTypes ??= new(ReferenceEqualityComparer.Instance);
-            RecordedDeclarations ??= new();
+            EnsureRecording();
             binder.SymbolMap = RecordedSymbols;
             binder.TypeMap = RecordedTypes;
             binder.DeclarationMap = RecordedDeclarations;
