@@ -140,6 +140,18 @@ public sealed partial class Parser(string path, List<SyntaxToken> tokens, Diagno
         _i++;
     }
 
+    /// <summary>Adds already-consumed text to the front of the current token's leading trivia as skipped text, so the tree still round-trips.</summary>
+    private void PrependSkipped(string text)
+    {
+        if (text.Length == 0 || _speculating > 0)
+        {
+            return;
+        }
+
+        SyntaxToken t = _tokens[_i];
+        _tokens[_i] = new SyntaxToken(t.Kind, t.Text, t.FullStart - text.Length, [new SyntaxTrivia(SyntaxKind.SkippedTokensTrivia, text), .. t.LeadingTrivia], t.TrailingTrivia, t.Value, t.IsMissingToken);
+    }
+
     /// <summary>Gives up on the rest of the file: its text is kept as skipped trivia on the end-of-file token so the tree still round-trips.</summary>
     private void SkipRemainingTokens()
     {

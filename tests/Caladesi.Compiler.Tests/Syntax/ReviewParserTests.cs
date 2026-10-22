@@ -98,4 +98,15 @@ public class ReviewParserTests
             Assert.AreEqual(Descriptors.NotSupportedUseInstead.Id, tree.Diagnostics[0].Id);
         }
     }
+
+    [TestMethod]
+    public void Item37_ExportDefaultRecoveryKeepsExportAndDecoratorsInTheTree()
+    {
+        foreach (string src in new[] { "export default function f() {}", "@A export default class C {}", "export default 1;", "@A\nexport default function () {}" })
+        {
+            SyntaxTree tree = SyntaxTree.ParseText(src, "t.cala");
+            Assert.AreEqual(src, tree.Root.ToFullString(), src);
+            Assert.IsTrue(tree.Diagnostics.Any(d => d.Id == Descriptors.ExportDefaultNotSupported.Id), src);
+        }
+    }
 }
