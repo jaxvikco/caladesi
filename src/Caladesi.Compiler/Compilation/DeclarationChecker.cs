@@ -54,7 +54,7 @@ internal sealed class DeclarationChecker(Compilation compilation)
         // bind bodies (may create anonymous records, closures, ...)
         foreach (var type in compilation.AllSourceTypes.ToList())
             foreach (var m in type.GetMembers().OfType<SourceMethodSymbol>().ToList())
-                if (m.HasBody) _ = m.GetBoundBody();
+                if (m.HasBody || m.MethodKind == MethodKind.StaticConstructor) _ = m.GetBoundBody();
         foreach (var type in compilation.AllSourceTypes.ToList())
         {
             CheckMembers(type);

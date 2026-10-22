@@ -162,7 +162,7 @@ public sealed partial class SemanticModel
             if (type == null) continue;
             var mods = SemanticTokenModifiers.None;
             if (isDecl) mods |= SemanticTokenModifiers.Declaration;
-            if (symbol is LocalSymbol { IsConst: true } or FieldSymbol { IsConst: true } or FieldSymbol { IsReadOnly: true }) mods |= SemanticTokenModifiers.Readonly;
+            if (symbol is LocalSymbol { IsConst: true } or FieldSymbol { IsConst: true } or FieldSymbol { IsReadOnly: true } or SourceFieldSymbol { IsConstDeclaration: true }) mods |= SemanticTokenModifiers.Readonly;
             if (symbol.IsStatic) mods |= SemanticTokenModifiers.Static;
             list.Add(new SemanticTokenInfo(token.Span, type.Value, mods));
         }
