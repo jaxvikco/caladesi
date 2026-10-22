@@ -221,7 +221,7 @@ constraints, object type literals outside type aliases, `async` constructors.
 
 ## 8. Tooling
 
-* **Project SDK:** `<Project Sdk="Caladesi.Sdk/0.1.0">` (layered on `Microsoft.NET.Sdk`; project files use `.calaproj`). `dotnet build/run/test/pack/publish`
+* **Project SDK:** `<Project Sdk="Caladesi.Sdk/1.0.0">` (layered on `Microsoft.NET.Sdk`; project files use `.calaproj`). `dotnet build/run/test/pack/publish`
   all work. Default compile items are `**/*.cala`. Supports `ProjectReference` (Caladesi ⇄ C#), `PackageReference`, `RootNamespace`,
   `AssemblyName`, `OutputType`, `TreatWarningsAsErrors`, `Nullable`, `<CaladesiGlobalImport/>`, incremental builds.
 * **Tests:** write MSTest in Caladesi (`@TestClass`, `@TestMethod`); the SDK generates the Microsoft.Testing.Platform entry point.

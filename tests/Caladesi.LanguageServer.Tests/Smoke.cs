@@ -8,5 +8,5 @@ namespace Caladesi_LanguageServer_Tests;
 public class Smoke
 {
     [TestMethod]
-    public void Runs() => Assert.IsTrue(CompilerInfo.Version.StartsWith("0.1", StringComparison.Ordinal));
+    public void Runs() => Assert.IsTrue(CompilerInfo.Version.StartsWith("1.0", StringComparison.Ordinal));
 }

@@ -2,7 +2,7 @@
   "name": "caladesi",
   "displayName": "Caladesi",
   "description": "Language support for Caladesi, a statically typed .NET language with TypeScript-like syntax.",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "publisher": "caladesi",
   "license": "MIT",
   "private": true,

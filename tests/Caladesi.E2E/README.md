@@ -10,7 +10,7 @@ dotnet test --solution Caladesi.slnx            # unit tests + E2E
 ```
 
 On the first call of a run the harness executes `eng/pack.sh` into `artifacts/e2e/packages`
-(`Caladesi.Runtime`, `Caladesi.Sdk` with `calac` and the MSBuild tasks inside, `Caladesi.Templates`; version 0.1.0).
+(`Caladesi.Runtime`, `Caladesi.Sdk` with `calac` and the MSBuild tasks inside, `Caladesi.Templates`; version 1.0.0).
 Every sample is then built against that feed only, with an isolated `NUGET_PACKAGES` folder
 (`artifacts/e2e/nuget-packages`; its `caladesi.*` entries are deleted at the start of each run so a re-packed SDK is
 never shadowed by a cached copy). Samples therefore need no network, except samples with `expected.test` or

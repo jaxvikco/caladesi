@@ -2,7 +2,7 @@
 # Builds and packs everything needed to use Caladesi from a normal `dotnet` workflow into a local NuGet feed:
 #   Caladesi.Runtime, Caladesi.Sdk (with calac + the MSBuild tasks inside), Caladesi.Templates.
 #
-#   eng/pack.sh                       -> artifacts/packages (version 0.1.0)
+#   eng/pack.sh                       -> artifacts/packages (version 1.0.0)
 #   CALADESI_PACK_OUT=/some/dir eng/pack.sh
 #
 # Intermediate output goes to artifacts/pack-obj (via --artifacts-path, so the normal bin/obj folders are not
@@ -11,7 +11,7 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="${CALADESI_PACK_OUT:-$root/artifacts/packages}"
 work="${CALADESI_PACK_WORK:-$root/artifacts/pack-obj}"
-version="${CALADESI_VERSION:-0.1.0}"
+version="${CALADESI_VERSION:-1.0.0}"
 config="${CONFIG:-Release}"
 
 rm -rf "$work"
