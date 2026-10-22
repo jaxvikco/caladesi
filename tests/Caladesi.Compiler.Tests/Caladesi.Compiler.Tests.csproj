@@ -5,14 +5,18 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <RootNamespace>Caladesi.Compiler.Tests</RootNamespace>
+    <!-- NU1903: the MSBuild task API package (used only to instantiate the build task, as in Caladesi.Build.Tasks) has an advisory. -->
     <!-- MSTest requires public test classes (CA1515); Subject_Scenario method names are the established test naming style (CA1707). -->
-    <NoWarn>$(NoWarn);CA1515;CA1707</NoWarn>
+    <NoWarn>$(NoWarn);CA1515;CA1707;NU1903</NoWarn>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Caladesi.Compiler\Caladesi.Compiler.csproj" />
     <ProjectReference Include="..\..\src\Caladesi.Runtime\Caladesi.Runtime.csproj" />
     <!-- built first so the CLI tests can run calac.dll; nothing from it is referenced -->
     <ProjectReference Include="..\..\src\Caladesi.Cli\Caladesi.Cli.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\..\src\Caladesi.Build.Tasks\Caladesi.Build.Tasks.csproj" />
+    <!-- the task project references MSBuild compile-only; the test instantiates the task, so it needs the runtime assemblies -->
+    <PackageReference Include="Microsoft.Build.Utilities.Core" />
     <PackageReference Include="Microsoft.ILVerification" />
   </ItemGroup>
 </Project>
