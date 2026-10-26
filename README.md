@@ -32,6 +32,8 @@ async function main(args: string[]): Task<int> {
 
 ## Try it
 
+Requires .NET 10 or later.
+
 ```sh
 dotnet new install Caladesi.Templates  # install the templates from NuGet.org
 dotnet new calaconsole -o hello
