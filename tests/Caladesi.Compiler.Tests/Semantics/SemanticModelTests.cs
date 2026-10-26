@@ -101,6 +101,48 @@ public class SemanticModelTests
     }
 
     [TestMethod]
+    public void ArrayCompletionOmitsExplicitInterfaceMembers()
+    {
+        (SemanticModel? m, string _) = Model("const xs = [1, 2, 3];\nxs.|", out int pos);
+        List<string> labels = [.. m.GetCompletions(pos).Select(c => c.Label)];
+        CollectionAssert.Contains(labels, "Length");
+        CollectionAssert.Contains(labels, "Select");
+        CollectionAssert.DoesNotContain(labels, "Add");
+        CollectionAssert.DoesNotContain(labels, "Clear");
+        CollectionAssert.DoesNotContain(labels, "Remove");
+    }
+
+    [TestMethod]
+    public void InterfaceCompletionIncludesInheritedInterfaceMembers()
+    {
+        (SemanticModel? m, string _) = Model("""
+            interface Base { baseMember(): void; }
+            interface Derived extends Base { derivedMember(): void; }
+            function use(value: Derived): void { value.| }
+            """, out int pos);
+        List<string> labels = [.. m.GetCompletions(pos).Select(c => c.Label)];
+        CollectionAssert.Contains(labels, "baseMember");
+        CollectionAssert.Contains(labels, "derivedMember");
+    }
+
+    [TestMethod]
+    public void TypeParameterCompletionIncludesConstraintMembers()
+    {
+        (SemanticModel? m, string _) = Model("""
+            interface HasValue { getValue(): int; }
+            function use<T extends HasValue>(value: T): int { return value.| }
+            """, out int pos);
+        CollectionAssert.Contains(m.GetCompletions(pos).Select(c => c.Label).ToList(), "getValue");
+    }
+
+    [TestMethod]
+    public void ListCompletionIncludesAdd()
+    {
+        (SemanticModel? m, string _) = Model("const xs: List<int> = [1, 2, 3];\nxs.|", out int pos);
+        CollectionAssert.Contains(m.GetCompletions(pos).Select(c => c.Label).ToList(), "Add");
+    }
+
+    [TestMethod]
     public void ScopeCompletionSeesLocalsAndKeywords()
     {
         (SemanticModel? m, string _) = Model("function f(alpha: int): void {\n  const beta = 1;\n  al|\n}", out int pos);

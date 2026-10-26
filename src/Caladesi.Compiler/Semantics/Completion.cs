@@ -216,16 +216,10 @@ public sealed partial class SemanticModel
             || (m.DeclaredAccessibility == Accessibility.Internal && m.IsFromSource));
     }
 
-    private static void AddMembers(TypeSymbol type, bool staticOnly, Action<string, CompletionKind, string?, string?> add)
+    private void AddMembers(TypeSymbol type, bool staticOnly, Action<string, CompletionKind, string?, string?> add)
     {
-        HashSet<TypeSymbol> visited = [];
-        void Walk(TypeSymbol t)
+        MemberLookup.Walk(type, Compilation.GetSpecialType(SpecialType.Object), t =>
         {
-            if (!visited.Add(t))
-            {
-                return;
-            }
-
             foreach (Symbol m in t.GetMembers())
             {
                 if (!IsUserVisible(m))
@@ -249,33 +243,8 @@ public sealed partial class SemanticModel
                         break;
                 }
             }
-            if (staticOnly && t is NamedTypeSymbol { TypeKind: TypeKind.Enum })
-            {
-                return;
-            }
-
-            if (t is TypeParameterSymbol tp)
-            {
-                foreach (TypeSymbol c in tp.ConstraintTypes)
-                {
-                    Walk(c);
-                }
-            }
-
-            if (t.BaseType != null)
-            {
-                Walk(t.BaseType);
-            }
-
-            if (!staticOnly)
-            {
-                foreach (NamedTypeSymbol i in t.AllInterfaces)
-                {
-                    Walk(i);
-                }
-            }
-        }
-        Walk(type);
+            return !(staticOnly && t is NamedTypeSymbol { TypeKind: TypeKind.Enum });
+        });
         if (!staticOnly && type is ArrayTypeSymbol) { add("Length", CompletionKind.Property, "int", null); }
     }
 

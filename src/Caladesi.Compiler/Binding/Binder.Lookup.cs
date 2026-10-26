@@ -78,14 +78,13 @@ public sealed partial class Binder
         return s is MethodSymbol { MethodKind: MethodKind.PropertyGet or MethodKind.PropertySet or MethodKind.EventAdd or MethodKind.EventRemove or MethodKind.StaticConstructor };
     }
 
-    /// <summary>Looks up members named <paramref name="name"/> in a type and its bases / interfaces.</summary>
+    /// <summary>Looks up members named <paramref name="name"/> through the receiver's member-lookup types.</summary>
     internal ImmutableArray<Symbol> LookupMembers(TypeSymbol type, string name, NamedTypeSymbol? from = null)
     {
         List<Symbol> result = [];
-        HashSet<TypeSymbol> visited = [];
         bool foundNonMethod = false;
 
-        void AddFrom(TypeSymbol t, bool isInterfaceWalk)
+        void AddFrom(TypeSymbol t)
         {
             foreach (Symbol m in t.GetMembers(name))
             {
@@ -124,66 +123,16 @@ public sealed partial class Binder
             }
         }
 
-        void Walk(TypeSymbol t)
+        MemberLookup.Walk(type, ObjectType, t =>
         {
-            if (t is NullableTypeSymbol nt)
-            {
-                t = nt.Underlying;
-            }
-
-            if (!visited.Add(t))
-            {
-                return;
-            }
-
-            AddFrom(t, false);
+            AddFrom(t);
             if (result.Any(r => r is not MethodSymbol and not NamedTypeSymbol))
             {
                 foundNonMethod = true;
             }
 
-            if (foundNonMethod && result.All(r => r is not MethodSymbol))
-            {
-                return;
-            }
-
-            if (t is TypeParameterSymbol tp)
-            {
-                foreach (TypeSymbol c in tp.ConstraintTypes)
-                {
-                    Walk(c);
-                }
-
-                Walk(ObjectType);
-                return;
-            }
-            if (t.TypeKind == TypeKind.Interface)
-            {
-                foreach (NamedTypeSymbol i in t.Interfaces)
-                {
-                    Walk(i);
-                }
-
-                Walk(ObjectType);
-                return;
-            }
-            if (t is ArrayTypeSymbol)
-            {
-                if (t.BaseType != null)
-                {
-                    Walk(t.BaseType);
-                }
-
-                return;
-            }
-            if (t.BaseType != null)
-            {
-                Walk(t.BaseType);
-            }
-        }
-
-        Walk(type);
-        // members from interfaces for classes are needed only for explicit interface calls on class-typed receivers: skip
+            return !foundNonMethod || result.Any(r => r is MethodSymbol);
+        });
         return [.. result];
     }
 
