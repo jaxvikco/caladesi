@@ -1,7 +1,7 @@
 <h1 align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="branding/png/lockup-on-dark-2000.png">
-    <img src="branding/png/lockup-on-light-2000.png" width="420" alt="Caladesi">
+    <source media="(prefers-color-scheme: dark)" srcset="branding/png/wordmark-on-dark-2000.png">
+    <img src="branding/png/wordmark-on-light-2000.png" width="420" alt="Caladesi">
   </picture>
 </h1>
 
