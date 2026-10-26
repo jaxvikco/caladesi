@@ -10,11 +10,10 @@ The SVGs in `svg/` are the masters; every PNG and the favicon are rendered from 
 | `svg/avatar.svg` | Full-bleed square for GitHub/org avatars (the site crops it to a circle). |
 | `svg/mark-on-light.svg`, `svg/mark-on-dark.svg` | The mark without a tile, transparent background. Also the `.cala` file icon. |
 | `svg/wordmark-on-light.svg`, `svg/wordmark-on-dark.svg` | The name spelled out; the C is the mark and the sun is the dot on the i. |
-| `svg/lockup-on-light.svg`, `svg/lockup-on-dark.svg` | Icon beside the name (plain i, so there's only one sun). |
-| `png/` | Rendered sizes: icon 16–1024, NuGet `nuget-icon-128.png`, avatar, marks, wordmarks and lockups at 2000 px wide. |
+| `png/` | Rendered sizes: icon 16–1024, NuGet `nuget-icon-128.png`, avatar, marks, wordmarks at 2000 px wide. |
 | `favicon.ico` | 16/32/48 px. |
 
-Text in the wordmark and lockup SVGs is converted to outlines, so no font is needed to display them.
+Text in the wordmark SVGs is converted to outlines, so no font is needed to display them.
 
 ## Colors
 
