@@ -77,6 +77,10 @@ dotnet run --project playground       # run playground/Program.cala, built with 
 The end-to-end suite lives in `tests/Caladesi.E2E` (see its README): it packs the SDK into a throwaway feed, copies each folder in `samples/`
 to a temp directory, builds and runs it with the real `dotnet` CLI, and compares stdout, exit codes and diagnostics.
 
+## License
+
+The Caladesi repository is licensed under the [MIT License](LICENSE).
+
 ## The compiler
 
 `calac` is Roslyn-like: an error-tolerant recursive-descent parser produces an immutable full-fidelity tree; the binder produces a bound
