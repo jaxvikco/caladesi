@@ -6,7 +6,7 @@
 </h1>
 
 Caladesi is a toy .NET language with TypeScript syntax. It has no compelling reason to exist, and I probably wouldn't use it
-for professional work. The point is to explore language design, compiler construction, and .NET interoperability. Much of
+for professional work. The point is to explore language design, compiler construction, and .NET interoperability. Most of
 this project was written by AI agents.
 
 Source files are `.cala`; the compiler emits IL directly (it is not a transpiler), so Caladesi assemblies are ordinary
