@@ -6,7 +6,8 @@
 </h1>
 
 Caladesi is a toy .NET language with TypeScript syntax. It has no compelling reason to exist, and I probably wouldn't use it
-for professional work. The point is to explore language design, compiler construction, and .NET interoperability.
+for professional work. The point is to explore language design, compiler construction, and .NET interoperability. Much of
+this project was written by AI agents.
 
 Source files are `.cala`; the compiler emits IL directly (it is not a transpiler), so Caladesi assemblies are ordinary
 .NET assemblies that interoperate with C# and other .NET languages in both directions.
@@ -49,7 +50,6 @@ A project file is a normal SDK-style project that uses the Caladesi SDK:
 ```
 
 `dotnet build/run/test/pack/publish` work as usual. Caladesi projects can reference C# projects and NuGet packages and the other way round.
-Tests are written in Caladesi with MSTest (`dotnet new calatest`).
 
 The language is described in [SPEC.md](SPEC.md); design decisions are in [DECISIONS.md](DECISIONS.md).
 
