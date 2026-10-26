@@ -1,7 +1,16 @@
-# Caladesi
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="branding/png/wordmark-on-dark-2000.png">
+    <img src="branding/png/wordmark-on-light-2000.png" width="420" alt="Caladesi">
+  </picture>
+</h1>
 
-Caladesi is a statically typed .NET language with TypeScript syntax. Source files are `.cala`; the compiler emits IL directly
-(it is not a transpiler), so Caladesi assemblies are ordinary .NET assemblies that interoperate with C# in both directions.
+Caladesi is a toy .NET language with TypeScript syntax. It has no compelling reason to exist, and I probably wouldn't use it
+for professional work. The point is to explore language design, compiler construction, and .NET interoperability. Most of
+this project was written by AI agents.
+
+Source files are `.cala`; the compiler emits IL directly (it is not a transpiler), so Caladesi assemblies are ordinary
+.NET assemblies that interoperate with C# and other .NET languages in both directions.
 
 ```ts
 import { List } from "System.Collections.Generic";
@@ -21,10 +30,12 @@ async function main(args: string[]): Task<int> {
 }
 ```
 
-## Getting started
+## Try it
+
+Requires .NET 10 or later.
 
 ```sh
-dotnet new install Caladesi.Templates          # from your feed; locally: artifacts/packages/Caladesi.Templates.1.0.0.nupkg
+dotnet new install Caladesi.Templates  # install the templates from NuGet.org
 dotnet new calaconsole -o hello
 cd hello && dotnet run
 ```
@@ -41,7 +52,6 @@ A project file is a normal SDK-style project that uses the Caladesi SDK:
 ```
 
 `dotnet build/run/test/pack/publish` work as usual. Caladesi projects can reference C# projects and NuGet packages and the other way round.
-Tests are written in Caladesi with MSTest (`dotnet new calatest`).
 
 The language is described in [SPEC.md](SPEC.md); design decisions are in [DECISIONS.md](DECISIONS.md).
 
@@ -63,6 +73,9 @@ The language is described in [SPEC.md](SPEC.md); design decisions are in [DECISI
 
 ## Building and testing
 
+For contributors working from a clone, these commands build and test the source. `eng/pack.sh` creates local NuGet packages
+in `artifacts/packages`; the end-to-end suite uses a local feed to test projects against those packages.
+
 The SDK version is pinned in `global.json`; everything targets `net10.0`.
 
 ```sh
@@ -74,8 +87,9 @@ eng/cala-run.sh file.cala             # compile and run a single file with the l
 dotnet run --project playground       # run playground/Program.cala, built with the compiler and SDK from this repo
 ```
 
-The end-to-end suite lives in `tests/Caladesi.E2E` (see its README): it packs the SDK into a throwaway feed, copies each folder in `samples/`
-to a temp directory, builds and runs it with the real `dotnet` CLI, and compares stdout, exit codes and diagnostics.
+The end-to-end suite lives in `tests/Caladesi.E2E` (see [its README](tests/Caladesi.E2E/README.md)): it packs the SDK into a
+throwaway feed, copies each folder in `samples/` to a temp directory, builds and runs it with the real `dotnet` CLI, and
+compares stdout, exit codes and diagnostics.
 
 ## The compiler
 
