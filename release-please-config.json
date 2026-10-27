@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "simple",
+  "include-component-in-tag": false,
+  "include-v-in-tag": true,
+  "release-as": "1.0.0",
+  "packages": {
+    ".": {
+      "package-name": "caladesi",
+      "changelog-path": "CHANGELOG.md",
+      "extra-files": [
+        {
+          "type": "xml",
+          "path": "Directory.Build.props",
+          "xpath": "//Project/PropertyGroup/Version"
+        },
+        {
+          "type": "json",
+          "path": "editors/vscode/package.json",
+          "jsonpath": "$.version"
+        },
+        "README.md",
+        "SPEC.md",
+        "src/Caladesi.Sdk/README.md"
+      ]
+    }
+  }
+}
