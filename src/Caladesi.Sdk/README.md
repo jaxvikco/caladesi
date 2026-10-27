@@ -31,7 +31,7 @@ dotnet run
 Create an `app.calaproj` with:
 
 ```xml
-<Project Sdk="Caladesi.Sdk/1.0.0"> <!-- x-release-please-version -->
+<Project Sdk="Caladesi.Sdk/1.0.1"> <!-- x-release-please-version -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>

@@ -2,7 +2,7 @@
   "name": "caladesi",
   "displayName": "Caladesi",
   "description": "Language support for Caladesi, a toy .NET language with TypeScript syntax.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "jaxvik",
   "icon": "images/icon.png",
   "galleryBanner": {

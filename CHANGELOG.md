@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/jaxvikco/caladesi/compare/v1.0.0...v1.0.1) (2026-10-27)
+
+
+### Bug Fixes
+
+* **docs:** publish updated package readmes ([#16](https://github.com/jaxvikco/caladesi/issues/16)) ([38fbdc4](https://github.com/jaxvikco/caladesi/commit/38fbdc46c5c2375f59bf7f8a68f7979fc8a3a4a5))
+
 ## 1.0.0 (2026-10-27)
 
 
