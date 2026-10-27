@@ -159,12 +159,10 @@ jobs:
           TAG: ${{ needs.release-please.outputs.tag_name }}
         run: gh release upload "$TAG" assets/* --repo "$GITHUB_REPOSITORY" --clobber
 
-  # Off until the repository variable OPENVSX_ENABLED is set to 'true', which needs a trusted publisher registered for
-  # the extension at open-vsx.org/user-settings/trusted-publishers. That can only be registered after the first
-  # version of the extension exists on Open VSX.
+  # Authenticates through the trusted publisher registered at open-vsx.org/user-settings/trusted-publishers.
   publish-openvsx:
-    needs: package-vscode
-    if: vars.OPENVSX_ENABLED == 'true'
+    needs: [release-please, package-vscode]
+    if: needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
     environment: release
     permissions:
