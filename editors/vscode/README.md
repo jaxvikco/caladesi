@@ -1,29 +1,31 @@
 # Caladesi for VS Code
 
-Language support for Caladesi, a statically typed .NET language with
-TypeScript-like syntax (`.cala` files).
+Caladesi is a toy .NET language with TypeScript syntax. It has no compelling reason to exist, and I probably wouldn't use it
+for professional work. The point is to explore language design, compiler construction, and .NET interoperability. Most of
+this project was written by AI agents.
+
+This extension adds Caladesi language support for `.cala` files.
 
 ## Features
 
-- Syntax highlighting (TextMate grammar) for comments, strings, template literals, numeric literals (with
-  suffixes), keywords, types, `struct type`, decorators and operators.
-- Language configuration: comment toggling, bracket matching and auto-closing, indentation, folding.
-- A thin client for the `cala-ls` language server: diagnostics, hover, completion, go to definition, find
-  references, rename, outline (document symbols), semantic highlighting, signature help and formatting.
+- Syntax highlighting for comments, strings, template literals, numeric literals, keywords, types, decorators and operators
+- Diagnostics, hover, completion, signature help and semantic highlighting
+- Go to definition, find references and rename
+- Outline (document symbols) and formatting
+- Comment toggling, bracket matching, auto-closing, indentation and folding
+- `.calaproj` project files open as XML, like `.csproj`
 
-## Language server
+## Requirements
 
-The extension starts `cala-ls` over stdio. It is located in this order:
+.NET 10 SDK or later. The language server reads your `.calaproj` with `dotnet`, and restores it the first time you open it.
 
-1. `caladesi.server.path`: a native `cala-ls` executable, or an `cala-ls.dll` that is run with `dotnet`.
-2. `server/cala-ls` (or `server/cala-ls.dll`) inside the extension.
-3. `cala-ls` on the `PATH`.
-4. The development build `src/Caladesi.LanguageServer/bin/{Debug,Release}/net10.0/cala-ls.dll` of the repository this
-   extension lives in.
+## Getting started
 
-Files inside an `.calaproj` are analysed with the project's compile items and reference assemblies (read through
-`dotnet msbuild`; the project is restored on first use). Other `.cala` files are analysed standalone against the
-.NET targeting pack and `Caladesi.Runtime.dll`.
+```sh
+dotnet new install Caladesi.Templates
+dotnet new calaconsole -o hello
+code hello
+```
 
 ## Settings
 
@@ -36,15 +38,11 @@ Files inside an `.calaproj` are analysed with the project's compile items and re
 
 ## Commands
 
-- `Caladesi: Restart Language Server` (`caladesi.restartServer`)
+- `Caladesi: Restart Language Server`
 
-## Development
+## Learn more
 
-```sh
-npm install
-npm run compile     # type-check and build to ./out
-npm run bundle      # bundle the client (and vscode-languageclient) into out/extension.js
-npm run package     # produce caladesi.vsix (bundled, so no node_modules are shipped)
-```
-
-Press F5 in VS Code with this folder open to launch an Extension Development Host.
+- [Source and documentation](https://github.com/jaxvikco/caladesi)
+- [Language specification](https://github.com/jaxvikco/caladesi/blob/main/SPEC.md)
+- [Samples](https://github.com/jaxvikco/caladesi/tree/main/samples)
+- [Issue tracker](https://github.com/jaxvikco/caladesi/issues)

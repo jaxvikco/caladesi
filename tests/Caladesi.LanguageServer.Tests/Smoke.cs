@@ -10,6 +10,6 @@ public class Smoke
     [TestMethod]
     public void Runs()
     {
-        Assert.IsTrue(CompilerInfo.Version.StartsWith("1.0", StringComparison.Ordinal));
+        Assert.IsTrue(Version.TryParse(CompilerInfo.Version.Split('-')[0], out _), CompilerInfo.Version);
     }
 }

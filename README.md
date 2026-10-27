@@ -43,7 +43,7 @@ cd hello && dotnet run
 A project file is a normal SDK-style project that uses the Caladesi SDK:
 
 ```xml
-<Project Sdk="Caladesi.Sdk/1.0.0">
+<Project Sdk="Caladesi.Sdk/1.0.0"> <!-- x-release-please-version -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
@@ -83,6 +83,7 @@ eng/build.sh                          # dotnet build Caladesi.slnx
 dotnet test --solution Caladesi.slnx  # unit tests + language server tests + end-to-end tests (packs the SDK, builds and runs samples)
 eng/aot-check.sh                      # publishes compiler, runtime, CLI and language server with PublishAot and fails on trim/AOT warnings
 eng/pack.sh                           # packs Caladesi.Sdk, Caladesi.Runtime and Caladesi.Templates into artifacts/packages
+eng/package-vscode.sh                 # packages the VS Code extension with cala-ls bundled into artifacts/vscode
 eng/cala-run.sh file.cala             # compile and run a single file with the locally built compiler
 dotnet run --project playground       # run playground/Program.cala, built with the compiler and SDK from this repo
 ```
@@ -104,5 +105,16 @@ emitter writes metadata, IL and a portable PDB with `System.Reflection.Metadata`
 
 ## Editor support
 
-`editors/vscode` contains a VS Code extension (TextMate grammar plus a client for `cala-ls`). Package it with
-`npm install && npm run package` inside that folder.
+`editors/vscode` contains a VS Code extension (TextMate grammar plus a client for `cala-ls`). To work on it, run these
+inside that folder:
+
+```sh
+npm install
+npm run compile     # type-check and build to ./out
+npm run bundle      # bundle the client (and vscode-languageclient) into out/extension.js
+npm run package     # produce caladesi.vsix (bundled, so no node_modules are shipped)
+```
+
+Press F5 in VS Code with that folder open to launch an Extension Development Host. When no server is configured or
+bundled and `cala-ls` is not on the `PATH`, the extension falls back to the development build in
+`src/Caladesi.LanguageServer/bin/{Debug,Release}/net10.0/`.

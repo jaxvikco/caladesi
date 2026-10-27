@@ -1,0 +1,5 @@
+<Project>
+  <ItemGroup Condition="'$(IsPackable)' != 'false'">
+    <None Include="$(CaladesiRepoRoot)branding/png/nuget-icon-128.png" Pack="true" PackagePath="icon.png" Visible="false" />
+  </ItemGroup>
+</Project>

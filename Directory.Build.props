@@ -14,4 +14,19 @@
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <CaladesiRepoRoot>$(MSBuildThisFileDirectory)</CaladesiRepoRoot>
   </PropertyGroup>
+  <PropertyGroup>
+    <Authors>Caladesi contributors</Authors>
+    <Company>Jaxvik</Company>
+    <Product>Caladesi</Product>
+    <Copyright>Copyright (c) 2026 Caladesi contributors</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/jaxvikco/caladesi</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/jaxvikco/caladesi</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <PackageTags>caladesi;dotnet;language;compiler</PackageTags>
+    <PackageIcon>icon.png</PackageIcon>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+  </PropertyGroup>
 </Project>
