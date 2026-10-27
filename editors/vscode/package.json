@@ -1,10 +1,24 @@
 {
   "name": "caladesi",
   "displayName": "Caladesi",
-  "description": "Language support for Caladesi, a statically typed .NET language with TypeScript-like syntax.",
+  "description": "Language support for Caladesi, a toy .NET language with TypeScript syntax.",
   "version": "1.0.0",
-  "publisher": "caladesi",
+  "publisher": "jaxvik",
+  "icon": "images/icon.png",
+  "galleryBanner": {
+    "color": "#0B3A47",
+    "theme": "dark"
+  },
   "license": "MIT",
+  "homepage": "https://github.com/jaxvikco/caladesi#readme",
+  "bugs": {
+    "url": "https://github.com/jaxvikco/caladesi/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jaxvikco/caladesi.git",
+    "directory": "editors/vscode"
+  },
   "private": true,
   "engines": {
     "vscode": "^1.90.0"
@@ -32,7 +46,17 @@
         "extensions": [
           ".cala"
         ],
+        "icon": {
+          "light": "./images/file-icon-light.svg",
+          "dark": "./images/file-icon-dark.svg"
+        },
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "xml",
+        "extensions": [
+          ".calaproj"
+        ]
       }
     ],
     "grammars": [
@@ -115,7 +139,7 @@
     "watch": "tsc -watch -p ./",
     "bundle": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=node18 --minify",
     "vscode:prepublish": "npm run bundle",
-    "package": "npm run compile && vsce package --no-dependencies --allow-missing-repository --out caladesi.vsix"
+    "package": "npm run compile && vsce package --no-dependencies --out caladesi.vsix"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
