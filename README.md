@@ -32,7 +32,9 @@ async function main(args: string[]): Task<int> {
 
 ## Try it
 
-Requires .NET 10 or later.
+Requires .NET 10 or later. For editor support, install the Caladesi extension from the
+[VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=jaxvik.caladesi) or
+[Open VSX](https://open-vsx.org/extension/jaxvik/caladesi).
 
 ```sh
 dotnet new install Caladesi.Templates  # install the templates from NuGet.org
@@ -105,8 +107,9 @@ emitter writes metadata, IL and a portable PDB with `System.Reflection.Metadata`
 
 ## Editor support
 
-`editors/vscode` contains a VS Code extension (TextMate grammar plus a client for `cala-ls`). To work on it, run these
-inside that folder:
+`editors/vscode` contains the VS Code extension (TextMate grammar plus a client for `cala-ls`), published to the
+[VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=jaxvik.caladesi) and
+[Open VSX](https://open-vsx.org/extension/jaxvik/caladesi). To work on it, run these inside that folder:
 
 ```sh
 npm install

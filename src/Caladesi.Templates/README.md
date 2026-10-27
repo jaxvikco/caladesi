@@ -10,7 +10,9 @@ Project templates for creating Caladesi console applications, class libraries an
 
 ## Requirements
 
-.NET 10 SDK or later.
+.NET 10 SDK or later. For editor support, install the Caladesi extension from the
+[VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=jaxvik.caladesi) or
+[Open VSX](https://open-vsx.org/extension/jaxvik/caladesi).
 
 ## Install
 
