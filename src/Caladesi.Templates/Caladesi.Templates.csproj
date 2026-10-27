@@ -12,6 +12,7 @@
     <NoWarn>$(NoWarn);NU5128;NU5100;NU5105</NoWarn>
   </PropertyGroup>
   <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="README.md" />
     <None Include="templates/**/*" Exclude="templates/**/bin/**;templates/**/obj/**;templates/**/*.calaproj" Pack="true" PackagePath="content/%(RecursiveDir)%(Filename)%(Extension)" />
     <TemplateProject Include="templates/**/*.calaproj" Exclude="templates/**/bin/**;templates/**/obj/**" />
   </ItemGroup>
