@@ -143,7 +143,9 @@ jobs:
         run: npx vsce publish --packagePath ../../artifacts/vscode/caladesi.vsix --azure-credential
 
   attach-release-assets:
-    needs: [release-please, publish-nuget, publish-vscode]
+    needs: [release-please, publish-nuget, publish-vscode, publish-openvsx]
+    # Runs after every publish, whatever its outcome, so one failing registry never leaves the release without files.
+    if: ${{ !cancelled() && needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
