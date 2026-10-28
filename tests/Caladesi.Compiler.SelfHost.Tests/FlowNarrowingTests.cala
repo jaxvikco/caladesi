@@ -1,0 +1,114 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { FlowNarrowing, NarrowPath, NarrowingFact, Narrowings } from "Caladesi.Compiler.Binding";
+import { BoundParameter, BoundConversion, ConversionKind, BoundTypeTest, BoundUnary, UnaryOperatorKind, BoundLogicalBinary } from "Caladesi.Compiler.Bound";
+import { Symbol, SymbolKind, ParameterSymbol, ErrorTypeSymbol, NullableTypeSymbol } from "Caladesi.Compiler.Symbols";
+import { SyntaxTree } from "Caladesi.Compiler.Syntax";
+
+export class FlowIdentitySymbol extends Symbol {
+  constructor(private readonly definition: Symbol) { super(); }
+  override get Kind(): SymbolKind { return SymbolKind.Parameter; }
+  override get Name(): string { return "identity"; }
+  override get OriginalSymbolDefinition(): Symbol { return this.definition; }
+}
+
+@TestClass
+export class FlowNarrowingTests {
+  @TestMethod
+  pathsUseIdentityAndPersistentAppend(): void {
+    const type = ErrorTypeSymbol.Instance;
+    const first = new ParameterSymbol("value", type, 0, type);
+    const second = new ParameterSymbol("value", type, 0, type);
+    const path = new NarrowPath(ImmutableArray.Create<Symbol>(first));
+    const equal = new NarrowPath(ImmutableArray.Create<Symbol>(first));
+    const distinct = new NarrowPath(ImmutableArray.Create<Symbol>(second));
+    const appended = path.Append(second);
+    const absent: NarrowPath? = null;
+    if (!path.Equals(equal) || path.GetHashCode() != equal.GetHashCode() || path.Equals(distinct) || path.Equals(absent!) ||
+        !appended.StartsWith(path) || path.StartsWith(appended) || path.Parts.Length != 1) {
+      throw new Exception("Path identity and prefix semantics");
+    }
+    const identityLeft = new NarrowPath(ImmutableArray.Create<Symbol>(new FlowIdentitySymbol(type)));
+    const identityRight = new NarrowPath(ImmutableArray.Create<Symbol>(new FlowIdentitySymbol(type)));
+    if (!identityLeft.Equals(identityRight) || identityLeft.GetHashCode() != identityRight.GetHashCode()) {
+      throw new Exception("Original Symbol definition identity");
+    }
+  }
+
+  @TestMethod
+  stateSnapshotsAreImmutableAndRestorable(): void {
+    const type = ErrorTypeSymbol.Instance;
+    const declared = new NullableTypeSymbol(type);
+    const parameter = new ParameterSymbol("value", declared, 0, type);
+    const expression = new BoundParameter(parameter);
+    const path = FlowNarrowing.PathOf(expression)!;
+    const flow = new FlowNarrowing();
+    const empty = flow.SaveState();
+    flow.Apply(new Narrowings(ImmutableArray.Create<NarrowingFact>(new NarrowingFact(path, type))));
+    const narrowed = flow.SaveState();
+    const conversion = flow.ApplyNarrowing(expression) as BoundConversion;
+    if (conversion == null || conversion.Kind != ConversionKind.FromNullable || empty.Count != 0 || narrowed.Count != 1) {
+      throw new Exception("Persistent state and nullable conversion");
+    }
+    flow.InvalidateNarrowing(expression);
+    if (!flow.State.IsEmpty || narrowed.Count != 1) throw new Exception("Invalidation mutated snapshot");
+    flow.RestoreState(narrowed);
+    flow.DropMutableNarrowings();
+    if (flow.State.Count != 1) throw new Exception("Parameter must survive mutable drop");
+    flow.RestoreState(empty);
+    if (!Object.ReferenceEquals(expression, flow.ApplyNarrowing(expression))) throw new Exception("Empty state must preserve expression");
+  }
+
+  @TestMethod
+  lambdaAssignmentNamesInvalidateRestoredState(): void {
+    const type = ErrorTypeSymbol.Instance;
+    const parameter = new ParameterSymbol("captured", type, 0, type);
+    const expression = new BoundParameter(parameter);
+    const flow = new FlowNarrowing();
+    const test = new BoundTypeTest(expression, type, type);
+    const facts = FlowNarrowing.GetNarrowing(test);
+    if (facts.WhenTrue.Items.Length != 1 || !facts.WhenFalse.Items.IsEmpty) throw new Exception("Type test facts");
+    flow.Apply(facts.WhenTrue);
+    const state = flow.SaveState();
+    const syntax = SyntaxTree.ParseText("function f() { ((captured))++; object.member = null; }").Root;
+    const names = FlowNarrowing.AssignedNames(syntax);
+    if (!names.Contains("captured") || !names.Contains("member") || names.Contains("object")) throw new Exception("Assigned names");
+    flow.NoteLambdaAssignments(syntax);
+    if (!flow.State.IsEmpty) throw new Exception("Lambda assignment invalidation");
+    flow.RestoreState(state);
+    flow.InvalidateAssignedIn(syntax);
+    if (!flow.State.IsEmpty || state.Count != 1) throw new Exception("Restored state invalidation");
+  }
+
+  @TestMethod
+  logicalBranchesKeepOrderedFactsRatherThanIntersecting(): void {
+    const type = ErrorTypeSymbol.Instance;
+    const parameter = new ParameterSymbol("value", type, 0, type);
+    const operand = new BoundParameter(parameter);
+    const test = new BoundTypeTest(operand, type, type);
+    const conjunction = FlowNarrowing.GetNarrowing(new BoundLogicalBinary(true, test, test, type));
+    if (conjunction.WhenTrue.Items.Length != 2 || !conjunction.WhenFalse.Items.IsEmpty) {
+      throw new Exception("And facts preserve duplicate order");
+    }
+    const not = new BoundUnary(UnaryOperatorKind.Not, test, type);
+    const disjunction = FlowNarrowing.GetNarrowing(new BoundLogicalBinary(false, not, not, type));
+    if (!disjunction.WhenTrue.Items.IsEmpty || disjunction.WhenFalse.Items.Length != 2) {
+      throw new Exception("Or uses only false facts");
+    }
+  }
+
+  @TestMethod
+  onlyNarrowingConversionsExposeAnAccessPath(): void {
+    const type = ErrorTypeSymbol.Instance;
+    const parameter = new ParameterSymbol("value", type, 0, type);
+    const operand = new BoundParameter(parameter);
+    const path = FlowNarrowing.PathOf(operand)!;
+    const unwrapped = new BoundConversion(operand, ConversionKind.FromNullable, type);
+    const identity = new BoundConversion(operand, ConversionKind.Identity, type);
+    const boxed = new BoundConversion(operand, ConversionKind.Boxing, type);
+    if (!path.Equals(FlowNarrowing.PathOf(unwrapped)) || FlowNarrowing.PathOf(identity) != null ||
+        FlowNarrowing.PathOf(boxed) != null) {
+      throw new Exception("Path conversion allowlist");
+    }
+  }
+}

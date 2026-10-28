@@ -1,0 +1,275 @@
+import { ImmutableArray, ImmutableDictionary } from "System.Collections.Immutable";
+import { HashSet } from "System.Collections.Generic";
+import { RuntimeHelpers } from "System.Runtime.CompilerServices";
+import { Symbol, SymbolKind } from "../Symbols/Symbol";
+import { TypeSymbol, NullableTypeSymbol, TypeKind } from "../Symbols/TypeSymbols";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { LocalSymbol, ParameterSymbol, FieldSymbol, PropertySymbol, MethodSymbol } from "../Symbols/MemberSymbols";
+import { SpecialType } from "../Symbols/SpecialType";
+import { BoundExpression, BoundLocal, BoundParameter, BoundThis, BoundFieldAccess, BoundPropertyAccess,
+  BoundConversion, ConversionKind, BoundUnary, UnaryOperatorKind, BoundLogicalBinary, BoundBinary,
+  BinaryOperatorKind, BoundLiteral, BoundTypeTest } from "../Bound/BoundNodes";
+import { SyntaxNode } from "../Syntax/SyntaxElement";
+import { AssignmentExpressionSyntax, PrefixUnaryExpressionSyntax, PostfixUnaryExpressionSyntax,
+  ParenthesizedExpressionSyntax, IdentifierNameSyntax, MemberAccessExpressionSyntax, ExpressionSyntax } from "../Syntax/Nodes.Core";
+import { SyntaxKind } from "../Syntax/SyntaxKind";
+
+class ThisSymbol extends Symbol {
+  override get Kind(): SymbolKind { return SymbolKind.Parameter; }
+  override get Name(): string { return "this"; }
+}
+
+export sealed class NarrowPath implements IEquatable<NarrowPath> {
+  static readonly ThisMarker: Symbol = new ThisSymbol();
+  constructor(public readonly Parts: ImmutableArray<Symbol>) {}
+  get Root(): Symbol { return this.Parts[0]; }
+  Append(symbol: Symbol): NarrowPath { return new NarrowPath(this.Parts.Add(symbol)); }
+  private static Definition(symbol: Symbol): Symbol {
+    // The oracle reads Symbol's slot. These families hide it with a new typed
+    // OriginalDefinition; the self-host bridge must not change that dispatch.
+    if (symbol instanceof NamedTypeSymbol || symbol instanceof MethodSymbol ||
+        symbol instanceof FieldSymbol || symbol instanceof PropertySymbol) return symbol;
+    return symbol.OriginalSymbolDefinition;
+  }
+  private static SameSymbol(a: Symbol, b: Symbol): bool {
+    return Object.ReferenceEquals(a, b) || Object.ReferenceEquals(NarrowPath.Definition(a), NarrowPath.Definition(b));
+  }
+  StartsWith(prefix: NarrowPath): bool {
+    if (prefix.Parts.Length > this.Parts.Length) return false;
+    for (let i = 0; i < prefix.Parts.Length; i++) {
+      if (!NarrowPath.SameSymbol(this.Parts[i], prefix.Parts[i])) return false;
+    }
+    return true;
+  }
+  Equals(other: NarrowPath?): bool {
+    return other != null && other.Parts.Length == this.Parts.Length && this.StartsWith(other);
+  }
+  override Equals(other: object?): bool { return other instanceof NarrowPath && this.Equals(other as NarrowPath); }
+  override GetHashCode(): int {
+    let hash = 17;
+    for (const part of this.Parts) hash = hash * 31 + RuntimeHelpers.GetHashCode(NarrowPath.Definition(part));
+    return hash;
+  }
+}
+
+export sealed class NarrowingFact {
+  constructor(public readonly Path: NarrowPath, public readonly Type: TypeSymbol) {}
+}
+
+export sealed class Narrowings {
+  static readonly Empty: Narrowings = new Narrowings(ImmutableArray<NarrowingFact>.Empty);
+  constructor(public readonly Items: ImmutableArray<NarrowingFact>) {}
+  Concat(other: Narrowings): Narrowings {
+    return this.Items.IsDefaultOrEmpty ? other : other.Items.IsDefaultOrEmpty ? this :
+      new Narrowings(this.Items.AddRange(other.Items));
+  }
+}
+
+export sealed class NarrowingBranches {
+  constructor(public readonly WhenTrue: Narrowings, public readonly WhenFalse: Narrowings) {}
+}
+
+// State dictionaries are persistent: snapshots can be restored without copying or aliasing mutable entries.
+export sealed class FlowNarrowing {
+  private state: ImmutableDictionary<NarrowPath, TypeSymbol> = ImmutableDictionary<NarrowPath, TypeSymbol>.Empty;
+  private readonly lambdaAssignedNames: HashSet<string> = new HashSet<string>(StringComparer.Ordinal);
+  get State(): ImmutableDictionary<NarrowPath, TypeSymbol> { return this.state; }
+  SaveState(): ImmutableDictionary<NarrowPath, TypeSymbol> { return this.state; }
+  RestoreState(state: ImmutableDictionary<NarrowPath, TypeSymbol>): void { this.state = state; }
+  Apply(facts: Narrowings): void { this.state = FlowNarrowing.ApplyNarrowings(this.state, facts); }
+
+  static PathOf(expression: BoundExpression): NarrowPath? {
+    if (expression instanceof BoundLocal) return new NarrowPath(ImmutableArray.Create<Symbol>((expression as BoundLocal).Local));
+    if (expression instanceof BoundParameter) return new NarrowPath(ImmutableArray.Create<Symbol>((expression as BoundParameter).Parameter));
+    if (expression instanceof BoundThis) return new NarrowPath(ImmutableArray.Create<Symbol>(NarrowPath.ThisMarker));
+    if (expression instanceof BoundFieldAccess) {
+      const field = expression as BoundFieldAccess;
+      if (field.Receiver == null) return new NarrowPath(ImmutableArray.Create<Symbol>(field.Field));
+      const path = FlowNarrowing.PathOf(field.Receiver);
+      return path == null ? null : path.Append(field.Field);
+    }
+    if (expression instanceof BoundPropertyAccess) {
+      const property = expression as BoundPropertyAccess;
+      if (!property.Arguments.IsDefaultOrEmpty) return null;
+      if (property.Receiver == null) return new NarrowPath(ImmutableArray.Create<Symbol>(property.Property));
+      const path = FlowNarrowing.PathOf(property.Receiver);
+      return path == null ? null : path.Append(property.Property);
+    }
+    if (expression instanceof BoundConversion) {
+      const conversion = expression as BoundConversion;
+      const kind = conversion.Kind;
+      if (kind == ConversionKind.FromNullable || kind == ConversionKind.UnionExtract ||
+          kind == ConversionKind.ExplicitReference || kind == ConversionKind.TypeOnly || kind == ConversionKind.Unboxing) {
+        return FlowNarrowing.PathOf(conversion.Operand);
+      }
+    }
+    return null;
+  }
+
+  ApplyNarrowing(expression: BoundExpression): BoundExpression {
+    if (this.state.IsEmpty || expression.Type == null) return expression;
+    const path = FlowNarrowing.PathOf(expression);
+    if (path == null || !this.state.ContainsKey(path)) return expression;
+    const narrowed = this.state[path];
+    return narrowed.Equals(expression.Type) ? expression : FlowNarrowing.NarrowExpression(expression, narrowed);
+  }
+
+  static NarrowExpression(expression: BoundExpression, narrowed: TypeSymbol): BoundExpression {
+    const declared = expression.Type!;
+    if (declared instanceof NullableTypeSymbol) {
+      const underlying = (declared as NullableTypeSymbol).Underlying;
+      if (narrowed.Equals(underlying)) {
+        const converted = new BoundConversion(expression, ConversionKind.FromNullable, narrowed);
+        converted.Syntax = expression.Syntax;
+        return converted;
+      }
+      const unwrapped = new BoundConversion(expression, ConversionKind.FromNullable, underlying);
+      unwrapped.Syntax = expression.Syntax;
+      return FlowNarrowing.NarrowExpression(unwrapped, narrowed);
+    }
+    if (declared instanceof NamedTypeSymbol && (declared as NamedTypeSymbol).IsUnionType) {
+      const cases = (declared as NamedTypeSymbol).UnionCases;
+      for (let i = 0; i < cases.Length; i++) {
+        if (cases[i].Equals(narrowed)) {
+          const extracted = new BoundConversion(expression, ConversionKind.UnionExtract, narrowed);
+          extracted.Syntax = expression.Syntax;
+          extracted.CaseIndex = i;
+          return extracted;
+        }
+      }
+    }
+    const kind = narrowed.IsValueType && !declared.IsValueType ? ConversionKind.Unboxing : ConversionKind.ExplicitReference;
+    const converted = new BoundConversion(expression, kind, narrowed);
+    converted.Syntax = expression.Syntax;
+    return converted;
+  }
+
+  static ApplyNarrowings(state: ImmutableDictionary<NarrowPath, TypeSymbol>, facts: Narrowings): ImmutableDictionary<NarrowPath, TypeSymbol> {
+    if (facts.Items.IsDefaultOrEmpty) return state;
+    let result = state;
+    for (const item of facts.Items) result = result.SetItem(item.Path, item.Type);
+    return result;
+  }
+
+  static RemovePathsStartingWith(state: ImmutableDictionary<NarrowPath, TypeSymbol>, prefix: NarrowPath): ImmutableDictionary<NarrowPath, TypeSymbol> {
+    let result = state;
+    for (const path of state.Keys) {
+      if (path.StartsWith(prefix)) result = result.Remove(path);
+    }
+    return result;
+  }
+
+  InvalidateNarrowing(target: BoundExpression): void {
+    if (this.state.IsEmpty) return;
+    const path = FlowNarrowing.PathOf(target);
+    if (path != null) this.state = FlowNarrowing.RemovePathsStartingWith(this.state, path);
+  }
+
+  private static Fact(path: NarrowPath, type: TypeSymbol): Narrowings {
+    return new Narrowings(ImmutableArray.Create<NarrowingFact>(new NarrowingFact(path, type)));
+  }
+  static GetNarrowing(condition: BoundExpression): NarrowingBranches {
+    if (condition instanceof BoundUnary && (condition as BoundUnary).Kind == UnaryOperatorKind.Not) {
+      const branches = FlowNarrowing.GetNarrowing((condition as BoundUnary).Operand);
+      return new NarrowingBranches(branches.WhenFalse, branches.WhenTrue);
+    }
+    if (condition instanceof BoundLogicalBinary) {
+      const logical = condition as BoundLogicalBinary;
+      const left = FlowNarrowing.GetNarrowing(logical.Left);
+      const right = FlowNarrowing.GetNarrowing(logical.Right);
+      return logical.IsAnd ?
+        new NarrowingBranches(left.WhenTrue.Concat(right.WhenTrue), Narrowings.Empty) :
+        new NarrowingBranches(Narrowings.Empty, left.WhenFalse.Concat(right.WhenFalse));
+    }
+    if (condition instanceof BoundBinary) {
+      const binary = condition as BoundBinary;
+      if (binary.Kind == BinaryOperatorKind.Equal || binary.Kind == BinaryOperatorKind.NotEqual) {
+        let subject: BoundExpression? = null;
+        if (binary.Right instanceof BoundLiteral && (binary.Right as BoundLiteral).Value.IsNull) subject = binary.Left;
+        else if (binary.Left instanceof BoundLiteral && (binary.Left as BoundLiteral).Value.IsNull) subject = binary.Right;
+        if (subject != null && subject.Type instanceof NullableTypeSymbol) {
+          const path = FlowNarrowing.PathOf(subject);
+          if (path != null) {
+            const facts = FlowNarrowing.Fact(path, (subject.Type as NullableTypeSymbol).Underlying);
+            return binary.Kind == BinaryOperatorKind.NotEqual ?
+              new NarrowingBranches(facts, Narrowings.Empty) : new NarrowingBranches(Narrowings.Empty, facts);
+          }
+        }
+      }
+    }
+    if (condition instanceof BoundTypeTest) {
+      const test = condition as BoundTypeTest;
+      const path = FlowNarrowing.PathOf(test.Operand);
+      if (path != null) {
+        let whenFalse = Narrowings.Empty;
+        const operandType = test.Operand.Type == null ? null : test.Operand.Type.StripNullable();
+        if (operandType instanceof NamedTypeSymbol && (operandType as NamedTypeSymbol).IsUnionType && !test.OperandWasNullable) {
+          let remaining: TypeSymbol? = null;
+          let count = 0;
+          for (const candidate of (operandType as NamedTypeSymbol).UnionCases) {
+            if (!candidate.Equals(test.Target)) { remaining = candidate; count++; }
+          }
+          if (count == 1) whenFalse = FlowNarrowing.Fact(path, remaining!);
+        }
+        return new NarrowingBranches(FlowNarrowing.Fact(path, test.Target), whenFalse);
+      }
+    }
+    if (condition instanceof BoundConversion) {
+      const conversion = condition as BoundConversion;
+      if ((conversion.Kind == ConversionKind.Identity || conversion.Kind == ConversionKind.TypeOnly) &&
+          conversion.Operand.Type != null && conversion.Operand.Type.SpecialType == SpecialType.Boolean) {
+        return FlowNarrowing.GetNarrowing(conversion.Operand);
+      }
+    }
+    return new NarrowingBranches(Narrowings.Empty, Narrowings.Empty);
+  }
+
+  static AssignedNames(syntax: SyntaxNode): HashSet<string> {
+    const names = new HashSet<string>(StringComparer.Ordinal);
+    for (const node of syntax.DescendantNodesAndSelf()) {
+      let target: ExpressionSyntax? = null;
+      if (node instanceof AssignmentExpressionSyntax) target = (node as AssignmentExpressionSyntax).Left;
+      else if (node instanceof PrefixUnaryExpressionSyntax) {
+        const prefix = node as PrefixUnaryExpressionSyntax;
+        if (prefix.OperatorToken.Kind == SyntaxKind.PlusPlusToken || prefix.OperatorToken.Kind == SyntaxKind.MinusMinusToken) target = prefix.Operand;
+      } else if (node instanceof PostfixUnaryExpressionSyntax) target = (node as PostfixUnaryExpressionSyntax).Operand;
+      while (target instanceof ParenthesizedExpressionSyntax) target = (target as ParenthesizedExpressionSyntax).Expression;
+      if (target instanceof IdentifierNameSyntax) names.Add((target as IdentifierNameSyntax).Identifier.Text);
+      else if (target instanceof MemberAccessExpressionSyntax) names.Add((target as MemberAccessExpressionSyntax).Name.Name);
+    }
+    return names;
+  }
+  InvalidateAssignedIn(syntax: SyntaxNode): void {
+    if (this.state.IsEmpty) return;
+    const names = FlowNarrowing.AssignedNames(syntax);
+    if (names.Count == 0) return;
+    const snapshot = this.state;
+    for (const path of snapshot.Keys) {
+      for (const part of path.Parts) {
+        if (names.Contains(part.Name)) { this.state = this.state.Remove(path); break; }
+      }
+    }
+  }
+  NoteLambdaAssignments(body: SyntaxNode): void {
+    this.lambdaAssignedNames.UnionWith(FlowNarrowing.AssignedNames(body));
+    this.InvalidateAssignedIn(body);
+  }
+  InvalidateAfterCall(callee: MethodSymbol?): void {
+    if (this.state.IsEmpty || callee == null ||
+        !(callee.IsFromSource || (callee.ContainingType != null && callee.ContainingType.TypeKind == TypeKind.Delegate))) return;
+    const snapshot = this.state;
+    for (const path of snapshot.Keys) {
+      const throughMember = path.Parts.Length > 1 || path.Root instanceof FieldSymbol || path.Root instanceof PropertySymbol;
+      if (throughMember || this.lambdaAssignedNames.Contains(path.Root.Name)) this.state = this.state.Remove(path);
+    }
+  }
+  DropMutableNarrowings(): void {
+    const snapshot = this.state;
+    for (const path of snapshot.Keys) {
+      const root = path.Root;
+      const immutable = path.Parts.Length == 1 &&
+        ((root instanceof LocalSymbol && (root as LocalSymbol).IsConst) || root instanceof ParameterSymbol);
+      if (!immutable) this.state = this.state.Remove(path);
+    }
+  }
+}
