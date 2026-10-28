@@ -1,0 +1,48 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { Conversions } from "Caladesi.Compiler";
+import { ConversionKind, LambdaSymbol } from "Caladesi.Compiler.Bound";
+import { ConstantValue, ErrorTypeSymbol } from "Caladesi.Compiler.Symbols";
+
+@TestClass
+export class ConversionTests {
+  @TestMethod
+  absentConversionIsNotIdentity(): void {
+    const absent = Conversions.None;
+    if (absent.Exists || Conversions.IsIdentity(absent) || absent.IsImplicit || absent.WrapNullable) {
+      throw new Exception("Absent conversion flags");
+    }
+    if (!Conversions.Identity.Exists || !Conversions.IsIdentity(Conversions.Identity) || !Conversions.Identity.IsImplicit) {
+      throw new Exception("Identity conversion flags");
+    }
+  }
+
+  @TestMethod
+  wrappingPreservesPayloadAndOriginal(): void {
+    const value = new ConstantValue(42);
+    const method = new LambdaSymbol(ErrorTypeSymbol.Instance, "convert", false, false);
+    const original = Conversions.Implicit(ConversionKind.UserDefined, method, 2, value);
+    const wrapped = Conversions.WithNullableWrap(original);
+    if (original.WrapNullable || !wrapped.WrapNullable || !wrapped.Exists || !wrapped.IsImplicit) {
+      throw new Exception("Nullable wrapping flags");
+    }
+    if (wrapped.Kind != ConversionKind.UserDefined || wrapped.CaseIndex != 2 ||
+        !Object.ReferenceEquals(wrapped.Constant, value) || !Object.ReferenceEquals(wrapped.Method, method)) {
+      throw new Exception("Nullable wrapping payload");
+    }
+  }
+
+  @TestMethod
+  factoriesKeepDefaultsAndExplicitness(): void {
+    const implicitConversion = Conversions.Implicit(ConversionKind.ImplicitNumeric);
+    const explicitConversion = Conversions.Explicit(ConversionKind.ExplicitNumeric);
+    if (!implicitConversion.Exists || !implicitConversion.IsImplicit || implicitConversion.CaseIndex != -1) {
+      throw new Exception("Implicit conversion defaults");
+    }
+    if (!explicitConversion.Exists || explicitConversion.IsImplicit || explicitConversion.CaseIndex != -1) {
+      throw new Exception("Explicit conversion defaults");
+    }
+    if (implicitConversion.Method != null || implicitConversion.Constant != null || explicitConversion.WrapNullable) {
+      throw new Exception("Conversion optional payload");
+    }
+  }
+}
