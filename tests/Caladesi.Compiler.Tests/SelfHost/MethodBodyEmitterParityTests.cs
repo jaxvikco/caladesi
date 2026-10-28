@@ -87,6 +87,22 @@ public sealed class MethodBodyEmitterParityTests
     }
 
     [TestMethod]
+    public void DecimalConversions_PreserveDirectOperatorsAndInt32IntermediatePaths()
+    {
+        Fixture f = new();
+        Pair decimalType = f.Special(SpecialType.Decimal);
+        Pair decimalValue = f.Node("BoundParameter", f.Parameter("decimalValue", decimalType));
+        foreach (SpecialType special in NumericTypes.Where(type => type != SpecialType.IntPtr && type != SpecialType.UIntPtr))
+        {
+            Pair target = f.Special(special);
+            Pair value = f.Node("BoundParameter", f.Parameter("value", target));
+            f.Expression(f.Node("BoundConversion", value, (int)ConversionKind.ExplicitNumeric, decimalType));
+            f.Expression(f.Node("BoundConversion", decimalValue, (int)ConversionKind.ExplicitNumeric, target), used: false);
+        }
+        f.Compare();
+    }
+
+    [TestMethod]
     public void Operators_ShiftsNullComparisonsAndBranchPredicatesMatch()
     {
         foreach (SpecialType special in new[] { SpecialType.Int32, SpecialType.UInt32, SpecialType.Int64, SpecialType.UInt64,
@@ -317,6 +333,29 @@ public sealed class MethodBodyEmitterParityTests
     }
 
     [TestMethod]
+    public void NestedConditionalReceiversAndUnionReferenceWideningPreserveOriginalRouting()
+    {
+        Fixture f = new();
+        Pair text = f.Special(SpecialType.String);
+        Pair optional = f.Nullable(text);
+        Pair outer = f.Node("BoundConditionalReceiver", text);
+        Pair inner = f.Node("BoundConditionalReceiver", text);
+        Pair nested = f.Node("BoundConditionalAccess", outer, inner, inner, optional);
+        Pair receiver = f.Node("BoundParameter", f.Parameter("outer", optional));
+        f.Expression(f.Node("BoundConditionalAccess", receiver, outer, nested, optional));
+        // The original retains placeholder mappings after nested emission.
+        f.Expression(outer);
+        f.Expression(inner, used: false);
+        Pair small = f.Union(text, f.Special(SpecialType.Int32));
+        Pair large = f.Union(f.Special(SpecialType.Object), f.Special(SpecialType.Int64));
+        Pair wrap = f.With(f.Node("BoundConversion", f.Literal("case", text), (int)ConversionKind.UnionWrap, small), "CaseIndex", 0);
+        f.Expression(f.Node("BoundConversion", wrap, (int)ConversionKind.UnionWrap, large));
+        f.Expression(f.With(f.Node("BoundConversion", f.Node("BoundDefaultValue", small),
+            (int)ConversionKind.UnionWrap, large), "CaseIndex", -3), used: false);
+        f.Compare();
+    }
+
+    [TestMethod]
     public void StatementsLoopsProtectedReturnsAndSequencePointsMatchIncludingExceptionRegions()
     {
         foreach (bool returnsValue in new[] { false, true })
@@ -337,7 +376,9 @@ public sealed class MethodBodyEmitterParityTests
                 f.Node("BoundCatch", null, f.Special(SpecialType.Exception), f.Block(f.Node("BoundGoto", outer))));
             Pair protectedBody = f.Block(
                 f.Node("BoundGoto", nested),
-                f.Node("BoundTry", f.Block(f.Node("BoundLabel", nested), f.Node("BoundNoOp")),
+                f.Node("BoundTry", f.Block(f.Node("BoundLabel", nested),
+                    f.Node("BoundConditionalGoto", condition, inner, true),
+                    f.Node("BoundGoto", outer), f.Node("BoundNoOp")),
                     f.Array("Bound.BoundCatch"), null),
                 f.Node("BoundLabel", inner),
                 f.Node("BoundConditionalGoto", condition, inner, true),
