@@ -864,7 +864,8 @@ internal sealed partial class EmitModule
         foreach (SequencePoint p in pts)
         {
             int deltaOffset = firstPoint ? p.Offset : p.Offset - previousOffset;
-            if (!firstPoint && deltaOffset < 0)
+            // After the first point, a zero IL delta denotes a document-change record.
+            if (!firstPoint && deltaOffset <= 0)
             {
                 continue;
             }

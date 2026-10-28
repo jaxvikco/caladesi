@@ -1,0 +1,140 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { File, Path } from "System.IO";
+import { CompilationOptions, OutputKind } from "Caladesi.Compiler";
+
+export sealed class CliOptions {
+  Output: string? = null;
+  PdbOutput: string? = null;
+  Target: OutputKind = OutputKind.ConsoleApplication;
+  AssemblyName = "";
+  RootNamespace = "";
+  ProjectDirectory: string? = null;
+  Nullable = true;
+  WarnAsError = false;
+  Optimize = false;
+  GenerateTestEntryPoint = false;
+  TargetFramework: string? = null;
+  TargetFrameworkDisplayName: string? = null;
+  AssemblyVersion = new Version(1, 0, 0, 0);
+  ShowVersion = false;
+  readonly References = new List<string>();
+  readonly Defines = new List<string>();
+  readonly NoWarn = new List<string>();
+  readonly GlobalImports = new List<string>();
+  readonly TestHooks = new List<string>();
+  readonly Sources = new List<string>();
+  readonly Errors = new List<string>();
+  private globalImportsSet = false;
+
+  get EffectiveGlobalImports(): ImmutableArray<string> {
+    if (this.globalImportsSet) return [...CompilationOptions.DefaultGlobalImports, ...this.GlobalImports];
+    return CompilationOptions.DefaultGlobalImports;
+  }
+
+  static Parse(args: IEnumerable<string>): CliOptions {
+    const options = new CliOptions();
+    for (const arg of CliOptions.Expand(args, options)) options.Apply(arg);
+    return options;
+  }
+
+  private static *Expand(args: IEnumerable<string>, options: CliOptions): IEnumerable<string> {
+    for (const arg of args) {
+      if (arg.StartsWith('@')) {
+        const path = arg.Substring(1);
+        if (!File.Exists(path)) {
+          options.Errors.Add(`response file not found: ${path}`);
+          continue;
+        }
+        for (const line of File.ReadAllLines(path)) {
+          let text = line.Trim();
+          if (text.Length == 0 || text.StartsWith('#')) continue;
+          if (text.Length >= 2 && text[0] == '"' && text[text.Length - 1] == '"') {
+            text = text.Substring(1, text.Length - 2);
+          }
+          yield text;
+        }
+      } else {
+        yield arg;
+      }
+    }
+  }
+
+  private Apply(arg: string): void {
+    if (!arg.StartsWith('-') || arg.Length < 2) {
+      this.Sources.Add(arg);
+      return;
+    }
+    const body = arg.TrimStart('-');
+    const colon = body.IndexOf(':');
+    const key = (colon < 0 ? body : body.Substring(0, colon)).ToLowerInvariant();
+    const value = colon < 0 ? "" : body.Substring(colon + 1);
+    switch (key) {
+      case "out": this.Output = value; break;
+      case "pdb": this.PdbOutput = value; break;
+      case "target":
+        switch (value.ToLowerInvariant()) {
+          case "exe": case "console": this.Target = OutputKind.ConsoleApplication; break;
+          case "library": case "dll": this.Target = OutputKind.DynamicallyLinkedLibrary; break;
+          default: this.Target = this.Bad<OutputKind>(`unknown target '${value}'`, OutputKind.ConsoleApplication); break;
+        }
+        break;
+      case "assemblyname": this.AssemblyName = value; break;
+      case "rootnamespace": this.RootNamespace = value; break;
+      case "projectdir": this.ProjectDirectory = value; break;
+      case "ref": if (value.Length > 0) this.References.Add(value); break;
+      case "define": if (value.Length > 0) this.Defines.Add(value); break;
+      case "nowarn": this.NoWarn.AddRange(value.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries)); break;
+      case "globalimport":
+        this.globalImportsSet = true;
+        if (value.Length > 0) this.GlobalImports.Add(value);
+        break;
+      case "nullable": this.Nullable = !value.Equals("disable", StringComparison.OrdinalIgnoreCase); break;
+      case "warnaserror": this.WarnAsError = !value.Equals("-", StringComparison.Ordinal) && !value.Equals("false", StringComparison.OrdinalIgnoreCase); break;
+      case "optimize": this.Optimize = !value.Equals("-", StringComparison.Ordinal) && !value.Equals("false", StringComparison.OrdinalIgnoreCase); break;
+      case "testhook": if (value.Length > 0) this.TestHooks.Add(value); break;
+      case "testentry": this.GenerateTestEntryPoint = !value.Equals("false", StringComparison.OrdinalIgnoreCase); break;
+      case "targetframework": this.TargetFramework = value; break;
+      case "targetframeworkdisplay": this.TargetFrameworkDisplayName = value; break;
+      case "version":
+        if (value.Length == 0) {
+          this.ShowVersion = true;
+        } else {
+          try {
+            this.AssemblyVersion = Version.Parse(value);
+          } catch (ex: ArgumentException) {
+            this.Errors.Add(`invalid version '${value}'`);
+          } catch (ex: FormatException) {
+            this.Errors.Add(`invalid version '${value}'`);
+          } catch (ex: OverflowException) {
+            this.Errors.Add(`invalid version '${value}'`);
+          }
+        }
+        break;
+      default: this.Errors.Add(`unknown option '${arg}'`); break;
+    }
+  }
+
+  private Bad<T>(message: string, fallback: T): T {
+    this.Errors.Add(message);
+    return fallback;
+  }
+
+  ToCompilationOptions(): CompilationOptions {
+    return {
+      OutputKind: this.Target,
+      AssemblyName: this.AssemblyName.Length > 0 ? this.AssemblyName : Path.GetFileNameWithoutExtension(this.Output ?? "Caladesi")!,
+      RootNamespace: this.RootNamespace,
+      ProjectDirectory: this.ProjectDirectory,
+      NullableEnabled: this.Nullable,
+      WarningsAsErrors: this.WarnAsError,
+      NoWarn: [...this.NoWarn],
+      Defines: [...this.Defines],
+      GlobalImports: this.EffectiveGlobalImports,
+      AssemblyVersion: this.AssemblyVersion,
+      TargetFramework: this.TargetFramework ?? ".NETCoreApp,Version=v10.0",
+      TargetFrameworkDisplayName: this.TargetFrameworkDisplayName,
+      GenerateTestEntryPoint: this.GenerateTestEntryPoint,
+      Optimize: this.Optimize
+    };
+  }
+}

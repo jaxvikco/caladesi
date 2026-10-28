@@ -1,0 +1,101 @@
+import { List } from "System.Collections.Generic";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { StringBuilder } from "System.Text";
+import { SyntaxTree } from "../Syntax/SyntaxTree";
+import { SyntaxKind } from "../Syntax/SyntaxKind";
+import { SyntaxToken, SyntaxTrivia } from "../Syntax/SyntaxToken";
+import { TextSpan, TextSpans } from "../Text/TextSpan";
+
+export sealed class Formatter {
+  static Format(tree: SyntaxTree, indentSize: int = 2): string {
+    ArgumentNullException.ThrowIfNull(tree);
+    const text = tree.Text.Text;
+    const tokens = new List<SyntaxToken>();
+    for (const token of tree.Root.DescendantTokens()) {
+      if (!token.IsMissing || token.Kind == SyntaxKind.EndOfFileToken) tokens.Add(token);
+    }
+    const protectedSpans = new List<TextSpan>();
+    for (const token of tokens) {
+      if (token.Text.Contains('\n') && token.Kind != SyntaxKind.EndOfFileToken)
+        protectedSpans.Add(new TextSpan(token.Start, token.End - token.Start));
+      Formatter.AddTriviaSpans(token.LeadingTrivia, token.FullStart, protectedSpans);
+      Formatter.AddTriviaSpans(token.TrailingTrivia, token.End, protectedSpans);
+    }
+    const depthBefore = new int[tokens.Count];
+    let depth = 0;
+    for (let i = 0; i < tokens.Count; i++) {
+      depthBefore[i] = depth;
+      depth += Formatter.Delta(tokens[i].Kind);
+      if (depth < 0) depth = 0;
+    }
+    const builder = new StringBuilder(text.Length);
+    let lineStart = 0;
+    let tokenIndex = 0;
+    let blankRun = 0;
+    while (lineStart <= text.Length) {
+      let lineEnd = text.IndexOf('\n', lineStart);
+      const hasNewline = lineEnd >= 0;
+      if (!hasNewline) lineEnd = text.Length;
+      let raw = text.Substring(lineStart, lineEnd - lineStart);
+      if (raw.Length > 0 && raw[raw.Length - 1] == '\r') raw = raw.Substring(0, raw.Length - 1);
+      let protectedEnd = -1;
+      for (const span of protectedSpans) {
+        if (lineStart > span.Start && lineStart < TextSpans.End(span)) {
+          protectedEnd = TextSpans.End(span);
+          break;
+        }
+      }
+      if (protectedEnd >= 0) {
+        const tokenEnd = protectedEnd - lineStart;
+        if (tokenEnd >= raw.Length) builder.Append(raw);
+        else builder.Append(raw.Substring(0, tokenEnd)).Append(raw.Substring(tokenEnd).TrimEnd());
+        blankRun = 0;
+      } else {
+        const trimmed = raw.Trim();
+        if (trimmed.Length == 0) {
+          blankRun++;
+          if (blankRun > 1) {
+            lineStart = hasNewline ? lineEnd + 1 : text.Length + 1;
+            continue;
+          }
+        } else {
+          blankRun = 0;
+          while (tokenIndex < tokens.Count && tokens[tokenIndex].End <= lineStart + raw.Length - raw.TrimStart().Length) tokenIndex++;
+          let indentDepth = tokenIndex < tokens.Count ? depthBefore[tokenIndex] : depth;
+          if (tokenIndex < tokens.Count && tokens[tokenIndex].Start <= lineEnd &&
+            Formatter.IsCloser(tokens[tokenIndex].Kind) && tokens[tokenIndex].Start >= lineStart)
+            indentDepth = Math.Max(0, indentDepth - 1);
+          let startsMultiLineToken = false;
+          for (const span of protectedSpans) {
+            if (span.Start >= lineStart && span.Start < lineEnd && TextSpans.End(span) > lineEnd) {
+              startsMultiLineToken = true;
+              break;
+            }
+          }
+          builder.Append(' ', indentDepth * indentSize).Append(startsMultiLineToken ? raw.TrimStart() : trimmed);
+        }
+      }
+      if (hasNewline) builder.Append('\n');
+      if (!hasNewline) break;
+      lineStart = lineEnd + 1;
+    }
+    const result = builder.ToString().TrimEnd('\n', ' ', '\t', '\r');
+    return result.Length == 0 ? "" : result + "\n";
+  }
+
+  private static AddTriviaSpans(trivia: ImmutableArray<SyntaxTrivia>, start: int, spans: List<TextSpan>): void {
+    let position = start;
+    for (const item of trivia) {
+      if (item.Kind == SyntaxKind.MultiLineCommentTrivia && item.Text.Contains('\n'))
+        spans.Add(new TextSpan(position, item.Text.Length));
+      position += item.Text.Length;
+    }
+  }
+  private static IsCloser(kind: SyntaxKind): bool {
+    return kind == SyntaxKind.CloseBraceToken || kind == SyntaxKind.CloseBracketToken || kind == SyntaxKind.CloseParenToken;
+  }
+  private static Delta(kind: SyntaxKind): int {
+    if (kind == SyntaxKind.OpenBraceToken || kind == SyntaxKind.OpenBracketToken || kind == SyntaxKind.OpenParenToken) return 1;
+    return Formatter.IsCloser(kind) ? -1 : 0;
+  }
+}

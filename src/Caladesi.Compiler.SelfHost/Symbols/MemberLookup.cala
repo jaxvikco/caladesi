@@ -1,0 +1,19 @@
+import { HashSet } from "System.Collections.Generic";
+import { TypeSymbol, NullableTypeSymbol, TypeParameterSymbol, TypeKind } from "./TypeSymbols";
+
+export static class MemberLookup {
+  static Walk(receiver: TypeSymbol, objectType: TypeSymbol, descend: Func<TypeSymbol, bool>): void {
+    MemberLookup.Visit(receiver, objectType, descend, new HashSet<TypeSymbol>());
+  }
+  private static Visit(receiver: TypeSymbol, objectType: TypeSymbol, descend: Func<TypeSymbol, bool>, visited: HashSet<TypeSymbol>): void {
+    const type = receiver instanceof NullableTypeSymbol ? (receiver as NullableTypeSymbol).Underlying : receiver;
+    if (!visited.Add(type) || !descend(type)) return;
+    if (type instanceof TypeParameterSymbol) {
+      for (const constraint of (type as TypeParameterSymbol).ConstraintTypes) MemberLookup.Visit(constraint, objectType, descend, visited);
+      MemberLookup.Visit(objectType, objectType, descend, visited);
+    } else if (type.TypeKind == TypeKind.Interface) {
+      for (const parent of type.Interfaces) MemberLookup.Visit(parent, objectType, descend, visited);
+      MemberLookup.Visit(objectType, objectType, descend, visited);
+    } else if (type.BaseType != null) MemberLookup.Visit(type.BaseType, objectType, descend, visited);
+  }
+}

@@ -1,0 +1,142 @@
+import { StringBuilder } from "System.Text";
+import { File } from "System.IO";
+import { ITaskItem, MessageImportance, RequiredAttribute } from "Microsoft.Build.Framework";
+import { ToolTask } from "Microsoft.Build.Utilities";
+
+export sealed class CaladesiCompile extends ToolTask {
+  public constructor() { super(); }
+
+  @RequiredAttribute
+  public CompilerPath: string = "";
+  @RequiredAttribute
+  public OutputAssembly: string = "";
+  public PdbFile: string? = null;
+  public OutputType: string = "Exe";
+  public AssemblyName: string? = null;
+  public RootNamespace: string? = null;
+  public ProjectDirectory: string? = null;
+  public References: ITaskItem[] = [];
+  public Sources: ITaskItem[] = [];
+  public GlobalImports: ITaskItem[] = [];
+  public DefineConstants: string? = null;
+  public NullableContext: string? = null;
+  public TreatWarningsAsErrors: bool = false;
+  public NoWarn: string? = null;
+  public Version: string? = null;
+  public TargetFrameworkMoniker: string? = null;
+  public TargetFrameworkDisplayName: string? = null;
+  public Optimize: bool = false;
+  public GenerateTestEntryPoint: bool = false;
+  public TestHooks: ITaskItem[]? = null;
+  public DotnetHostPath: string? = null;
+
+  protected override get ToolName(): string { return "dotnet"; }
+
+  protected override GenerateFullPathToTool(): string {
+    return !string.IsNullOrEmpty(this.DotnetHostPath) ? this.DotnetHostPath! : "dotnet";
+  }
+
+  protected override get StandardOutputLoggingImportance(): MessageImportance {
+    return MessageImportance.Normal;
+  }
+
+  protected override get StandardErrorLoggingImportance(): MessageImportance {
+    return MessageImportance.High;
+  }
+
+  protected override GenerateCommandLineCommands(): string {
+    return "\"" + this.CompilerPath + "\"";
+  }
+
+  private static SplitList(value: string?): string[] {
+    const separators: char[] = [';', ',', ' ', '\t', '\r', '\n'];
+    return (value ?? "").Split(separators, StringSplitOptions.RemoveEmptyEntries);
+  }
+
+  private static Add(builder: StringBuilder, line: string): void {
+    builder.Append(line).Append('\n');
+  }
+
+  protected override GenerateResponseFileCommands(): string {
+    const sb = new StringBuilder();
+    CaladesiCompile.Add(sb, "-out:" + this.OutputAssembly);
+    if (!string.IsNullOrEmpty(this.PdbFile)) {
+      CaladesiCompile.Add(sb, "-pdb:" + this.PdbFile);
+    }
+
+    CaladesiCompile.Add(sb, "-target:" +
+      (string.Equals(this.OutputType, "Exe", StringComparison.OrdinalIgnoreCase) ||
+       string.Equals(this.OutputType, "WinExe", StringComparison.OrdinalIgnoreCase) ? "exe" : "library"));
+    if (!string.IsNullOrEmpty(this.AssemblyName)) {
+      CaladesiCompile.Add(sb, "-assemblyname:" + this.AssemblyName);
+    }
+    if (!string.IsNullOrEmpty(this.RootNamespace)) {
+      CaladesiCompile.Add(sb, "-rootnamespace:" + this.RootNamespace);
+    }
+    if (!string.IsNullOrEmpty(this.ProjectDirectory)) {
+      const separators: char[] = ['/', '\\'];
+      CaladesiCompile.Add(sb, "-projectdir:" + this.ProjectDirectory!.TrimEnd(separators));
+    }
+    for (const reference of this.References) {
+      CaladesiCompile.Add(sb, "-ref:" + reference.ItemSpec);
+    }
+    for (const define of CaladesiCompile.SplitList(this.DefineConstants)) {
+      CaladesiCompile.Add(sb, "-define:" + define);
+    }
+    if (!string.IsNullOrEmpty(this.NullableContext)) {
+      CaladesiCompile.Add(sb, "-nullable:" +
+        (string.Equals(this.NullableContext, "disable", StringComparison.OrdinalIgnoreCase) ? "disable" : "enable"));
+    }
+    if (this.TreatWarningsAsErrors) {
+      CaladesiCompile.Add(sb, "-warnaserror");
+    }
+    const noWarn = CaladesiCompile.SplitList(this.NoWarn);
+    if (noWarn.Length > 0) {
+      CaladesiCompile.Add(sb, "-nowarn:" + string.Join(";", noWarn));
+    }
+    for (const globalImport of this.GlobalImports) {
+      CaladesiCompile.Add(sb, "-globalimport:" + globalImport.ItemSpec);
+    }
+    if (!string.IsNullOrEmpty(this.Version)) {
+      CaladesiCompile.Add(sb, "-version:" + this.Version);
+    }
+    if (!string.IsNullOrEmpty(this.TargetFrameworkMoniker)) {
+      CaladesiCompile.Add(sb, "-targetframework:" + this.TargetFrameworkMoniker);
+    }
+    if (!string.IsNullOrEmpty(this.TargetFrameworkDisplayName)) {
+      CaladesiCompile.Add(sb, "-targetframeworkdisplay:" + this.TargetFrameworkDisplayName);
+    }
+    if (this.Optimize) {
+      CaladesiCompile.Add(sb, "-optimize");
+    }
+    if (this.GenerateTestEntryPoint) {
+      CaladesiCompile.Add(sb, "-testentry");
+    }
+    const hooks = this.TestHooks;
+    if (hooks != null) {
+      for (const hook of hooks) {
+        const typeName = hook.GetMetadata("TypeFullName");
+        if (!string.IsNullOrEmpty(typeName)) {
+          CaladesiCompile.Add(sb, "-testhook:" + typeName);
+        }
+      }
+    }
+    for (const source of this.Sources) {
+      CaladesiCompile.Add(sb, source.GetMetadata("FullPath"));
+    }
+    return sb.ToString();
+  }
+
+  protected override ValidateParameters(): bool {
+    if (!File.Exists(this.CompilerPath)) {
+      this.Log.LogError("calac not found at '{0}'.", this.CompilerPath);
+      return false;
+    }
+    return super.ValidateParameters();
+  }
+
+  protected override HandleTaskExecutionErrors(): bool {
+    // ToolTask already parsed canonical diagnostics; don't add a second error.
+    return !this.HasLoggedErrors && super.HandleTaskExecutionErrors();
+  }
+}

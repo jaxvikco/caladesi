@@ -1,0 +1,21 @@
+import { CompilerInfo } from "Caladesi.Compiler";
+import { ServerOptions } from "./ServerOptions";
+import { LanguageServer } from "./LanguageServer";
+
+function main(args: string[]): int {
+  using output = Console.OpenStandardOutput();
+  using input = Console.OpenStandardInput();
+  Console.SetOut(Console.Error);
+  for (const arg: string of args) {
+    if (arg == "--version") {
+      Console.Error.WriteLine("cala-ls " + CompilerInfo.Version);
+      return 0;
+    }
+  }
+  const options = new ServerOptions();
+  for (let i: int = 0; i < args.Length - 1; i++) {
+    if (args[i] == "--runtime-path") options.RuntimePath = args[i + 1];
+    else if (args[i] == "--dotnet-path") options.DotnetPath = args[i + 1];
+  }
+  return new LanguageServer(input, output, options).Run();
+}

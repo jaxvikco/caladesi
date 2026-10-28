@@ -1,0 +1,357 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { Dictionary } from "System.Collections.Generic";
+import { MethodAttributes, ParameterAttributes, FieldAttributes } from "System.Reflection";
+import { MetadataReader, MethodDefinition, MethodDefinitionHandle, FieldDefinition, FieldDefinitionHandle, PropertyDefinition, PropertyDefinitionHandle, Parameter, CustomAttributeHandleCollection, ConstantHandle, ConstantTypeCode, MethodSignature } from "System.Reflection.Metadata";
+import { Symbol, Accessibility, RefKind, AttributeData } from "../Symbol";
+import { TypeSymbol, TypeKind, TypeParameterSymbol, VarianceKind, NullableTypeSymbol, ErrorTypeSymbol } from "../TypeSymbols";
+import { MethodSymbol, FieldSymbol, PropertySymbol, ParameterSymbol, ConstantValue, MethodKind } from "../MemberSymbols";
+import { MetadataNamedType } from "./MetadataNamedType";
+import { MetadataHelpers } from "./MetadataHelpers";
+import { MetadataTypeProvider, GenericContext, ByRefTypeSymbol } from "./MetadataTypeProvider";
+
+export static class Nullability {
+  static Apply(type: TypeSymbol, flag: byte): TypeSymbol {
+    if (flag != 2 || type instanceof NullableTypeSymbol || type.IsVoid || type.IsErrorType) return type;
+    if (type.IsReferenceType) return new NullableTypeSymbol(type);
+    if (type instanceof TypeParameterSymbol && !(type as TypeParameterSymbol).HasValueTypeConstraint) return new NullableTypeSymbol(type);
+    return type;
+  }
+}
+
+export sealed class MetadataMethodSymbol extends MethodSymbol {
+  private readonly definition: MethodDefinition;
+  private readonly name: string;
+  private readonly kind: MethodKind;
+  private typeParameters: ImmutableArray<TypeParameterSymbol>;
+  private signatureDone: bool = false;
+  private returnType: TypeSymbol = ErrorTypeSymbol.Instance;
+  private parameters: ImmutableArray<ParameterSymbol>;
+  private initOnly: bool = false;
+  private returnsByRef: bool = false;
+  private unsupported: bool = false;
+  private extensionDone: bool = false;
+  private isExtension: bool = false;
+  private attributes: ImmutableArray<AttributeData>;
+  private associated: Symbol? = null;
+
+  constructor(private readonly container: MetadataNamedType, public readonly Handle: MethodDefinitionHandle) {
+    super();
+    this.definition = container.Reader.GetMethodDefinition(Handle);
+    this.name = container.Reader.GetString(this.definition.Name);
+    const special = (this.definition.Attributes & MethodAttributes.SpecialName) != MethodAttributes.PrivateScope;
+    let kind = MethodKind.Ordinary;
+    if (this.name == ".ctor") kind = MethodKind.Constructor;
+    else if (this.name == ".cctor") kind = MethodKind.StaticConstructor;
+    else if (special && this.name.StartsWith("get_", StringComparison.Ordinal)) kind = MethodKind.PropertyGet;
+    else if (special && this.name.StartsWith("set_", StringComparison.Ordinal)) kind = MethodKind.PropertySet;
+    else if (special && (this.name == "op_Implicit" || this.name == "op_Explicit")) kind = MethodKind.Conversion;
+    else if (special && this.name.StartsWith("op_", StringComparison.Ordinal)) kind = MethodKind.UserDefinedOperator;
+    else if (special && this.name.StartsWith("add_", StringComparison.Ordinal)) kind = MethodKind.EventAdd;
+    else if (special && this.name.StartsWith("remove_", StringComparison.Ordinal)) kind = MethodKind.EventRemove;
+    else if (this.name == "Invoke" && container.TypeKind == TypeKind.Delegate) kind = MethodKind.DelegateInvoke;
+    this.kind = kind;
+  }
+  get IsUnsupported(): bool { this.EnsureSignature(); return this.unsupported; }
+  override get Name(): string { return this.name; }
+  override get ContainingSymbol(): Symbol? { return this.container; }
+  override get MethodKind(): MethodKind { return this.kind; }
+  override get IsStatic(): bool { return (this.definition.Attributes & MethodAttributes.Static) != MethodAttributes.PrivateScope; }
+  override get IsAbstract(): bool { return (this.definition.Attributes & MethodAttributes.Abstract) != MethodAttributes.PrivateScope; }
+  override get IsVirtual(): bool {
+    return (this.definition.Attributes & MethodAttributes.Virtual) != MethodAttributes.PrivateScope && !this.IsSealed && !this.IsAbstract;
+  }
+  override get IsOverride(): bool {
+    return (this.definition.Attributes & MethodAttributes.Virtual) != MethodAttributes.PrivateScope && (this.definition.Attributes & MethodAttributes.NewSlot) == MethodAttributes.PrivateScope;
+  }
+  override get IsSealed(): bool { return (this.definition.Attributes & MethodAttributes.Final) != MethodAttributes.PrivateScope; }
+  override get AssociatedSymbol(): Symbol? { return this.associated; }
+  SetAssociated(symbol: Symbol): void { this.associated = symbol; }
+  override get DeclaredAccessibility(): Accessibility {
+    switch (this.definition.Attributes & MethodAttributes.MemberAccessMask) {
+      case MethodAttributes.Public: return Accessibility.Public;
+      case MethodAttributes.Family: return Accessibility.Protected;
+      case MethodAttributes.FamORAssem: return Accessibility.ProtectedOrInternal;
+      case MethodAttributes.FamANDAssem: return Accessibility.ProtectedAndInternal;
+      case MethodAttributes.Assembly: return Accessibility.Internal;
+    }
+    return Accessibility.Private;
+  }
+  override get IsInitOnly(): bool { this.EnsureSignature(); return this.initOnly; }
+  override get ReturnsByRef(): bool { this.EnsureSignature(); return this.returnsByRef; }
+  override get IsExtensionMethod(): bool {
+    if (!this.extensionDone) {
+      this.isExtension = this.IsStatic && MetadataHelpers.FindAttribute(this.container.Reader,
+        this.definition.GetCustomAttributes(), "System.Runtime.CompilerServices", "ExtensionAttribute") != null;
+      this.extensionDone = true;
+    }
+    return this.isExtension;
+  }
+  override get TypeParameters(): ImmutableArray<TypeParameterSymbol> {
+    if (this.typeParameters.IsDefault) {
+      const handles = this.definition.GetGenericParameters();
+      const builder = ImmutableArray.CreateBuilder<TypeParameterSymbol>(handles.Count);
+      for (const handle of handles) {
+        const parameter = this.container.Reader.GetGenericParameter(handle);
+        builder.Add(new TypeParameterSymbol(this.container.Reader.GetString(parameter.Name), parameter.Index, this, VarianceKind.None,
+          tp => this.container.DecodeConstraints(handle, new GenericContext(this.container.TypeParameters, this.typeParameters))));
+      }
+      this.typeParameters = builder.ToImmutable();
+    }
+    return this.typeParameters;
+  }
+  override get ReturnType(): TypeSymbol { this.EnsureSignature(); return this.returnType; }
+  override get Parameters(): ImmutableArray<ParameterSymbol> { this.EnsureSignature(); return this.parameters; }
+  private NullableFlagOf(attributes: CustomAttributeHandleCollection, fallback: byte): byte {
+    const attribute = MetadataHelpers.FindAttribute(this.container.Reader, attributes, "System.Runtime.CompilerServices", "NullableAttribute");
+    return attribute == null ? fallback : MetadataHelpers.ReadNullableFlag(this.container.Reader, attribute!.Value);
+  }
+  private EnsureSignature(): void {
+    if (this.signatureDone) return;
+    this.signatureDone = true;
+    const reader = this.container.Reader;
+    MetadataTypeProvider.SawUnsupported = false;
+    MetadataTypeProvider.SawIsExternalInit = false;
+    const context = new GenericContext(this.container.TypeParameters, this.TypeParameters);
+    let signature: MethodSignature<TypeSymbol>;
+    try { signature = this.definition.DecodeSignature<TypeSymbol, GenericContext>(this.container.Assembly.Provider, context); }
+    catch (e: BadImageFormatException) {
+      this.unsupported = true;
+      this.returnType = ErrorTypeSymbol.Instance;
+      this.parameters = ImmutableArray<ParameterSymbol>.Empty;
+      return;
+    }
+    this.initOnly = MetadataTypeProvider.SawIsExternalInit;
+    this.unsupported = MetadataTypeProvider.SawUnsupported;
+    let contextFlag = this.container.NullableContext;
+    const methodAttribute = MetadataHelpers.FindAttribute(reader, this.definition.GetCustomAttributes(),
+      "System.Runtime.CompilerServices", "NullableContextAttribute");
+    if (methodAttribute != null) contextFlag = MetadataHelpers.ReadByteArg(reader, methodAttribute!.Value);
+    const rows = new Dictionary<int, Parameter>();
+    for (const handle of this.definition.GetParameters()) {
+      const parameter = reader.GetParameter(handle);
+      rows[parameter.SequenceNumber] = parameter;
+    }
+    let returnType = signature.ReturnType;
+    if (returnType instanceof ByRefTypeSymbol) {
+      this.returnsByRef = true;
+      returnType = (returnType as ByRefTypeSymbol).Element;
+    }
+    const [hasReturnRow, returnRow] = rows.TryGetValue(0);
+    const returnFlag = hasReturnRow ? this.NullableFlagOf(returnRow.GetCustomAttributes(), contextFlag) : contextFlag;
+    this.returnType = Nullability.Apply(returnType, returnFlag);
+    const extension = this.IsExtensionMethod;
+    const builder = ImmutableArray.CreateBuilder<ParameterSymbol>(signature.ParameterTypes.Length);
+    for (let index = 0; index < signature.ParameterTypes.Length; index++) {
+      let type = signature.ParameterTypes[index];
+      let refKind = RefKind.None;
+      let name = "arg" + index;
+      let isParams = false;
+      let defaultValue: ConstantValue? = null;
+      let optional = false;
+      let flag = contextFlag;
+      if (type instanceof ByRefTypeSymbol) {
+        refKind = RefKind.Ref;
+        type = (type as ByRefTypeSymbol).Element;
+      }
+      const [hasRow, row] = rows.TryGetValue(index + 1);
+      if (hasRow) {
+        name = reader.GetString(row.Name);
+        if ((row.Attributes & ParameterAttributes.Out) != ParameterAttributes.None && refKind != RefKind.None) refKind = RefKind.Out;
+        else if ((row.Attributes & ParameterAttributes.In) != ParameterAttributes.None && refKind != RefKind.None) refKind = RefKind.In;
+        optional = (row.Attributes & ParameterAttributes.Optional) != ParameterAttributes.None;
+        if ((row.Attributes & ParameterAttributes.HasDefault) != ParameterAttributes.None) {
+          const handle = row.GetDefaultValue();
+          if (!handle.IsNil) defaultValue = MetadataMethodSymbol.ReadConstant(reader, handle, type);
+        }
+        const attributes = row.GetCustomAttributes();
+        if (attributes.Count > 0) {
+          isParams = MetadataHelpers.FindAttribute(reader, attributes, "System", "ParamArrayAttribute") != null;
+          flag = this.NullableFlagOf(attributes, contextFlag);
+          if (defaultValue == null) defaultValue = MetadataMethodSymbol.ReadAttributeDefault(reader, attributes);
+        }
+      }
+      type = Nullability.Apply(type, flag);
+      if (isParams) type = type.StripNullable();
+      if (optional && defaultValue == null && !type.IsValueType) defaultValue = ConstantValue.Null;
+      builder.Add(new ParameterSymbol(name, type, index, this, refKind, isParams, defaultValue, optional, extension && index == 0));
+    }
+    this.parameters = builder.ToImmutable();
+  }
+
+  private static ReadAttributeDefault(reader: MetadataReader, attributes: CustomAttributeHandleCollection): ConstantValue? {
+    const decimalAttribute = MetadataHelpers.FindAttribute(reader, attributes, "System.Runtime.CompilerServices", "DecimalConstantAttribute");
+    if (decimalAttribute != null) {
+      let blob = reader.GetBlobReader(decimalAttribute!.Value);
+      if (blob.ReadUInt16() == 1) {
+        const scale = blob.ReadByte();
+        const sign = blob.ReadByte();
+        const high = blob.ReadInt32();
+        const middle = blob.ReadInt32();
+        const low = blob.ReadInt32();
+        return new ConstantValue(new decimal(low, middle, high, sign != 0, scale));
+      }
+    }
+    const dateTimeAttribute = MetadataHelpers.FindAttribute(reader, attributes, "System.Runtime.CompilerServices", "DateTimeConstantAttribute");
+    if (dateTimeAttribute != null) {
+      let blob = reader.GetBlobReader(dateTimeAttribute!.Value);
+      if (blob.ReadUInt16() == 1) return new ConstantValue(new DateTime(blob.ReadInt64()));
+    }
+    return null;
+  }
+  static ReadConstant(reader: MetadataReader, handle: ConstantHandle, type: TypeSymbol): ConstantValue? {
+    const constant = reader.GetConstant(handle);
+    let blob = reader.GetBlobReader(constant.Value);
+    let value: object? = null;
+    switch (constant.TypeCode) {
+      case ConstantTypeCode.Boolean: value = blob.ReadBoolean(); break;
+      case ConstantTypeCode.Char: value = blob.ReadChar(); break;
+      case ConstantTypeCode.SByte: value = blob.ReadSByte(); break;
+      case ConstantTypeCode.Byte: value = blob.ReadByte(); break;
+      case ConstantTypeCode.Int16: value = blob.ReadInt16(); break;
+      case ConstantTypeCode.UInt16: value = blob.ReadUInt16(); break;
+      case ConstantTypeCode.Int32: value = blob.ReadInt32(); break;
+      case ConstantTypeCode.UInt32: value = blob.ReadUInt32(); break;
+      case ConstantTypeCode.Int64: value = blob.ReadInt64(); break;
+      case ConstantTypeCode.UInt64: value = blob.ReadUInt64(); break;
+      case ConstantTypeCode.Single: value = blob.ReadSingle(); break;
+      case ConstantTypeCode.Double: value = blob.ReadDouble(); break;
+      case ConstantTypeCode.String: value = blob.ReadUTF16(blob.RemainingBytes); break;
+      case ConstantTypeCode.NullReference: value = null; break;
+    }
+    return new ConstantValue(value);
+  }
+  override GetAttributes(): ImmutableArray<AttributeData> {
+    if (this.attributes.IsDefault) this.attributes = MetadataHelpers.DecodeAttributes(this.container.Assembly, this.definition.GetCustomAttributes());
+    return this.attributes;
+  }
+}
+
+export sealed class MetadataFieldSymbol extends FieldSymbol {
+  private readonly definition: FieldDefinition;
+  private readonly name: string;
+  private type: TypeSymbol = ErrorTypeSymbol.Instance;
+  private unsupported: bool = false;
+  private constant: ConstantValue? = null;
+  private constantDone: bool = false;
+  private attributes: ImmutableArray<AttributeData>;
+
+  constructor(private readonly container: MetadataNamedType, handle: FieldDefinitionHandle) {
+    super();
+    const reader = container.Reader;
+    this.definition = reader.GetFieldDefinition(handle);
+    this.name = reader.GetString(this.definition.Name);
+    MetadataTypeProvider.SawUnsupported = false;
+    try { this.type = this.definition.DecodeSignature<TypeSymbol, GenericContext>(container.Assembly.Provider, container.Context); }
+    catch (e: BadImageFormatException) { this.unsupported = true; }
+    if (MetadataTypeProvider.SawUnsupported) this.unsupported = true;
+    let flag = container.NullableContext;
+    const attribute = MetadataHelpers.FindAttribute(reader, this.definition.GetCustomAttributes(),
+      "System.Runtime.CompilerServices", "NullableAttribute");
+    if (attribute != null) flag = MetadataHelpers.ReadNullableFlag(reader, attribute!.Value);
+    this.type = Nullability.Apply(this.type, flag);
+  }
+  get IsUnsupported(): bool { return this.unsupported; }
+  override get Name(): string { return this.name; }
+  override get ContainingSymbol(): Symbol? { return this.container; }
+  override get Type(): TypeSymbol { return this.type; }
+  override get IsStatic(): bool { return (this.definition.Attributes & FieldAttributes.Static) != FieldAttributes.PrivateScope; }
+  override get IsConst(): bool { return (this.definition.Attributes & FieldAttributes.Literal) != FieldAttributes.PrivateScope; }
+  override get IsReadOnly(): bool { return (this.definition.Attributes & FieldAttributes.InitOnly) != FieldAttributes.PrivateScope; }
+  override get DeclaredAccessibility(): Accessibility {
+    switch (this.definition.Attributes & FieldAttributes.FieldAccessMask) {
+      case FieldAttributes.Public: return Accessibility.Public;
+      case FieldAttributes.Family: return Accessibility.Protected;
+      case FieldAttributes.FamORAssem: return Accessibility.ProtectedOrInternal;
+      case FieldAttributes.Assembly: return Accessibility.Internal;
+    }
+    return Accessibility.Private;
+  }
+  override get ConstantValue(): ConstantValue? {
+    if (!this.IsConst) return null;
+    if (!this.constantDone) {
+      this.constantDone = true;
+      const handle = this.definition.GetDefaultValue();
+      if (!handle.IsNil) this.constant = MetadataMethodSymbol.ReadConstant(this.container.Reader, handle, this.Type);
+    }
+    return this.constant;
+  }
+  override GetAttributes(): ImmutableArray<AttributeData> {
+    if (this.attributes.IsDefault) this.attributes = MetadataHelpers.DecodeAttributes(this.container.Assembly, this.definition.GetCustomAttributes());
+    return this.attributes;
+  }
+}
+
+export sealed class MetadataPropertySymbol extends PropertySymbol {
+  private readonly definition: PropertyDefinition;
+  private readonly name: string;
+  private getter: MetadataMethodSymbol? = null;
+  private setter: MetadataMethodSymbol? = null;
+  private parameters: ImmutableArray<ParameterSymbol>;
+  private attributes: ImmutableArray<AttributeData>;
+
+  constructor(private readonly container: MetadataNamedType, handle: PropertyDefinitionHandle,
+    methods: Dictionary<MethodDefinitionHandle, MetadataMethodSymbol>) {
+    super();
+    this.definition = container.Reader.GetPropertyDefinition(handle);
+    this.name = container.Reader.GetString(this.definition.Name);
+    const accessors = this.definition.GetAccessors();
+    if (!accessors.Getter.IsNil) {
+      const [found, method] = methods.TryGetValue(accessors.Getter);
+      if (found) { this.getter = method; method.SetAssociated(this); }
+    }
+    if (!accessors.Setter.IsNil) {
+      const [found, method] = methods.TryGetValue(accessors.Setter);
+      if (found) { this.setter = method; method.SetAssociated(this); }
+    }
+  }
+  get IsUnsupported(): bool { return false; }
+  override get Name(): string { return this.name; }
+  override get ContainingSymbol(): Symbol? { return this.container; }
+  override get GetMethod(): MethodSymbol? { return this.getter; }
+  override get SetMethod(): MethodSymbol? { return this.setter; }
+  override get IsStatic(): bool { const accessor = this.getter ?? this.setter; return accessor != null && accessor.IsStatic; }
+  override get IsAbstract(): bool { const accessor = this.getter ?? this.setter; return accessor != null && accessor.IsAbstract; }
+  override get IsVirtual(): bool { const accessor = this.getter ?? this.setter; return accessor != null && accessor.IsVirtual; }
+  override get IsOverride(): bool { const accessor = this.getter ?? this.setter; return accessor != null && accessor.IsOverride; }
+  override get IsSealed(): bool { const accessor = this.getter ?? this.setter; return accessor != null && accessor.IsSealed; }
+  override get DeclaredAccessibility(): Accessibility {
+    const a = this.getter == null ? Accessibility.Private : this.getter.DeclaredAccessibility;
+    const b = this.setter == null ? Accessibility.Private : this.setter.DeclaredAccessibility;
+    return MetadataPropertySymbol.AccessibilityRank(a) >= MetadataPropertySymbol.AccessibilityRank(b) ? a : b;
+  }
+  private static AccessibilityRank(access: Accessibility): int {
+    switch (access) {
+      case Accessibility.Public: return 5;
+      case Accessibility.ProtectedOrInternal: return 4;
+      case Accessibility.Protected: return 3;
+      case Accessibility.Internal: return 2;
+      case Accessibility.ProtectedAndInternal: return 1;
+    }
+    return 0;
+  }
+  override get Type(): TypeSymbol {
+    if (this.getter != null) return this.getter.ReturnType;
+    if (this.setter != null && this.setter.Parameters.Length > 0) {
+      const parameters = this.setter!.Parameters;
+      return parameters[parameters.Length - 1].Type;
+    }
+    return ErrorTypeSymbol.Instance;
+  }
+  override get Parameters(): ImmutableArray<ParameterSymbol> {
+    if (this.parameters.IsDefault) {
+      const builder = ImmutableArray.CreateBuilder<ParameterSymbol>();
+      const accessor = this.getter ?? this.setter;
+      if (accessor != null) {
+        const parameters = accessor.Parameters;
+        const count = this.getter != null ? parameters.Length : Math.Max(0, parameters.Length - 1);
+        for (let index = 0; index < count; index++) builder.Add(parameters[index].WithType(parameters[index].Type, this));
+      }
+      this.parameters = builder.ToImmutable();
+    }
+    return this.parameters;
+  }
+  override GetAttributes(): ImmutableArray<AttributeData> {
+    if (this.attributes.IsDefault) this.attributes = MetadataHelpers.DecodeAttributes(this.container.Assembly, this.definition.GetCustomAttributes());
+    return this.attributes;
+  }
+}

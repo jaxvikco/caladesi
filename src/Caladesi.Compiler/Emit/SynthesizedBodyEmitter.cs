@@ -44,6 +44,9 @@ internal sealed class SynthesizedBodyEmitter(EmitModule module, MethodSymbol met
             case SynthesizedBodyKind.UnionConstructor: UnionCtor(); break;
             case SynthesizedBodyKind.UnionImplicit: UnionImplicit(); break;
             case SynthesizedBodyKind.UnionToString: UnionToString(); break;
+            case SynthesizedBodyKind.UnionEquals: UnionEquals(); break;
+            case SynthesizedBodyKind.UnionEqualsOperator: RecordOpEquals(); break;
+            case SynthesizedBodyKind.UnionNotEqualsOperator: RecordOpNotEquals(); break;
             case SynthesizedBodyKind.UnionEqualsObject: UnionEqualsObject(); break;
             case SynthesizedBodyKind.UnionGetHashCode: UnionHash(); break;
             default:
@@ -203,7 +206,7 @@ internal sealed class SynthesizedBodyEmitter(EmitModule module, MethodSymbol met
 
     private SourceMethodSymbol TypedEquals()
     {
-        return _type.GetMembers("Equals").OfType<SourceMethodSymbol>().First(x => x.SynthesizedKind == SynthesizedBodyKind.RecordEquals);
+        return _type.GetMembers("Equals").OfType<SourceMethodSymbol>().First(x => x.SynthesizedKind is SynthesizedBodyKind.RecordEquals or SynthesizedBodyKind.UnionEquals);
     }
 
     private void RecordEqualsObject()
@@ -390,32 +393,38 @@ internal sealed class SynthesizedBodyEmitter(EmitModule module, MethodSymbol met
         _il.Mark(notNull);
         _il.ResetDepth(1);
         _il.Call(ILOpCode.Callvirt, _m.GetMethodEntity(Find(objT, "ToString", 0, false)), 1, 1);
+        _il.Op(ILOpCode.Dup, 1);
+        LabelHandle hasText = _il.NewLabel();
+        _il.Branch(ILOpCode.Brtrue, hasText);
+        _il.Op(ILOpCode.Pop, -1);
+        _il.LdStr(_m.Metadata.GetOrAddUserString(""));
+        _il.Mark(hasText);
         _il.Op(ILOpCode.Ret, 0);
     }
 
     private void UnionEqualsObject()
     {
+        RecordEqualsObject();
+    }
+
+    private void UnionEquals()
+    {
         LabelHandle no = _il.NewLabel();
         NamedTypeSymbol objT = C.GetSpecialType(SpecialType.Object);
-        EntityHandle self = _m.GetTypeEntity(Self);
-        LocalSlot o = _il.NewLocal(Self);
-        _il.Ldarg(1);
-        _il.Token(ILOpCode.Isinst, self, 0);
-        _il.Branch(ILOpCode.Brfalse, no);
-        _il.Ldarg(1);
-        _il.Token(ILOpCode.Unbox_any, self, 0);
-        _il.Stloc(o.Index);
         _il.Ldarg(0);
         LoadField(Tag);
-        _il.Ldloca(o.Index);
+        _il.Ldarga(1);
         LoadField(Tag);
         _il.Branch(ILOpCode.Bne_un, no);
+        LocalSlot a = _il.NewLocal(objT);
+        LocalSlot b = _il.NewLocal(objT);
         _il.Ldarg(0);
         LoadField(Value);
-        _il.Ldloca(o.Index);
+        _il.Stloc(a.Index);
+        _il.Ldarga(1);
         LoadField(Value);
-        MethodSymbol eq = objT.GetMembers("Equals").OfType<MethodSymbol>().First(x => x.IsStatic && x.Parameters.Length == 2);
-        _il.Call(ILOpCode.Call, _m.GetMethodEntity(eq), 2, 1);
+        _il.Stloc(b.Index);
+        EmitEqualsOfType(objT, a, b);
         _il.Op(ILOpCode.Ret, 0);
         _il.Mark(no);
         _il.ResetDepth();
@@ -426,19 +435,14 @@ internal sealed class SynthesizedBodyEmitter(EmitModule module, MethodSymbol met
     private void UnionHash()
     {
         NamedTypeSymbol objT = C.GetSpecialType(SpecialType.Object);
-        LabelHandle isNull = _il.NewLabel();
         _il.Ldarg(0);
         LoadField(Tag);
         _il.Ldarg(0);
         LoadField(Value);
-        _il.Op(ILOpCode.Dup, 1);
-        _il.Branch(ILOpCode.Brfalse, isNull);
-        _il.Call(ILOpCode.Callvirt, _m.GetMethodEntity(Find(objT, "GetHashCode", 0, false)), 1, 1);
-        _il.Op(ILOpCode.Xor, -1);
+        MethodSymbol combine = C.GetWellKnownType("System.HashCode")!.GetMembers("Combine").OfType<MethodSymbol>()
+            .First(x => x.Arity == 2 && x.Parameters.Length == 2)
+            .Construct([C.GetSpecialType(SpecialType.Int32), objT]);
+        _il.Call(ILOpCode.Call, _m.GetMethodEntity(combine), 2, 1);
         _il.Op(ILOpCode.Ret, 0);
-        _il.Mark(isNull);
-        _il.ResetDepth(3);
-        _il.Op(ILOpCode.Pop, -1);
-        _il.Op(ILOpCode.Ret, -1);
     }
 }

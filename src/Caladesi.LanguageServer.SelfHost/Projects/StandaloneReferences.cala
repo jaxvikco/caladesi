@@ -1,0 +1,101 @@
+import "System.IO";
+import { RuntimeEnvironment } from "System.Runtime.InteropServices";
+import { ServerOptions } from "../ServerOptions";
+
+export class DotnetLocator {
+  static FindRoot(): string? {
+    const env: string? = Environment.GetEnvironmentVariable("DOTNET_ROOT");
+    if (!string.IsNullOrEmpty(env) && Directory.Exists(env)) return env;
+    const exeName: string = OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet";
+    const path: string = Environment.GetEnvironmentVariable("PATH") ?? "";
+    for (const dir: string of path.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)) {
+      try {
+        const candidate: string = Path.Combine(dir, exeName);
+        if (!File.Exists(candidate)) continue;
+        let resolved: string = candidate;
+        const target: FileSystemInfo? = File.ResolveLinkTarget(candidate, true);
+        if (target != null) resolved = target.FullName;
+        const root: string? = Path.GetDirectoryName(resolved);
+        if (root != null && (Directory.Exists(Path.Combine(root, "packs")) || Directory.Exists(Path.Combine(root, "shared")))) return root;
+      } catch (ex: IOException) {
+      } catch (ex: UnauthorizedAccessException) {
+      } catch (ex: ArgumentException) {}
+    }
+    const wellKnown: string[] = OperatingSystem.IsWindows()
+      ? [Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "dotnet")]
+      : ["/usr/share/dotnet", "/usr/lib/dotnet", "/usr/local/share/dotnet", "/usr/local/lib/dotnet", "/opt/dotnet"];
+    for (const dir: string of wellKnown) {
+      if (Directory.Exists(dir)) return dir;
+    }
+    try {
+      const runtime: string = RuntimeEnvironment.GetRuntimeDirectory();
+      const up: DirectoryInfo? = Directory.GetParent(runtime.TrimEnd(Path.DirectorySeparatorChar))?.Parent?.Parent;
+      if (up != null && Directory.Exists(Path.Combine(up.FullName, "shared"))) return up.FullName;
+    } catch (ex: IOException) {
+    } catch (ex: ArgumentException) {}
+    return null;
+  }
+}
+
+export class StandaloneReferences {
+  static Find(options: ServerOptions): [List<string>, string?] {
+    const references: List<string> = new List<string>();
+    let warning: string? = null;
+    const pack: string? = StandaloneReferences.FindTargetingPack();
+    if (pack != null) {
+      const files: List<string> = new List<string>(Directory.GetFiles(pack, "*.dll"));
+      files.Sort(StringComparer.Ordinal);
+      references.AddRange(files);
+    } else {
+      const runtime: string = RuntimeEnvironment.GetRuntimeDirectory();
+      if (Directory.Exists(runtime) && File.Exists(Path.Combine(runtime, "System.Private.CoreLib.dll"))) {
+        const files: List<string> = new List<string>(Directory.GetFiles(runtime, "System*.dll"));
+        files.AddRange(Directory.GetFiles(runtime, "Microsoft*.dll"));
+        files.Add(Path.Combine(runtime, "System.Private.CoreLib.dll"));
+        const seen: HashSet<string> = new HashSet<string>();
+        for (const file: string of files) {
+          if (seen.Add(file)) references.Add(file);
+        }
+      } else {
+        warning = "Could not find the .NET targeting pack (Microsoft.NETCore.App.Ref); set DOTNET_ROOT. Standard library types are unavailable.";
+      }
+    }
+    const runtimeDll: string? = StandaloneReferences.FindCaladesiRuntime(options);
+    if (runtimeDll != null) references.Add(runtimeDll);
+    else warning ??= "Could not find Caladesi.Runtime.dll next to the language server; set the runtimePath initialization option or CALADESI_RUNTIME_PATH.";
+    return [references, warning];
+  }
+
+  private static FindTargetingPack(): string? {
+    const root: string? = DotnetLocator.FindRoot();
+    if (root == null) return null;
+    const packs: string = Path.Combine(root, "packs", "Microsoft.NETCore.App.Ref");
+    if (!Directory.Exists(packs)) return null;
+    let best: string? = null;
+    let bestVersion: Version? = null;
+    for (const dir: string of Directory.GetDirectories(packs)) {
+      const refDir: string = Path.Combine(dir, "ref", "net10.0");
+      if (!Directory.Exists(refDir)) continue;
+      const name: string = (Path.GetFileName(dir) ?? "").Split('-')[0];
+      const [ok, version] = Version.TryParse(name);
+      if (!ok || version == null) continue;
+      if (bestVersion == null || version > bestVersion) {
+        best = refDir;
+        bestVersion = version;
+      }
+    }
+    return best;
+  }
+
+  private static FindCaladesiRuntime(options: ServerOptions): string? {
+    const paths: string?[] = [options.RuntimePath, Environment.GetEnvironmentVariable("CALADESI_RUNTIME_PATH")];
+    for (const configured of paths) {
+      if (configured == null || configured.Length == 0) continue;
+      if (File.Exists(configured)) return configured;
+      const inDir: string = Path.Combine(configured, "Caladesi.Runtime.dll");
+      if (File.Exists(inDir)) return inDir;
+    }
+    const next: string = Path.Combine(AppContext.BaseDirectory, "Caladesi.Runtime.dll");
+    return File.Exists(next) ? next : null;
+  }
+}

@@ -1,0 +1,61 @@
+export enum SpecialType {
+  None = 0, Object, Void, Boolean, Char, SByte, Byte, Int16, UInt16, Int32, UInt32, Int64, UInt64,
+  Single, Double, Decimal, String, IntPtr, UIntPtr, Array, Enum, ValueType, Delegate, MulticastDelegate,
+  Nullable, IEnumerable, IEnumerator, IEnumerableT, IEnumeratorT, IDisposable, IAsyncDisposable,
+  Task, TaskT, ValueTask, ValueTaskT, Exception, Type, BigInteger, ValueTuple, DateTime, Attribute, Null, Never
+}
+export static class SpecialTypes {
+  static IsNumeric(t: SpecialType): bool { return SpecialTypes.IsIntegral(t) || SpecialTypes.IsFloating(t) || t == SpecialType.Decimal; }
+  static IsIntegral(t: SpecialType): bool {
+    return SpecialTypes.IsSignedIntegral(t) || SpecialTypes.IsUnsignedIntegral(t);
+  }
+  static IsSignedIntegral(t: SpecialType): bool {
+    return t == SpecialType.SByte || t == SpecialType.Int16 || t == SpecialType.Int32 || t == SpecialType.Int64 || t == SpecialType.IntPtr;
+  }
+  static IsUnsignedIntegral(t: SpecialType): bool {
+    return t == SpecialType.Byte || t == SpecialType.UInt16 || t == SpecialType.UInt32 || t == SpecialType.UInt64 || t == SpecialType.UIntPtr || t == SpecialType.Char;
+  }
+  static IsFloating(t: SpecialType): bool { return t == SpecialType.Single || t == SpecialType.Double; }
+  static MetadataName(t: SpecialType): string? {
+    switch (t) {
+      case SpecialType.None: return null;
+      case SpecialType.Null: return null;
+      case SpecialType.Never: return null;
+      case SpecialType.Nullable: return "System.Nullable`1";
+      case SpecialType.IEnumerable: return "System.Collections.IEnumerable";
+      case SpecialType.IEnumerator: return "System.Collections.IEnumerator";
+      case SpecialType.IEnumerableT: return "System.Collections.Generic.IEnumerable`1";
+      case SpecialType.IEnumeratorT: return "System.Collections.Generic.IEnumerator`1";
+      case SpecialType.Task: return "System.Threading.Tasks.Task";
+      case SpecialType.TaskT: return "System.Threading.Tasks.Task`1";
+      case SpecialType.ValueTask: return "System.Threading.Tasks.ValueTask";
+      case SpecialType.ValueTaskT: return "System.Threading.Tasks.ValueTask`1";
+      case SpecialType.BigInteger: return "System.Numerics.BigInteger";
+    }
+    return "System." + t.ToString();
+  }
+  static Keyword(t: SpecialType): string? {
+    switch (t) {
+      case SpecialType.Object: return "object";
+      case SpecialType.Void: return "void";
+      case SpecialType.Boolean: return "bool";
+      case SpecialType.Char: return "char";
+      case SpecialType.SByte: return "sbyte";
+      case SpecialType.Byte: return "byte";
+      case SpecialType.Int16: return "short";
+      case SpecialType.UInt16: return "ushort";
+      case SpecialType.Int32: return "int";
+      case SpecialType.UInt32: return "uint";
+      case SpecialType.Int64: return "long";
+      case SpecialType.UInt64: return "ulong";
+      case SpecialType.Single: return "float";
+      case SpecialType.Double: return "double";
+      case SpecialType.Decimal: return "decimal";
+      case SpecialType.String: return "string";
+      case SpecialType.IntPtr: return "nint";
+      case SpecialType.UIntPtr: return "nuint";
+      case SpecialType.BigInteger: return "bigint";
+    }
+    return null;
+  }
+}

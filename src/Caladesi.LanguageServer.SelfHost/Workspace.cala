@@ -1,0 +1,302 @@
+import "System.IO";
+import { CompilationOptions } from "Caladesi.Compiler";
+import { Diagnostic, DiagnosticSeverity } from "Caladesi.Compiler.Diagnostics";
+import { ReferenceSet } from "Caladesi.Compiler.Symbols.Metadata";
+import { SyntaxTree, TestEntryPoint } from "Caladesi.Compiler.Syntax";
+import { CompilationUnit } from "./Projects/CompilationUnit";
+import { ProjectLoader, ProjectLoadResult } from "./Projects/ProjectLoader";
+import { MsBuildProjectData } from "./Projects/MsBuildProjectData";
+import { StandaloneReferences } from "./Projects/StandaloneReferences";
+import { Log } from "./Protocol/MessageTransport";
+import { ServerOptions } from "./ServerOptions";
+
+export sealed class OpenDocument {
+  constructor(public readonly Uri: string, public readonly Path: string, public Text: string, public Version: int) {}
+}
+
+export struct type PublishPlan = { Uri: string; Diagnostics: IReadOnlyList<Diagnostic> };
+
+export sealed class Workspace {
+  private readonly _loader: ProjectLoader;
+  private readonly _documents: Dictionary<string, OpenDocument> = new Dictionary<string, OpenDocument>(StringComparer.Ordinal);
+  private readonly _diskCache: Dictionary<string, string?> = new Dictionary<string, string?>(StringComparer.Ordinal);
+  private readonly _projects: Dictionary<string, CompilationUnit> = new Dictionary<string, CompilationUnit>(StringComparer.Ordinal);
+  private readonly _failedProjects: Dictionary<string, string> = new Dictionary<string, string>(StringComparer.Ordinal);
+  private readonly _standalone: Dictionary<string, CompilationUnit> = new Dictionary<string, CompilationUnit>(StringComparer.Ordinal);
+  private readonly _unitByDocument: Dictionary<string, CompilationUnit> = new Dictionary<string, CompilationUnit>(StringComparer.Ordinal);
+  private readonly _projectByDirectory: Dictionary<string, string?> = new Dictionary<string, string?>(StringComparer.Ordinal);
+  private readonly _publishedOwner: Dictionary<string, CompilationUnit> = new Dictionary<string, CompilationUnit>(StringComparer.Ordinal);
+  private readonly _retired: List<PublishPlan> = new List<PublishPlan>();
+  private _standaloneReferences: ReferenceSet? = null;
+  readonly Roots: List<string> = new List<string>();
+  readonly Dirty: HashSet<CompilationUnit> = new HashSet<CompilationUnit>();
+
+  constructor(private readonly options: ServerOptions, private readonly showMessage: Action<string>) {
+    this._loader = new ProjectLoader(options);
+  }
+  get OpenDocuments(): IEnumerable<OpenDocument> { return this._documents.Values; }
+
+  static UriToPath(uri: string): string {
+    if (!uri.StartsWith("file:", StringComparison.OrdinalIgnoreCase)) return uri;
+    try { return Path.GetFullPath(new Uri(uri).LocalPath); }
+    catch (ex: UriFormatException) { return uri; }
+    catch (ex: ArgumentException) { return uri; }
+    catch (ex: PathTooLongException) { return uri; }
+  }
+  PathToUri(path: string): string {
+    const [found, doc] = this._documents.TryGetValue(path);
+    return found ? doc.Uri : Workspace.RawPathToUri(path);
+  }
+  static RawPathToUri(path: string): string {
+    if (!Path.IsPathRooted(path)) return path;
+    try { return new Uri(path).AbsoluteUri; }
+    catch (ex: UriFormatException) { return path; }
+  }
+  IsWorkspaceFile(path: string): bool { return this._documents.ContainsKey(path) || File.Exists(path); }
+  GetDocument(uri: string): OpenDocument? {
+    const [found, doc] = this._documents.TryGetValue(Workspace.UriToPath(uri));
+    return found ? doc : null;
+  }
+  GetText(path: string): string? {
+    const [found, doc] = this._documents.TryGetValue(path);
+    if (found) return doc.Text;
+    const [hasCached, cached] = this._diskCache.TryGetValue(path);
+    if (hasCached) return cached;
+    let text: string? = null;
+    try { text = File.ReadAllText(path); }
+    catch (ex: IOException) {}
+    catch (ex: UnauthorizedAccessException) {}
+    catch (ex: ArgumentException) {}
+    catch (ex: NotSupportedException) {}
+    this._diskCache[path] = text;
+    return text;
+  }
+  Open(uri: string, text: string, version: int): void {
+    const path: string = Workspace.UriToPath(uri);
+    this._documents[path] = new OpenDocument(uri, path, text, version);
+    this.Assign(path);
+  }
+  Change(document: OpenDocument, text: string, version: int): void {
+    document.Text = text;
+    document.Version = version;
+    const [found, unit] = this._unitByDocument.TryGetValue(document.Path);
+    if (found) this.Dirty.Add(unit);
+  }
+  Close(uri: string): void {
+    const path: string = Workspace.UriToPath(uri);
+    if (!this._documents.ContainsKey(path)) return;
+    const [found, unit] = this._unitByDocument.TryGetValue(path);
+    if (found) {
+      this._unitByDocument.Remove(path);
+      unit.OpenFiles.Remove(path);
+      unit.MarkChanged();
+      if (!unit.IsProject) {
+        this._standalone.Remove(path);
+        this.Dirty.Remove(unit);
+        this.RetireDiagnostics(unit);
+      } else {
+        this.Dirty.Add(unit);
+      }
+    }
+    this._documents.Remove(path);
+    this._diskCache.Remove(path);
+  }
+  GetUnit(uri: string): CompilationUnit? {
+    const [found, unit] = this._unitByDocument.TryGetValue(Workspace.UriToPath(uri));
+    return found ? unit : null;
+  }
+  private Assign(path: string): void {
+    const [found, old] = this._unitByDocument.TryGetValue(path);
+    if (found) {
+      this._unitByDocument.Remove(path);
+      old.OpenFiles.Remove(path);
+    }
+    const unit: CompilationUnit = this.ResolveUnit(path);
+    unit.OpenFiles.Add(path);
+    unit.MarkChanged();
+    this._unitByDocument[path] = unit;
+    this.Dirty.Add(unit);
+  }
+  private ResolveUnit(path: string): CompilationUnit {
+    const projectPath: string? = this.FindProjectFile(path);
+    if (projectPath != null && !this._failedProjects.ContainsKey(projectPath)) {
+      const [found, existing] = this._projects.TryGetValue(projectPath);
+      if (found) return existing;
+      const loaded: CompilationUnit? = this.LoadProject(projectPath);
+      if (loaded != null) {
+        this._projects[projectPath] = loaded;
+        return loaded;
+      }
+    }
+    const [foundStandalone, existingStandalone] = this._standalone.TryGetValue(path);
+    if (foundStandalone) return existingStandalone;
+    const unit: CompilationUnit = this.CreateStandalone(path);
+    this._standalone[path] = unit;
+    return unit;
+  }
+  private CreateStandalone(path: string): CompilationUnit {
+    if (this._standaloneReferences == null) {
+      const [paths, warning] = StandaloneReferences.Find(this.options);
+      if (warning != null) this.showMessage(warning);
+      this._standaloneReferences = ReferenceSet.Create(paths);
+    }
+    const directory: string? = Path.IsPathRooted(path) ? Path.GetDirectoryName(path) : null;
+    const name: string = Path.GetFileNameWithoutExtension(path) ?? "";
+    const standaloneOptions: CompilationOptions = {
+      AssemblyName: name.Length > 0 ? name : "Caladesi",
+      RootNamespace: "",
+      ProjectDirectory: directory,
+      RecordSemanticInfo: true
+    };
+    const files: string[] = [];
+    return new CompilationUnit(path, null, standaloneOptions, this._standaloneReferences!, files);
+  }
+  private LoadProject(projectPath: string): CompilationUnit? {
+    const result: ProjectLoadResult = this._loader.Load(projectPath);
+    if (result.Data == null) {
+      const message: string = "Caladesi: could not load " + Path.GetFileName(projectPath) + ", using standalone mode. " + result.Error;
+      Log.Write(message);
+      this._failedProjects[projectPath] = result.Error ?? "";
+      this.showMessage(message);
+      return null;
+    }
+    const data: MsBuildProjectData = result.Data;
+    const options: CompilationOptions = data.ToCompilationOptions(projectPath);
+    const references: ReferenceSet = ReferenceSet.Create(data.References);
+    let generated: SyntaxTree? = null;
+    if (data.Property("CaladesiGenerateTestEntryPoint").Equals("true", StringComparison.OrdinalIgnoreCase)) {
+      try { generated = TestEntryPoint.Create(options, data.TestHooks); }
+      catch (ex: Exception) { Log.Write("test entry point generation failed: " + ex.Message); }
+    }
+    const files: List<string> = new List<string>();
+    for (const file: string of data.Compile) files.Add(Path.GetFullPath(file));
+    return new CompilationUnit(projectPath, projectPath, options, references, files, generated);
+  }
+  FindProjectFile(path: string): string? {
+    if (!Path.IsPathRooted(path)) return null;
+    let directory: string? = Path.GetDirectoryName(path);
+    let root: string? = null;
+    for (const candidate: string of this.Roots) {
+      if (Workspace.IsUnder(path, candidate) && (root == null || candidate.Length > root.Length)) root = candidate;
+    }
+    const visited: List<string> = new List<string>();
+    let found: string? = null;
+    while (directory != null) {
+      const [hasCached, cached] = this._projectByDirectory.TryGetValue(directory);
+      if (hasCached) {
+        found = cached;
+        break;
+      }
+      visited.Add(directory);
+      found = Workspace.FirstProjectIn(directory);
+      if (found != null) break;
+      if (root == null || string.Equals(directory, root, StringComparison.Ordinal)) break;
+      directory = Path.GetDirectoryName(directory);
+    }
+    for (const dir: string of visited) this._projectByDirectory[dir] = found;
+    return found;
+  }
+  private static FirstProjectIn(directory: string): string? {
+    try {
+      const files: List<string> = new List<string>(Directory.EnumerateFiles(directory, "*.calaproj"));
+      files.Sort(StringComparer.Ordinal);
+      return files.Count > 0 ? files[0] : null;
+    } catch (ex: IOException) { return null; }
+    catch (ex: UnauthorizedAccessException) { return null; }
+  }
+  private static IsUnder(path: string, root: string): bool {
+    const r: string = root.TrimEnd(Path.DirectorySeparatorChar);
+    return path.StartsWith(r + Path.DirectorySeparatorChar, StringComparison.Ordinal) || string.Equals(path, r, StringComparison.Ordinal);
+  }
+
+  FilesChanged(changes: IEnumerable<[string, int]>): bool {
+    let reloadProjects: bool = false;
+    let any: bool = false;
+    for (const change: [string, int] of changes) {
+      const path: string = change[0];
+      const type: int = change[1];
+      const extension: string = Path.GetExtension(path) ?? "";
+      if (extension.Equals(".calaproj", StringComparison.OrdinalIgnoreCase) || path.EndsWith("project.assets.json", StringComparison.Ordinal)) {
+        reloadProjects = true;
+        any = true;
+      } else if (extension.Equals(".cala", StringComparison.OrdinalIgnoreCase)) {
+        any = true;
+        this._diskCache.Remove(path);
+        if (type != 2) reloadProjects = true;
+        const units: HashSet<CompilationUnit> = new HashSet<CompilationUnit>(this._unitByDocument.Values);
+        for (const unit: CompilationUnit of units) {
+          if (unit.IsMember(path)) unit.MarkChanged();
+        }
+        for (const unit: CompilationUnit of this._projects.Values) {
+          if (unit.IsMember(path)) {
+            unit.MarkChanged();
+            this.Dirty.Add(unit);
+          }
+        }
+      }
+    }
+    if (reloadProjects) this.ReloadAll();
+    for (const unit: CompilationUnit of this._unitByDocument.Values) this.Dirty.Add(unit);
+    return any;
+  }
+  private ReloadAll(): void {
+    const oldUnits: HashSet<CompilationUnit> = new HashSet<CompilationUnit>(this._projects.Values);
+    oldUnits.UnionWith(this._standalone.Values);
+    this._projects.Clear();
+    this._failedProjects.Clear();
+    this._projectByDirectory.Clear();
+    this._standalone.Clear();
+    for (const unit: CompilationUnit of oldUnits) {
+      this.Dirty.Remove(unit);
+      this.RetireDiagnostics(unit);
+    }
+    const open: List<string> = new List<string>(this._documents.Keys);
+    this._unitByDocument.Clear();
+    for (const path: string of open) this.Assign(path);
+  }
+
+  PlanPublish(unit: CompilationUnit, diagnostics: IEnumerable<Diagnostic>): List<PublishPlan> {
+    const plans: List<PublishPlan> = new List<PublishPlan>();
+    const members: HashSet<string> = new HashSet<string>(unit.AllPaths(), StringComparer.Ordinal);
+    const byFile: Dictionary<string, List<Diagnostic>> = new Dictionary<string, List<Diagnostic>>(StringComparer.Ordinal);
+    for (const diagnostic: Diagnostic of diagnostics) {
+      const path: string? = diagnostic.FilePath;
+      if (path == null || !members.Contains(path) || diagnostic.EffectiveSeverity == DiagnosticSeverity.Hidden) continue;
+      const [found, cached] = byFile.TryGetValue(path);
+      let list: List<Diagnostic> = found ? cached : new List<Diagnostic>();
+      if (!found) byFile[path] = list;
+      list.Add(diagnostic);
+    }
+    for (const entry: KeyValuePair<string, List<Diagnostic>> of byFile) {
+      this._publishedOwner[entry.Key] = unit;
+      plans.Add(new PublishPlan(this.PathToUri(entry.Key), entry.Value));
+    }
+    const stale: List<string> = new List<string>();
+    for (const entry: KeyValuePair<string, CompilationUnit> of this._publishedOwner) {
+      if (entry.Value == unit && !byFile.ContainsKey(entry.Key)) stale.Add(entry.Key);
+    }
+    for (const path: string of stale) {
+      this._publishedOwner.Remove(path);
+      const empty: Diagnostic[] = [];
+      plans.Add(new PublishPlan(this.PathToUri(path), empty));
+    }
+    return plans;
+  }
+  private RetireDiagnostics(unit: CompilationUnit): void {
+    const stale: List<string> = new List<string>();
+    for (const entry: KeyValuePair<string, CompilationUnit> of this._publishedOwner) {
+      if (entry.Value == unit) stale.Add(entry.Key);
+    }
+    for (const path: string of stale) {
+      this._publishedOwner.Remove(path);
+      const empty: Diagnostic[] = [];
+      this._retired.Add(new PublishPlan(this.PathToUri(path), empty));
+    }
+  }
+  get HasRetired(): bool { return this._retired.Count > 0; }
+  TakeRetired(): List<PublishPlan> {
+    const result: List<PublishPlan> = new List<PublishPlan>(this._retired);
+    this._retired.Clear();
+    return result;
+  }
+}

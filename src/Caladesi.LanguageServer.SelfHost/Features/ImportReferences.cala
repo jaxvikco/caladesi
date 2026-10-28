@@ -1,0 +1,62 @@
+import "System.IO";
+import { Compilation } from "Caladesi.Compiler";
+import { SemanticModel, SymbolReference } from "Caladesi.Compiler.Semantics";
+import { Symbol, NamespaceSymbol } from "Caladesi.Compiler.Symbols";
+import { SourceModuleClassSymbol } from "Caladesi.Compiler.Symbols.Source";
+import { SyntaxTree, ImportDeclarationSyntax, NamedImportsSyntax, ImportSpecifierSyntax, SyntaxToken } from "Caladesi.Compiler.Syntax";
+
+export sealed class ImportReferences {
+  // The compiler does not include named import specifiers in FindReferences.
+  static Find(model: SemanticModel, symbol: Symbol, includeDeclaration: bool): IReadOnlyList<SymbolReference> {
+    const references = new List<SymbolReference>(model.FindReferences(symbol, includeDeclaration));
+    const original: Symbol = symbol.OriginalDefinition;
+    if (!(original.ContainingSymbol instanceof SourceModuleClassSymbol) && !(original.ContainingSymbol instanceof NamespaceSymbol)) return references;
+    const definition: SymbolReference? = model.GetDefinition(symbol);
+    if (definition == null) return references;
+    const declaringPath: string = ImportReferences.Normalize(definition.Tree.FilePath);
+    const name: string = original.Name;
+    for (const tree: SyntaxTree of model.Compilation.SyntaxTrees) {
+      for (const statement of tree.Root.Statements) {
+        if (!(statement instanceof ImportDeclarationSyntax)) continue;
+        const declaration = statement as ImportDeclarationSyntax;
+        if (!(declaration.Clause instanceof NamedImportsSyntax)) continue;
+        const named = declaration.Clause as NamedImportsSyntax;
+        const module: string = declaration.ModuleName;
+        if (!module.StartsWith(".")) continue;
+        if (!string.Equals(ImportReferences.Resolve(tree.FilePath, module, model.Compilation), declaringPath, StringComparison.Ordinal)) continue;
+        for (const specifier: ImportSpecifierSyntax of named.Specifiers) {
+          const token: SyntaxToken = specifier.NameToken;
+          if (token.IsMissing || token.Text != name) continue;
+          let found = false;
+          for (const reference: SymbolReference of references) {
+            if (reference.Tree == tree && reference.Span.Equals(token.Span)) {
+              found = true;
+              break;
+            }
+          }
+          if (!found) references.Add(new SymbolReference(tree, token.Span, false));
+        }
+      }
+    }
+    references.Sort((a, b) => a.Tree == b.Tree ? a.Span.Start.CompareTo(b.Span.Start) : string.CompareOrdinal(a.Tree.FilePath, b.Tree.FilePath));
+    return references;
+  }
+
+  private static Resolve(fromFile: string, module: string, compilation: Compilation): string? {
+    let combined: string;
+    try { combined = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(ImportReferences.Normalize(fromFile)) ?? "", module)); }
+    catch (ex: ArgumentException) { return null; }
+    const known = new HashSet<string>(StringComparer.Ordinal);
+    for (const tree: SyntaxTree of compilation.SyntaxTrees) known.Add(ImportReferences.Normalize(tree.FilePath));
+    const candidates: string[] = [combined, combined + ".cala", Path.Combine(combined, "index.cala")];
+    for (const candidate: string of candidates) {
+      if (known.Contains(candidate)) return candidate;
+    }
+    return null;
+  }
+
+  private static Normalize(path: string): string {
+    try { return Path.GetFullPath(path); }
+    catch (ex: ArgumentException) { return path; }
+  }
+}

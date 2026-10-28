@@ -1,0 +1,23 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+
+export enum OutputKind { ConsoleApplication, DynamicallyLinkedLibrary }
+
+export sealed class CompilationOptions {
+  static readonly DefaultGlobalImports: ImmutableArray<string> =
+    ["System", "System.Collections.Generic", "System.Linq", "System.Threading.Tasks"];
+  OutputKind: OutputKind = OutputKind.ConsoleApplication;
+  AssemblyName = "Caladesi";
+  RootNamespace = "";
+  ProjectDirectory: string? = null;
+  NullableEnabled = true;
+  WarningsAsErrors = false;
+  NoWarn: ImmutableArray<string> = [];
+  Defines: ImmutableArray<string> = [];
+  GlobalImports: ImmutableArray<string> = CompilationOptions.DefaultGlobalImports;
+  AssemblyVersion = new Version(1, 0, 0, 0);
+  TargetFramework: string? = ".NETCoreApp,Version=v10.0";
+  TargetFrameworkDisplayName: string? = null;
+  GenerateTestEntryPoint = false;
+  Optimize = false;
+  RecordSemanticInfo = false;
+}

@@ -1,0 +1,424 @@
+import { BlockingCollection } from "System.Collections.Concurrent";
+import { Stream, IOException, Path } from "System.IO";
+import { Thread, Lock, CancellationToken, SemaphoreSlim } from "System.Threading";
+import { JsonDocument, JsonElement, JsonException, JsonValueKind, Utf8JsonWriter } from "System.Text.Json";
+import { CompilerInfo } from "Caladesi.Compiler";
+import { SourceText, LinePosition } from "Caladesi.Compiler.Text";
+import { Json } from "./Protocol/Json";
+import { MessageReader, MessageWriter, Log } from "./Protocol/MessageTransport";
+import { Workspace } from "./Workspace";
+import { ServerOptions } from "./ServerOptions";
+import { DocumentFeatures } from "./Features/DocumentFeatures";
+import { DiagnosticsFeature } from "./Features/DiagnosticsFeature";
+
+export sealed class RpcException extends Exception {
+  constructor(public readonly Code: int, message: string) { super(message); }
+}
+
+sealed class RecentIds {
+  private readonly _ids: HashSet<string> = new HashSet<string>();
+  private readonly _order: Queue<string> = new Queue<string>();
+  private readonly _gate: Lock = new Lock();
+  constructor(private readonly capacity: int) {}
+  Add(id: string): void {
+    const scope = this._gate.EnterScope();
+    try {
+      if (this._ids.Add(id)) {
+        this._order.Enqueue(id);
+        while (this._order.Count > this.capacity) this._ids.Remove(this._order.Dequeue());
+      }
+    } finally { scope.Dispose(); }
+  }
+  Contains(id: string): bool {
+    const scope = this._gate.EnterScope();
+    try { return this._ids.Contains(id); }
+    finally { scope.Dispose(); }
+  }
+  Remove(id: string): bool {
+    const scope = this._gate.EnterScope();
+    try { return this._ids.Remove(id); }
+    finally { scope.Dispose(); }
+  }
+}
+
+sealed class Incoming {
+  constructor(public readonly Document: JsonDocument?, public readonly Error: string?, public readonly EndOfStream: bool) {}
+}
+
+export sealed class LanguageServer {
+  private readonly _reader: MessageReader;
+  private readonly _writer: MessageWriter;
+  private readonly _options: ServerOptions;
+  private readonly _queue: BlockingCollection<Incoming> = new BlockingCollection<Incoming>();
+  private readonly _available: SemaphoreSlim = new SemaphoreSlim(0);
+  private readonly _cancelled: RecentIds = new RecentIds(1024);
+  private readonly _answered: RecentIds = new RecentIds(1024);
+  private readonly _workspace: Workspace;
+  private readonly _features: DocumentFeatures;
+  private readonly _diagnostics: DiagnosticsFeature;
+  private _initialized: bool = false;
+  private _shutdownRequested: bool = false;
+  private _exitRequested: bool = false;
+  private _supportsWatcherRegistration: bool = false;
+  private _nextRequestId: int = 0;
+
+  constructor(input: Stream, output: Stream, options: ServerOptions?) {
+    this._options = options ?? new ServerOptions();
+    this._reader = new MessageReader(input);
+    this._writer = new MessageWriter(output);
+    this._workspace = new Workspace(this._options, message => this.Notify("window/showMessage", w => {
+      w.WriteStartObject();
+      w.WriteNumber("type", 2);
+      w.WriteString("message", message);
+      w.WriteEndObject();
+    }));
+    this._features = new DocumentFeatures(this._workspace);
+    this._diagnostics = new DiagnosticsFeature(this._workspace, (method, p) => this.Notify(method, p));
+  }
+
+  Run(): int {
+    const reader = new Thread(() => this.ReadLoop());
+    reader.IsBackground = true;
+    reader.Name = "cala-ls reader";
+    reader.Start();
+    let exitCode: int = 0;
+    const worker = new Thread(() => { exitCode = this.WorkLoop(); }, 128 * 1024 * 1024);
+    worker.Name = "cala-ls worker";
+    worker.Start();
+    worker.Join();
+    return exitCode;
+  }
+  RunAsync(): Task<int> {
+    return Task.Factory.StartNew<int>(() => this.Run(), CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+  }
+  private Enqueue(message: Incoming): void {
+    this._queue.Add(message);
+    this._available.Release();
+  }
+  private ReadLoop(): void {
+    try {
+      while (true) {
+        const body: byte[]? = this._reader.ReadMessage();
+        if (body == null) break;
+        let document: JsonDocument;
+        try { document = JsonDocument.Parse(body); }
+        catch (ex: JsonException) {
+          this.Enqueue(new Incoming(null, ex.Message, false));
+          continue;
+        }
+        const root = document.RootElement;
+        if (Json.GetString(Json.Get(root, "method")) == "$/cancelRequest") {
+          const id: JsonElement? = Json.Path(root, "params", "id");
+          if (id != null) {
+            const key = id.GetRawText();
+            if (!this._answered.Contains(key)) this._cancelled.Add(key);
+            document.Dispose();
+            continue;
+          }
+        }
+        this.Enqueue(new Incoming(document, null, false));
+      }
+    }
+    catch (ex: IOException) { Log.Write("input closed"); }
+    catch (ex: ObjectDisposedException) { Log.Write("input closed"); }
+    catch (ex: Exception) { Log.Write("reader failed: " + ex); }
+    finally { this.Enqueue(new Incoming(null, null, true)); }
+  }
+  private WorkLoop(): int {
+    while (!this._exitRequested) {
+      let message: Incoming;
+      try {
+        if (this._workspace.Dirty.Count > 0 || this._workspace.HasRetired) {
+          if (!this._available.Wait(this._options.DiagnosticsDelay)) { this._diagnostics.RunDiagnostics(); continue; }
+        } else this._available.Wait();
+        message = this._queue.Take();
+      }
+      catch (ex: InvalidOperationException) { break; }
+      if (message.EndOfStream) break;
+      try {
+        if (message.Error != null) this.SendError(null, -32700, "Parse error: " + message.Error);
+        else this.Dispatch(message.Document!.RootElement);
+      }
+      catch (ex: Exception) { Log.Write("unhandled error: " + ex); }
+      finally { message.Document?.Dispose(); }
+    }
+    return this._shutdownRequested ? 0 : 1;
+  }
+  private Send(body: Action<Utf8JsonWriter>): void { this._writer.Write(Json.Build(body)); }
+  private SendResponse(id: JsonElement, result: Action<Utf8JsonWriter>?): void {
+    this._answered.Add(id.GetRawText());
+    this.Send(w => {
+      w.WriteStartObject();
+      w.WriteString("jsonrpc", "2.0");
+      w.WritePropertyName("id");
+      id.WriteTo(w);
+      w.WritePropertyName("result");
+      if (result == null) w.WriteNullValue();
+      else result(w);
+      w.WriteEndObject();
+    });
+  }
+  private SendError(id: JsonElement?, code: int, message: string): void {
+    if (id != null) this._answered.Add(id.GetRawText());
+    this.Send(w => {
+      w.WriteStartObject();
+      w.WriteString("jsonrpc", "2.0");
+      w.WritePropertyName("id");
+      if (id == null) w.WriteNullValue();
+      else id.WriteTo(w);
+      w.WritePropertyName("error");
+      w.WriteStartObject();
+      w.WriteNumber("code", code);
+      w.WriteString("message", message);
+      w.WriteEndObject();
+      w.WriteEndObject();
+    });
+  }
+  private Notify(method: string, parameters: Action<Utf8JsonWriter>): void {
+    this.Send(w => {
+      w.WriteStartObject();
+      w.WriteString("jsonrpc", "2.0");
+      w.WriteString("method", method);
+      w.WritePropertyName("params");
+      parameters(w);
+      w.WriteEndObject();
+    });
+  }
+  private SendRequest(method: string, parameters: Action<Utf8JsonWriter>): void {
+    const id = ++this._nextRequestId;
+    this.Send(w => {
+      w.WriteStartObject();
+      w.WriteString("jsonrpc", "2.0");
+      w.WriteNumber("id", id);
+      w.WriteString("method", method);
+      w.WritePropertyName("params");
+      parameters(w);
+      w.WriteEndObject();
+    });
+  }
+  private Dispatch(root: JsonElement): void {
+    if (root.ValueKind != JsonValueKind.Object) {
+      this.SendError(null, -32600, "Invalid request: expected a JSON object");
+      return;
+    }
+    const id = Json.Get(root, "id");
+    const method = Json.GetString(Json.Get(root, "method"));
+    if (method == null) {
+      const [hasResult, result] = root.TryGetProperty("result");
+      const [hasError, error] = root.TryGetProperty("error");
+      if (id == null || (!hasResult && !hasError)) this.SendError(id, -32600, "Invalid request: missing method");
+      return;
+    }
+    const parameters = Json.Get(root, "params") ?? new JsonElement();
+    if (id == null) this.HandleNotification(method, parameters);
+    else this.HandleRequest(id, method, parameters);
+  }
+  private HandleRequest(id: JsonElement, method: string, p: JsonElement): void {
+    if (this._cancelled.Remove(id.GetRawText())) {
+      this.SendError(id, -32800, "Request cancelled"); return;
+    }
+    if (method == "initialize") { this.SendResponse(id, this.Initialize(p)); return; }
+    if (!this._initialized) { this.SendError(id, -32002, "Server not initialized"); return; }
+    if (this._shutdownRequested && method != "shutdown") { this.SendError(id, -32600, "Server is shutting down"); return; }
+    try {
+      let result: Action<Utf8JsonWriter>? = null;
+      switch (method) {
+        case "shutdown": this._shutdownRequested = true; break;
+        case "textDocument/hover": result = this._features.Hover(p); break;
+        case "textDocument/completion": result = this._features.Completion(p); break;
+        case "textDocument/definition": result = this._features.Definition(p); break;
+        case "textDocument/references": result = this._features.References(p); break;
+        case "textDocument/prepareRename": result = this._features.PrepareRename(p); break;
+        case "textDocument/rename": result = this._features.Rename(p); break;
+        case "textDocument/documentSymbol": result = this._features.DocumentSymbols(p); break;
+        case "textDocument/semanticTokens/full": result = this._features.SemanticTokensFull(p); break;
+        case "textDocument/signatureHelp": result = this._features.SignatureHelp(p); break;
+        case "textDocument/formatting": result = this._features.Formatting(p); break;
+        default: this.SendError(id, -32601, "Method not found: " + method); return;
+      }
+      this.SendResponse(id, result);
+    }
+    catch (ex: RpcException) { this.SendError(id, ex.Code, ex.Message); }
+    catch (ex: Exception) {
+      Log.Write(`request ${method} failed: ${ex}`);
+      this.SendError(id, -32603, `Internal error handling ${method}: ${ex.Message}`);
+    }
+  }
+  private HandleNotification(method: string, p: JsonElement): void {
+    try {
+      switch (method) {
+        case "initialized": this.OnInitialized(); break;
+        case "exit": this._exitRequested = true; break;
+        case "textDocument/didOpen": this.DidOpen(p); break;
+        case "textDocument/didChange": this.DidChange(p); break;
+        case "textDocument/didClose": this.DidClose(p); break;
+        case "textDocument/didSave": this.DidSave(p); break;
+        case "workspace/didChangeWatchedFiles": this.DidChangeWatchedFiles(p); break;
+        default:
+          if (!method.StartsWith("$/", StringComparison.Ordinal) && method != "workspace/didChangeConfiguration") Log.Write("ignoring notification " + method);
+          break;
+      }
+    }
+    catch (ex: Exception) { Log.Write(`notification ${method} failed: ${ex}`); }
+  }
+  private Initialize(p: JsonElement): Action<Utf8JsonWriter> {
+    this._initialized = true;
+    for (const folder: JsonElement of Json.Items(Json.Get(p, "workspaceFolders"))) {
+      const uri = Json.GetString(Json.Get(folder, "uri"));
+      if (uri != null) this.AddRoot(uri);
+    }
+    if (this._workspace.Roots.Count == 0) {
+      const rootUri = Json.GetString(Json.Get(p, "rootUri"));
+      const rootPath = Json.GetString(Json.Get(p, "rootPath"));
+      if (rootUri != null) this.AddRoot(rootUri);
+      else if (rootPath != null && Path.IsPathRooted(rootPath)) this._workspace.Roots.Add(Path.GetFullPath(rootPath));
+    }
+    const options = Json.Get(p, "initializationOptions");
+    const runtimePath = Json.GetString(Json.Get(options, "runtimePath"));
+    const dotnetPath = Json.GetString(Json.Get(options, "dotnetPath"));
+    if (runtimePath != null && runtimePath.Length > 0) this._options.RuntimePath = runtimePath;
+    if (dotnetPath != null && dotnetPath.Length > 0) this._options.DotnetPath = dotnetPath;
+    this._supportsWatcherRegistration = Json.GetBool(Json.Path(p, "capabilities", "workspace", "didChangeWatchedFiles", "dynamicRegistration"));
+    return w => LanguageServer.WriteInitializeResult(w);
+  }
+  private AddRoot(uri: string): void {
+    const path = Workspace.UriToPath(uri);
+    if (Path.IsPathRooted(path)) this._workspace.Roots.Add(path.TrimEnd(Path.DirectorySeparatorChar));
+  }
+  private OnInitialized(): void {
+    if (!this._supportsWatcherRegistration) return;
+    this.SendRequest("client/registerCapability", w => {
+      w.WriteStartObject();
+      w.WritePropertyName("registrations");
+      w.WriteStartArray();
+      w.WriteStartObject();
+      w.WriteString("id", "caladesi-watch");
+      w.WriteString("method", "workspace/didChangeWatchedFiles");
+      w.WritePropertyName("registerOptions");
+      w.WriteStartObject();
+      w.WritePropertyName("watchers");
+      w.WriteStartArray();
+      const globs: string[] = ["**/*.calaproj", "**/*.cala", "**/obj/project.assets.json"];
+      for (const glob: string of globs) {
+        w.WriteStartObject();
+        w.WriteString("globPattern", glob);
+        w.WriteEndObject();
+      }
+      w.WriteEndArray();
+      w.WriteEndObject();
+      w.WriteEndObject();
+      w.WriteEndArray();
+      w.WriteEndObject();
+    });
+  }
+  private static WriteInitializeResult(w: Utf8JsonWriter): void {
+    w.WriteStartObject();
+    w.WritePropertyName("capabilities");
+    w.WriteStartObject();
+    w.WritePropertyName("textDocumentSync");
+    w.WriteStartObject();
+    w.WriteBoolean("openClose", true);
+    w.WriteNumber("change", 1);
+    w.WritePropertyName("save");
+    w.WriteStartObject();
+    w.WriteBoolean("includeText", false);
+    w.WriteEndObject();
+    w.WriteEndObject();
+    w.WriteBoolean("hoverProvider", true);
+    w.WritePropertyName("completionProvider");
+    w.WriteStartObject();
+    w.WritePropertyName("triggerCharacters");
+    w.WriteStartArray();
+    w.WriteStringValue(".");
+    w.WriteEndArray();
+    w.WriteBoolean("resolveProvider", false);
+    w.WriteEndObject();
+    w.WritePropertyName("signatureHelpProvider");
+    w.WriteStartObject();
+    w.WritePropertyName("triggerCharacters");
+    w.WriteStartArray();
+    w.WriteStringValue("(");
+    w.WriteStringValue(",");
+    w.WriteEndArray();
+    w.WriteEndObject();
+    w.WriteBoolean("definitionProvider", true);
+    w.WriteBoolean("referencesProvider", true);
+    w.WritePropertyName("renameProvider");
+    w.WriteStartObject();
+    w.WriteBoolean("prepareProvider", true);
+    w.WriteEndObject();
+    w.WriteBoolean("documentSymbolProvider", true);
+    w.WriteBoolean("documentFormattingProvider", true);
+    w.WritePropertyName("semanticTokensProvider");
+    w.WriteStartObject();
+    w.WritePropertyName("legend");
+    w.WriteStartObject();
+    w.WritePropertyName("tokenTypes");
+    w.WriteStartArray();
+    const types: string[] = ["namespace", "type", "class", "enum", "interface", "struct", "typeParameter", "parameter", "variable", "property", "enumMember", "function", "method", "decorator"];
+    for (const t: string of types) w.WriteStringValue(t);
+    w.WriteEndArray();
+    w.WritePropertyName("tokenModifiers");
+    w.WriteStartArray();
+    w.WriteStringValue("declaration");
+    w.WriteStringValue("readonly");
+    w.WriteStringValue("static");
+    w.WriteEndArray();
+    w.WriteEndObject();
+    w.WriteBoolean("full", true);
+    w.WriteEndObject();
+    w.WriteEndObject();
+    w.WritePropertyName("serverInfo");
+    w.WriteStartObject();
+    w.WriteString("name", "cala-ls");
+    w.WriteString("version", CompilerInfo.Version);
+    w.WriteEndObject();
+    w.WriteEndObject();
+  }
+  private DidOpen(p: JsonElement): void {
+    const doc = Json.Get(p, "textDocument");
+    const uri = Json.GetString(Json.Get(doc, "uri"));
+    if (uri == null) return;
+    this._workspace.Open(uri, Json.GetString(Json.Get(doc, "text")) ?? "", Json.GetInt(Json.Get(doc, "version")) ?? 0);
+  }
+  private static ReadPosition(p: JsonElement?): LinePosition {
+    return new LinePosition(Math.Max(0, Json.GetInt(Json.Get(p, "line")) ?? 0), Math.Max(0, Json.GetInt(Json.Get(p, "character")) ?? 0));
+  }
+  private DidChange(p: JsonElement): void {
+    const td = Json.Get(p, "textDocument");
+    const uri = Json.GetString(Json.Get(td, "uri"));
+    if (uri == null) return;
+    const document = this._workspace.GetDocument(uri);
+    if (document == null) return;
+    let text = document.Text;
+    for (const change: JsonElement of Json.Items(Json.Get(p, "contentChanges"))) {
+      const newText = Json.GetString(Json.Get(change, "text")) ?? "";
+      const range = Json.Get(change, "range");
+      if (range != null) {
+        const source = SourceText.From(text);
+        const from = source.GetPosition(LanguageServer.ReadPosition(Json.Get(range, "start")));
+        const to = Math.Max(from, source.GetPosition(LanguageServer.ReadPosition(Json.Get(range, "end"))));
+        text = text.Substring(0, from) + newText + text.Substring(to);
+      } else text = newText;
+    }
+    this._workspace.Change(document, text, Json.GetInt(Json.Get(td, "version")) ?? document.Version);
+  }
+  private DidClose(p: JsonElement): void {
+    const uri = Json.GetString(Json.Path(p, "textDocument", "uri"));
+    if (uri != null) this._workspace.Close(uri);
+  }
+  private DidSave(p: JsonElement): void {
+    const uri = Json.GetString(Json.Path(p, "textDocument", "uri"));
+    if (uri == null) return;
+    const unit = this._workspace.GetUnit(uri);
+    if (unit != null) this._workspace.Dirty.Add(unit);
+  }
+  private DidChangeWatchedFiles(p: JsonElement): void {
+    const changes = new List<[string, int]>();
+    for (const change: JsonElement of Json.Items(Json.Get(p, "changes"))) {
+      const uri = Json.GetString(Json.Get(change, "uri"));
+      if (uri != null) changes.Add([Workspace.UriToPath(uri), Json.GetInt(Json.Get(change, "type")) ?? 2]);
+    }
+    this._workspace.FilesChanged(changes);
+  }
+}

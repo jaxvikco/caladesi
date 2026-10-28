@@ -1,0 +1,97 @@
+import { List, IReadOnlyList } from "System.Collections.Generic";
+import { SyntaxTree } from "../Syntax/SyntaxTree";
+import { SyntaxList } from "../Syntax/SyntaxElement";
+import { StatementSyntax, MemberDeclarationSyntax, FunctionDeclarationSyntax, ClassDeclarationSyntax, InterfaceDeclarationSyntax,
+  EnumDeclarationSyntax, TypeAliasDeclarationSyntax, VariableStatementSyntax, ObjectTypeSyntax, ParameterListSyntax,
+  TypeAnnotationSyntax, MethodDeclarationSyntax, PropertyDeclarationSyntax, ConstructorDeclarationSyntax, AccessorDeclarationSyntax } from "../Syntax/Nodes.Core";
+import { DocumentSymbolInfo, DocumentSymbolKind } from "./SemanticModelTypes";
+
+export static class DocumentOutline {
+  static Compute(tree: SyntaxTree): IReadOnlyList<DocumentSymbolInfo> {
+    ArgumentNullException.ThrowIfNull(tree);
+    const result = new List<DocumentSymbolInfo>();
+    for (const statement of tree.Root.Statements) DocumentOutline.AddStatement(statement, result);
+    return result;
+  }
+  private static AddStatement(statement: StatementSyntax, into: List<DocumentSymbolInfo>): void {
+    if (statement instanceof FunctionDeclarationSyntax) {
+      const declaration = statement as FunctionDeclarationSyntax;
+      if (!declaration.Identifier.IsMissing)
+        into.Add(new DocumentSymbolInfo(declaration.Identifier.Text, DocumentOutline.Detail(declaration.Parameters, declaration.ReturnType),
+          DocumentSymbolKind.Function, declaration.Span, declaration.Identifier.Span, new List<DocumentSymbolInfo>()));
+    } else if (statement instanceof ClassDeclarationSyntax) {
+      const declaration = statement as ClassDeclarationSyntax;
+      if (!declaration.Identifier.IsMissing)
+        into.Add(new DocumentSymbolInfo(declaration.Identifier.Text, null, DocumentSymbolKind.Class, declaration.Span,
+          declaration.Identifier.Span, DocumentOutline.Members(declaration.Members)));
+    } else if (statement instanceof InterfaceDeclarationSyntax) {
+      const declaration = statement as InterfaceDeclarationSyntax;
+      if (!declaration.Identifier.IsMissing)
+        into.Add(new DocumentSymbolInfo(declaration.Identifier.Text, null, DocumentSymbolKind.Interface, declaration.Span,
+          declaration.Identifier.Span, DocumentOutline.Members(declaration.Members)));
+    } else if (statement instanceof EnumDeclarationSyntax) {
+      const declaration = statement as EnumDeclarationSyntax;
+      if (!declaration.Identifier.IsMissing) {
+        const children = new List<DocumentSymbolInfo>();
+        for (const member of declaration.Members) {
+          if (!member.Identifier.IsMissing)
+            children.Add(new DocumentSymbolInfo(member.Identifier.Text, null, DocumentSymbolKind.EnumMember,
+              member.Span, member.Identifier.Span, new List<DocumentSymbolInfo>()));
+        }
+        into.Add(new DocumentSymbolInfo(declaration.Identifier.Text, null, DocumentSymbolKind.Enum, declaration.Span, declaration.Identifier.Span, children));
+      }
+    } else if (statement instanceof TypeAliasDeclarationSyntax) {
+      const declaration = statement as TypeAliasDeclarationSyntax;
+      if (!declaration.Identifier.IsMissing) {
+        const type = declaration.Type;
+        const children = type instanceof ObjectTypeSyntax ? DocumentOutline.Members((type as ObjectTypeSyntax).Members) : new List<DocumentSymbolInfo>();
+        into.Add(new DocumentSymbolInfo(declaration.Identifier.Text, null, type instanceof ObjectTypeSyntax ? DocumentSymbolKind.Struct : DocumentSymbolKind.TypeAlias,
+          declaration.Span, declaration.Identifier.Span, children));
+      }
+    } else if (statement instanceof VariableStatementSyntax) {
+      const variables = statement as VariableStatementSyntax;
+      for (const declaration of variables.Declaration.Declarators) {
+        const identifier = declaration.Identifier;
+        if (identifier != null && !identifier.IsMissing)
+          into.Add(new DocumentSymbolInfo(identifier.Text, null, variables.Declaration.IsConst ? DocumentSymbolKind.Constant : DocumentSymbolKind.Variable,
+            declaration.Span, identifier.Span, new List<DocumentSymbolInfo>()));
+      }
+    }
+  }
+  private static Detail(parameters: ParameterListSyntax, returnType: TypeAnnotationSyntax?): string {
+    const names = new List<string>();
+    for (const parameter of parameters.Parameters) {
+      const identifier = parameter.Identifier;
+      names.Add(identifier == null ? "_" : identifier.Text);
+    }
+    return "(" + string.Join(", ", names) + ")" + (returnType == null ? "" : ": " + returnType.Type.ToFullString().Trim());
+  }
+  private static Members(members: SyntaxList<MemberDeclarationSyntax>): List<DocumentSymbolInfo> {
+    const result = new List<DocumentSymbolInfo>();
+    for (const member of members) {
+      if (member instanceof MethodDeclarationSyntax) {
+        const declaration = member as MethodDeclarationSyntax;
+        if (!declaration.Identifier.IsMissing)
+          result.Add(new DocumentSymbolInfo(declaration.Identifier.Text, DocumentOutline.Detail(declaration.Parameters, declaration.ReturnType),
+            DocumentSymbolKind.Method, declaration.Span, declaration.Identifier.Span, new List<DocumentSymbolInfo>()));
+      } else if (member instanceof PropertyDeclarationSyntax) {
+        const declaration = member as PropertyDeclarationSyntax;
+        if (!declaration.Identifier.IsMissing) {
+          const annotation = declaration.TypeAnnotation;
+          result.Add(new DocumentSymbolInfo(declaration.Identifier.Text, annotation == null ? null : annotation.Type.ToFullString().Trim(),
+            DocumentSymbolKind.Property, declaration.Span, declaration.Identifier.Span, new List<DocumentSymbolInfo>()));
+        }
+      } else if (member instanceof ConstructorDeclarationSyntax) {
+        const declaration = member as ConstructorDeclarationSyntax;
+        result.Add(new DocumentSymbolInfo("constructor", DocumentOutline.Detail(declaration.Parameters, null), DocumentSymbolKind.Constructor,
+          declaration.Span, declaration.Keyword.Span, new List<DocumentSymbolInfo>()));
+      } else if (member instanceof AccessorDeclarationSyntax) {
+        const declaration = member as AccessorDeclarationSyntax;
+        if (!declaration.Identifier.IsMissing)
+          result.Add(new DocumentSymbolInfo(declaration.Identifier.Text, declaration.IsGetter ? "get" : "set", DocumentSymbolKind.Property,
+            declaration.Span, declaration.Identifier.Span, new List<DocumentSymbolInfo>()));
+      }
+    }
+    return result;
+  }
+}

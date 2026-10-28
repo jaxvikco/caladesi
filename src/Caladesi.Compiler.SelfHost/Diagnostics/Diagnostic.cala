@@ -1,0 +1,89 @@
+import { List, IEnumerable, IReadOnlyList } from "System.Collections.Generic";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { CultureInfo } from "System.Globalization";
+import { TextSpan, TextSpans } from "../Text/TextSpan";
+import { SourceText } from "../Text/SourceText";
+
+export enum DiagnosticSeverity { Hidden, Info, Warning, Error }
+
+export sealed class DiagnosticDescriptor {
+  constructor(public readonly Id: string, public readonly Severity: DiagnosticSeverity,
+    public readonly MessageFormat: string) {}
+}
+
+export sealed class FixIt {
+  constructor(public readonly Title: string, public readonly Span: TextSpan,
+    public readonly NewText: string) {}
+
+  override Equals(other: object?): bool {
+    if (!(other instanceof FixIt)) return false;
+    const fix = other as FixIt;
+    return this.Title == fix.Title && this.Span.Start == fix.Span.Start &&
+      this.Span.Length == fix.Span.Length && this.NewText == fix.NewText;
+  }
+  override GetHashCode(): int { return HashCode.Combine(this.Title, this.Span, this.NewText); }
+  override ToString(): string {
+    return `FixIt { Title = ${this.Title}, Span = ${TextSpans.Format(this.Span)}, NewText = ${this.NewText} }`;
+  }
+}
+
+export sealed class Diagnostic {
+  constructor(public readonly Descriptor: DiagnosticDescriptor, public readonly FilePath: string?,
+    public readonly Span: TextSpan, public readonly Arguments: object?[],
+    public readonly FixIt: FixIt?, public readonly EffectiveSeverity: DiagnosticSeverity) {}
+
+  get Id(): string { return this.Descriptor.Id; }
+  get Message(): string {
+    return string.Format(CultureInfo.InvariantCulture, this.Descriptor.MessageFormat, this.Arguments);
+  }
+
+  WithFilePath(path: string?): Diagnostic {
+    return new Diagnostic(this.Descriptor, path, this.Span, this.Arguments, this.FixIt, this.EffectiveSeverity);
+  }
+
+  WithSeverity(severity: DiagnosticSeverity): Diagnostic {
+    return new Diagnostic(this.Descriptor, this.FilePath, this.Span, this.Arguments, this.FixIt, severity);
+  }
+
+  static Create(d: DiagnosticDescriptor, filePath: string?, span: TextSpan, ...args: object?[]): Diagnostic {
+    ArgumentNullException.ThrowIfNull(d);
+    return new Diagnostic(d, filePath, span, args, null, d.Severity);
+  }
+
+  Format(): string { return this.Format(null); }
+
+  Format(text: SourceText?): string {
+    let severity = "hidden";
+    switch (this.EffectiveSeverity) {
+      case DiagnosticSeverity.Error: severity = "error"; break;
+      case DiagnosticSeverity.Warning: severity = "warning"; break;
+      case DiagnosticSeverity.Info: severity = "info"; break;
+    }
+    let location = this.FilePath ?? "<unknown>";
+    if (text != null) {
+      const position = text.GetLinePosition(this.Span.Start);
+      location = `${location}(${position.Line + 1},${position.Character + 1})`;
+    }
+    return `${location}: ${severity} ${this.Id}: ${this.Message}`;
+  }
+
+  override ToString(): string { return this.Format(); }
+}
+
+export sealed class DiagnosticBag {
+  private readonly items: List<Diagnostic> = new List<Diagnostic>();
+  get Count(): int { return this.items.Count; }
+  get Items(): IReadOnlyList<Diagnostic> { return this.items; }
+  get HasErrors(): bool {
+    for (const diagnostic of this.items) {
+      if (diagnostic.EffectiveSeverity == DiagnosticSeverity.Error) return true;
+    }
+    return false;
+  }
+  Add(diagnostic: Diagnostic): void { this.items.Add(diagnostic); }
+  AddRange(diagnostics: IEnumerable<Diagnostic>): void { this.items.AddRange(diagnostics); }
+  ToImmutable(): ImmutableArray<Diagnostic> { return ImmutableArray.CreateRange<Diagnostic>(this.items); }
+  TruncateTo(count: int): void {
+    if (count < this.items.Count) this.items.RemoveRange(count, this.items.Count - count);
+  }
+}

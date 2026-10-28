@@ -62,7 +62,8 @@ Each entry records a choice that is not obvious from the language specification,
 ## Unions and enums
 
 * **Named unions** (`type Shape = Circle | Square`) are generated readonly structs with fields `Tag` (1-based, 0 = empty) and
-  `Value` (`object?`), one constructor per case, implicit conversions from each case, `ToString`/`Equals`/`GetHashCode`, and
+  `Value` (`object?`), one constructor per case, implicit conversions from each case, `IEquatable<T>`,
+  typed and object `Equals`, `==`/`!=`, `ToString`/`GetHashCode`, and
   `[CaladesiUnion]`. **Inline unions** use `Caladesi.Runtime.Union<T1…T8>`, which has the same shape.
 * **Case order is canonical**: inline union cases are sorted by their display string, so `int | string` and `string | int` are
   the same type.

@@ -1,0 +1,300 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { Dictionary } from "System.Collections.Generic";
+import { TypeAttributes, FieldAttributes, MethodAttributes, GenericParameterAttributes } from "System.Reflection";
+import { TypeDefinition, TypeDefinitionHandle, TypeReferenceHandle, TypeSpecificationHandle, GenericParameterHandle, EntityHandle, HandleKind, MethodDefinitionHandle } from "System.Reflection.Metadata";
+import { MetadataReader } from "System.Reflection.Metadata";
+import { Symbol, AssemblySymbol, Accessibility, AttributeData } from "../Symbol";
+import { TypeSymbol, TypeKind, VarianceKind, TypeParameterSymbol, TypeParameterConstraints, ErrorTypeSymbol } from "../TypeSymbols";
+import { NamedTypeSymbol } from "../NamedTypeSymbol";
+import { MethodSymbol } from "../MemberSymbols";
+import { SpecialType, SpecialTypes } from "../SpecialType";
+import { MetadataAssemblySymbol } from "./MetadataAssemblySymbol";
+import { GenericContext } from "./MetadataTypeProvider";
+import { MetadataHelpers } from "./MetadataHelpers";
+import { MetadataMethodSymbol, MetadataFieldSymbol, MetadataPropertySymbol } from "./MetadataMembers";
+
+export sealed class MetadataNamedType extends NamedTypeSymbol {
+  private static readonly specialTypes: Dictionary<string, SpecialType> = MetadataNamedType.BuildSpecial();
+  private static BuildSpecial(): Dictionary<string, SpecialType> {
+    const result = new Dictionary<string, SpecialType>(StringComparer.Ordinal);
+    for (const type of Enum.GetValues<SpecialType>()) {
+      const name = SpecialTypes.MetadataName(type);
+      if (name != null) result[name] = type;
+    }
+    return result;
+  }
+
+  private readonly definition: TypeDefinition;
+  private readonly name: string;
+  private readonly ownArity: int;
+  private readonly special: SpecialType;
+  private typeParameters: ImmutableArray<TypeParameterSymbol>;
+  private members: ImmutableArray<Symbol>;
+  private baseType: NamedTypeSymbol? = null;
+  private baseDone: bool = false;
+  private interfaces: ImmutableArray<NamedTypeSymbol>;
+  private kind: TypeKind = TypeKind.Error;
+  private kindDone: bool = false;
+  private attributes: ImmutableArray<AttributeData>;
+  private enumUnderlying: NamedTypeSymbol? = null;
+  private enumDone: bool = false;
+  private unionCases: ImmutableArray<TypeSymbol>;
+  private nullableContext: byte = 0;
+  private nullableContextDone: bool = false;
+  readonly Namespace: string;
+
+  constructor(public readonly Assembly: MetadataAssemblySymbol, public readonly Handle: TypeDefinitionHandle) {
+    super();
+    const reader = Assembly.Reader;
+    this.definition = reader.GetTypeDefinition(Handle);
+    const raw = reader.GetString(this.definition.Name);
+    this.Namespace = reader.GetString(this.definition.Namespace);
+    const tick = raw.IndexOf('`');
+    this.name = tick < 0 ? raw : raw.Substring(0, tick);
+    this.ownArity = tick < 0 ? 0 : int.Parse(raw.Substring(tick + 1), System.Globalization.CultureInfo.InvariantCulture);
+    const full = this.Namespace.Length == 0 ? raw : this.Namespace + "." + raw;
+    const [found, special] = MetadataNamedType.specialTypes.TryGetValue(full);
+    this.special = this.definition.GetDeclaringType().IsNil && found ? special : SpecialType.None;
+  }
+
+  get Reader(): MetadataReader { return this.Assembly.Reader; }
+  get IsByRefLike(): bool {
+    return this.TypeKind == TypeKind.Struct && this.HasAttributeFast("System.Runtime.CompilerServices", "IsByRefLikeAttribute");
+  }
+  override get Name(): string { return this.name; }
+  override get OwnArity(): int { return this.ownArity; }
+  override get ContainingAssembly(): AssemblySymbol? { return this.Assembly; }
+  override get SpecialType(): SpecialType { return this.special; }
+  override get ContainingSymbol(): Symbol? {
+    const declaring = this.definition.GetDeclaringType();
+    if (!declaring.IsNil) return this.Assembly.GetTypeDefinition(declaring);
+    return this.Assembly.ReferenceSet.GlobalNamespace.FindNamespace(this.Namespace);
+  }
+  override get DeclaredAccessibility(): Accessibility {
+    switch (this.definition.Attributes & TypeAttributes.VisibilityMask) {
+      case TypeAttributes.Public: return Accessibility.Public;
+      case TypeAttributes.NestedPublic: return Accessibility.Public;
+      case TypeAttributes.NestedFamily: return Accessibility.Protected;
+      case TypeAttributes.NestedFamORAssem: return Accessibility.ProtectedOrInternal;
+      case TypeAttributes.NestedFamANDAssem: return Accessibility.ProtectedAndInternal;
+      case TypeAttributes.NestedAssembly: return Accessibility.Internal;
+      case TypeAttributes.NotPublic: return Accessibility.Internal;
+    }
+    return Accessibility.Private;
+  }
+  override get IsAbstract(): bool {
+    return (this.definition.Attributes & TypeAttributes.Abstract) != TypeAttributes.NotPublic && !this.IsSealed;
+  }
+  override get IsSealed(): bool { return (this.definition.Attributes & TypeAttributes.Sealed) != TypeAttributes.NotPublic; }
+  override get IsStatic(): bool {
+    return (this.definition.Attributes & TypeAttributes.Abstract) != TypeAttributes.NotPublic && this.IsSealed;
+  }
+  override get IsStaticClass(): bool { return this.IsStatic; }
+
+  override get TypeParameters(): ImmutableArray<TypeParameterSymbol> {
+    if (this.typeParameters.IsDefault) {
+      const parameters = this.definition.GetGenericParameters();
+      const builder = ImmutableArray.CreateBuilder<TypeParameterSymbol>(parameters.Count);
+      for (const handle of parameters) {
+        const parameter = this.Reader.GetGenericParameter(handle);
+        let variance = VarianceKind.None;
+        switch (parameter.Attributes & GenericParameterAttributes.VarianceMask) {
+          case GenericParameterAttributes.Covariant: variance = VarianceKind.Out; break;
+          case GenericParameterAttributes.Contravariant: variance = VarianceKind.In; break;
+        }
+        builder.Add(new TypeParameterSymbol(this.Reader.GetString(parameter.Name), parameter.Index, this, variance,
+          tp => this.DecodeConstraints(handle, new GenericContext(this.typeParameters, ImmutableArray<TypeParameterSymbol>.Empty))));
+      }
+      this.typeParameters = builder.ToImmutable();
+    }
+    return this.typeParameters;
+  }
+  DecodeConstraints(handle: GenericParameterHandle, context: GenericContext): TypeParameterConstraints {
+    const parameter = this.Reader.GetGenericParameter(handle);
+    const attrs = parameter.Attributes;
+    const types = ImmutableArray.CreateBuilder<TypeSymbol>();
+    for (const constraintHandle of parameter.GetConstraints()) {
+      const constraint = this.Reader.GetGenericParameterConstraint(constraintHandle);
+      const type = this.DecodeTypeHandle(constraint.Type, context);
+      if (type.SpecialType != SpecialType.ValueType) types.Add(type);
+    }
+    return new TypeParameterConstraints(
+      (attrs & GenericParameterAttributes.ReferenceTypeConstraint) != GenericParameterAttributes.None,
+      (attrs & GenericParameterAttributes.NotNullableValueTypeConstraint) != GenericParameterAttributes.None,
+      (attrs & GenericParameterAttributes.DefaultConstructorConstraint) != GenericParameterAttributes.None,
+      false, types.ToImmutable());
+  }
+  DecodeTypeHandle(handle: EntityHandle, context: GenericContext): TypeSymbol {
+    switch (handle.Kind) {
+      case HandleKind.TypeDefinition: return this.Assembly.GetTypeDefinition(handle as TypeDefinitionHandle);
+      case HandleKind.TypeReference: return this.Assembly.ResolveTypeReference(handle as TypeReferenceHandle);
+      case HandleKind.TypeSpecification:
+        return this.Reader.GetTypeSpecification(handle as TypeSpecificationHandle)
+          .DecodeSignature<TypeSymbol, GenericContext>(this.Assembly.Provider, context);
+    }
+    return new ErrorTypeSymbol("?");
+  }
+  get Context(): GenericContext {
+    return new GenericContext(this.TypeParameters, ImmutableArray<TypeParameterSymbol>.Empty);
+  }
+  override get TypeArguments(): ImmutableArray<TypeSymbol> {
+    const builder = ImmutableArray.CreateBuilder<TypeSymbol>();
+    for (const parameter of this.TypeParameters) builder.Add(parameter);
+    return builder.ToImmutable();
+  }
+  override get TypeKind(): TypeKind {
+    if (!this.kindDone) {
+      let kind = TypeKind.Class;
+      if ((this.definition.Attributes & TypeAttributes.ClassSemanticsMask) == TypeAttributes.Interface) {
+        kind = TypeKind.Interface;
+      } else {
+        const baseType = this.BaseType;
+        if (baseType != null) {
+          switch (baseType.SpecialType) {
+            case SpecialType.Enum: kind = TypeKind.Enum; break;
+            case SpecialType.ValueType: kind = TypeKind.Struct; break;
+            case SpecialType.MulticastDelegate: kind = TypeKind.Delegate; break;
+          }
+        }
+        if (this.special == SpecialType.Enum || this.special == SpecialType.ValueType) kind = TypeKind.Class;
+        if (this.special == SpecialType.Void) kind = TypeKind.Struct;
+      }
+      this.kind = kind;
+      this.kindDone = true;
+    }
+    return this.kind;
+  }
+  override get BaseType(): NamedTypeSymbol? {
+    if (!this.baseDone) {
+      this.baseDone = true;
+      const handle = this.definition.BaseType;
+      if (!handle.IsNil && (this.definition.Attributes & TypeAttributes.ClassSemanticsMask) != TypeAttributes.Interface) {
+        const decoded = this.DecodeTypeHandle(handle, this.Context);
+        if (decoded instanceof NamedTypeSymbol) this.baseType = decoded as NamedTypeSymbol;
+      }
+    }
+    return this.baseType;
+  }
+  override get Interfaces(): ImmutableArray<NamedTypeSymbol> {
+    if (this.interfaces.IsDefault) {
+      const builder = ImmutableArray.CreateBuilder<NamedTypeSymbol>();
+      for (const handle of this.definition.GetInterfaceImplementations()) {
+        const implementation = this.Reader.GetInterfaceImplementation(handle);
+        const type = this.DecodeTypeHandle(implementation.Interface, this.Context);
+        if (type instanceof NamedTypeSymbol && !(type instanceof ErrorTypeSymbol)) builder.Add(type as NamedTypeSymbol);
+      }
+      this.interfaces = builder.ToImmutable();
+    }
+    return this.interfaces;
+  }
+  override get EnumUnderlyingType(): NamedTypeSymbol? {
+    if (this.TypeKind != TypeKind.Enum) return null;
+    if (!this.enumDone) {
+      this.enumDone = true;
+      for (const handle of this.definition.GetFields()) {
+        const field = this.Reader.GetFieldDefinition(handle);
+        if ((field.Attributes & FieldAttributes.Static) == FieldAttributes.PrivateScope) {
+          const type = field.DecodeSignature<TypeSymbol, GenericContext>(this.Assembly.Provider, this.Context);
+          if (type instanceof NamedTypeSymbol) this.enumUnderlying = type as NamedTypeSymbol;
+          break;
+        }
+      }
+    }
+    return this.enumUnderlying;
+  }
+  override get DelegateInvokeMethod(): MethodSymbol? {
+    if (this.TypeKind == TypeKind.Delegate) {
+      for (const member of this.GetMembers("Invoke")) {
+        if (member instanceof MethodSymbol) return member as MethodSymbol;
+      }
+    }
+    return null;
+  }
+  override get IsReadOnlyStruct(): bool {
+    return this.TypeKind == TypeKind.Struct && this.HasAttributeFast("System.Runtime.CompilerServices", "IsReadOnlyAttribute");
+  }
+  override get IsUnionType(): bool { return this.HasAttributeFast("Caladesi.Runtime", "CaladesiUnionAttribute"); }
+  override get IsAnonymousUnion(): bool { return this.IsUnionType && this.Namespace == "Caladesi.Runtime" && this.name == "Union"; }
+  override get IsRecord(): bool {
+    return (this.TypeKind == TypeKind.Class || this.TypeKind == TypeKind.Struct) && this.GetMembers("<Clone>$").Length > 0;
+  }
+  override get UnionCases(): ImmutableArray<TypeSymbol> {
+    if (!this.IsUnionType) return ImmutableArray<TypeSymbol>.Empty;
+    if (this.unionCases.IsDefault) {
+      const builder = ImmutableArray.CreateBuilder<TypeSymbol>();
+      for (const constructor of this.InstanceConstructors) {
+        if (constructor.DeclaredAccessibility == Accessibility.Public && constructor.Parameters.Length == 1) {
+          builder.Add(constructor.Parameters[0].Type);
+        }
+      }
+      this.unionCases = builder.ToImmutable();
+    }
+    return this.unionCases;
+  }
+  HasAttributeFast(ns: string, name: string): bool {
+    return MetadataHelpers.FindAttribute(this.Reader, this.definition.GetCustomAttributes(), ns, name) != null;
+  }
+  get NullableContext(): byte {
+    if (!this.nullableContextDone) {
+      const attribute = MetadataHelpers.FindAttribute(this.Reader, this.definition.GetCustomAttributes(),
+        "System.Runtime.CompilerServices", "NullableContextAttribute");
+      if (attribute != null) this.nullableContext = MetadataHelpers.ReadByteArg(this.Reader, attribute!.Value);
+      else {
+        const declaring = this.definition.GetDeclaringType();
+        if (!declaring.IsNil) this.nullableContext = this.Assembly.GetTypeDefinition(declaring).NullableContext;
+      }
+      this.nullableContextDone = true;
+    }
+    return this.nullableContext;
+  }
+  override GetAttributes(): ImmutableArray<AttributeData> {
+    if (this.attributes.IsDefault) this.attributes = MetadataHelpers.DecodeAttributes(this.Assembly, this.definition.GetCustomAttributes());
+    return this.attributes;
+  }
+  override GetMembers(): ImmutableArray<Symbol> {
+    if (!this.members.IsDefault) return this.members;
+    const builder = ImmutableArray.CreateBuilder<Symbol>();
+    const reader = this.Reader;
+    for (const handle of this.definition.GetNestedTypes()) {
+      const type = this.Assembly.GetTypeDefinition(handle);
+      const access = type.DeclaredAccessibility;
+      if (access == Accessibility.Public || access == Accessibility.Protected || access == Accessibility.ProtectedOrInternal) builder.Add(type);
+    }
+    for (const handle of this.definition.GetFields()) {
+      const field = reader.GetFieldDefinition(handle);
+      if (!MetadataNamedType.IsVisibleField(field.Attributes & FieldAttributes.FieldAccessMask)) continue;
+      if ((field.Attributes & FieldAttributes.RTSpecialName) != FieldAttributes.PrivateScope) continue;
+      const symbol = new MetadataFieldSymbol(this, handle);
+      if (!symbol.IsUnsupported) builder.Add(symbol);
+    }
+    const methods = new Dictionary<MethodDefinitionHandle, MetadataMethodSymbol>();
+    for (const handle of this.definition.GetMethods()) {
+      const method = reader.GetMethodDefinition(handle);
+      if (!MetadataNamedType.IsVisibleMethod(method.Attributes & MethodAttributes.MemberAccessMask)) continue;
+      const symbol = new MetadataMethodSymbol(this, handle);
+      if (symbol.IsUnsupported) continue;
+      methods[handle] = symbol;
+      builder.Add(symbol);
+    }
+    for (const handle of this.definition.GetProperties()) {
+      const property = new MetadataPropertySymbol(this, handle, methods);
+      if ((property.GetMethod == null && property.SetMethod == null) || property.IsUnsupported) continue;
+      builder.Add(property);
+    }
+    this.members = builder.ToImmutable();
+    return this.members;
+  }
+  private static IsVisibleField(access: FieldAttributes): bool {
+    return access == FieldAttributes.Public || access == FieldAttributes.Family || access == FieldAttributes.FamORAssem;
+  }
+  private static IsVisibleMethod(access: MethodAttributes): bool {
+    return access == MethodAttributes.Public || access == MethodAttributes.Family || access == MethodAttributes.FamORAssem;
+  }
+  override GetMembers(name: string): ImmutableArray<Symbol> {
+    const builder = ImmutableArray.CreateBuilder<Symbol>();
+    for (const member of this.GetMembers()) {
+      if (member.Name == name) builder.Add(member);
+    }
+    return builder.ToImmutable();
+  }
+}

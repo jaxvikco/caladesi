@@ -131,6 +131,7 @@ public sealed partial class Compilation
 
     public NamedTypeSymbol? GetWellKnownType(string metadataName)
     {
+        ArgumentNullException.ThrowIfNull(metadataName);
         lock (_lock)
         {
             if (_wellKnown.TryGetValue(metadataName, out NamedTypeSymbol? t))
@@ -146,8 +147,12 @@ public sealed partial class Compilation
 
     private NamedTypeSymbol? FindWellKnown(string metadataName)
     {
-        NamedTypeSymbol? t = References.FindType(metadataName);
-        return t;
+        EnsureDeclarations();
+        int lastDot = metadataName.LastIndexOf('.');
+        NamespaceSymbol? ns = lastDot < 0 ? GlobalNamespace : GlobalNamespace.FindNamespace(metadataName[..lastDot]);
+        string name = metadataName[(lastDot + 1)..];
+        NamedTypeSymbol? source = ns?.GetTypeMembers().FirstOrDefault(t => t.IsFromSource && t.MetadataName == name);
+        return source ?? References.FindType(metadataName);
     }
 
     public NamedTypeSymbol RequireWellKnownType(string metadataName)
@@ -253,7 +258,7 @@ public sealed partial class Compilation
 
         void Register(SourceNamedType t, SyntaxToken id)
         {
-            (string NamespaceName, string Name) key = (file.NamespaceName, t.Name);
+            (string NamespaceName, string Name) key = (file.NamespaceName, t.MetadataName);
             if (allTypeNames.ContainsKey(key))
             {
                 DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.DuplicateType, file.FilePath, id.Span, t.Name, file.NamespaceName));

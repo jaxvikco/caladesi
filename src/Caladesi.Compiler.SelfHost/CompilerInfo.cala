@@ -1,0 +1,13 @@
+import { AssemblyInformationalVersionAttribute } from "System.Reflection";
+
+export sealed class CompilerInfo {
+  static readonly Version: string = CompilerInfo.ReadVersion();
+  private static ReadVersion(): string {
+    const attributes = typeof(CompilerInfo).Assembly.GetCustomAttributes(typeof(AssemblyInformationalVersionAttribute), false);
+    if (attributes.Length == 0) return "0.0.0";
+    const informational = (attributes[0] as AssemblyInformationalVersionAttribute).InformationalVersion;
+    if (string.IsNullOrEmpty(informational)) return "0.0.0";
+    const plus = informational.IndexOf('+', StringComparison.Ordinal);
+    return plus < 0 ? informational : informational.Substring(0, plus);
+  }
+}

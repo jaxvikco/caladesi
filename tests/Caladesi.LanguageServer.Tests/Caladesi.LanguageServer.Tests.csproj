@@ -9,8 +9,12 @@
     <NoWarn>$(NoWarn);CA1515;CA1707</NoWarn>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="SelfHost/**/*.cs" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Caladesi.Compiler\Caladesi.Compiler.csproj" />
     <ProjectReference Include="..\..\src\Caladesi.LanguageServer\Caladesi.LanguageServer.csproj" />
+    <ProjectReference Include="..\..\src\Caladesi.LanguageServer.SelfHost\Caladesi.LanguageServer.SelfHost.calaproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="..\..\src\Caladesi.Runtime\Caladesi.Runtime.csproj" />
   </ItemGroup>
 </Project>

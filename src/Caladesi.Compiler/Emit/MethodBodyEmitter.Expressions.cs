@@ -265,10 +265,10 @@ internal sealed partial class MethodBodyEmitter
     {
         switch (e)
         {
-            case BoundLocal l when EmitModule.IsValueTypeLike(_m.ClrType(l.Local.Type)) || l.Local.Type is TypeParameterSymbol:
+            case BoundLocal l:
                 _il.Ldloca(GetLocal(l.Local).Index);
                 return;
-            case BoundParameter p when EmitModule.IsValueTypeLike(_m.ClrType(p.Parameter.Type)) || p.Parameter.Type is TypeParameterSymbol:
+            case BoundParameter p:
                 _il.Ldarga(_paramIndex[p.Parameter]);
                 return;
             case BoundThis when _thisIsByRef:
