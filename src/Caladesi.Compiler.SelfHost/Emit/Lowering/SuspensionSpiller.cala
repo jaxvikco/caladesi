@@ -1,0 +1,466 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { List, Dictionary, ReferenceEqualityComparer } from "System.Collections.Generic";
+import { BoundTreeRewriter } from "../../Bound/BoundTreeRewriter";
+import {
+  BoundNode, BoundExpression, BoundStatement, BoundLiteral, BoundThis, BoundLocal,
+  BoundParameter, BoundDefaultValue, BoundTypeExpression, BoundBaseReference,
+  BoundFieldAccess, BoundPropertyAccess, BoundCall, BoundObjectCreation, BoundMemberInit,
+  BoundArrayCreation, BoundArrayAccess, BoundConversion, BoundUnary, BoundBinary,
+  BoundTypeTest, BoundDelegateCreation, BoundThrowExpression, BoundAddressOf, BoundIsNull,
+  BoundAssignment, BoundSequence, BoundLogicalBinary, BoundConditional, BoundCoalesce,
+  BoundConditionalAccess, BoundAwait, UnaryOperatorKind, BoundBlock, BoundStatementList,
+  BoundSequencePoint, BoundExpressionStatement, BoundLocalDeclaration, BoundIf, BoundWhile,
+  BoundDoWhile, BoundFor, BoundLabel, BoundGoto, BoundConditionalGoto, BoundReturn,
+  BoundThrow, BoundYieldReturn, BoundYieldBreak, BoundTry, BoundCatch
+} from "../../Bound/BoundNodes";
+import { TypeSymbol } from "../../Symbols/TypeSymbols";
+import { LocalSymbol, LabelSymbol } from "../../Symbols/MemberSymbols";
+import { SyntaxNode } from "../../Syntax/SyntaxElement";
+
+export sealed class SuspensionFinder extends BoundTreeRewriter {
+  private readonly cache: Dictionary<BoundNode, bool> = new Dictionary<BoundNode, bool>(ReferenceEqualityComparer.Instance);
+  private found: bool = false;
+  Has(node: BoundNode?): bool {
+    if (node == null) return false;
+    if (this.cache.ContainsKey(node)) return this.cache[node];
+    this.Visit(node);
+    return this.cache.ContainsKey(node) && this.cache[node];
+  }
+  override Visit(node: BoundNode?): BoundNode? {
+    if (node == null) return null;
+    if (this.cache.ContainsKey(node)) {
+      this.found = this.found || this.cache[node];
+      return node;
+    }
+    const saved = this.found;
+    this.found = node instanceof BoundAwait || node instanceof BoundYieldReturn || node instanceof BoundYieldBreak;
+    super.Visit(node);
+    this.cache[node] = this.found;
+    this.found = this.found || saved;
+    return node;
+  }
+  protected override VisitTry(n: BoundTry): BoundNode {
+    this.Visit(n.Body);
+    for (const c of n.Catches) this.Visit(c.Body);
+    if (n.Finally != null) this.Visit(n.Finally);
+    return n;
+  }
+}
+
+export sealed class SuspensionSpiller {
+  constructor(private readonly finder: SuspensionFinder, private readonly newTemp: Func<TypeSymbol, LocalSymbol>,
+    private readonly boolType: TypeSymbol) {}
+  private Has(n: BoundNode?): bool { return this.finder.Has(n); }
+  Spill(body: BoundBlock): BoundBlock {
+    if (!this.Has(body)) return body;
+    const list = new List<BoundStatement>();
+    this.SpillStatement(body, list);
+    return list.Count == 1 && list[0] instanceof BoundBlock ? list[0] as BoundBlock : new BoundBlock([], SuspensionSpiller.Statements(list));
+  }
+  private SpillToOne(s: BoundStatement): BoundStatement {
+    if (!this.Has(s)) return s;
+    const list = new List<BoundStatement>();
+    this.SpillStatement(s, list);
+    return list.Count == 1 ? list[0] : new BoundBlock([], SuspensionSpiller.Statements(list));
+  }
+  private SpillBlock(b: BoundBlock): BoundBlock {
+    if (!this.Has(b)) return b;
+    const list = new List<BoundStatement>();
+    for (const s of b.Statements) this.SpillStatement(s, list);
+    const result = new BoundBlock(b.Locals, SuspensionSpiller.Statements(list));
+    result.Syntax = b.Syntax;
+    return result;
+  }
+  private static Assign(target: BoundExpression, value: BoundExpression): BoundExpressionStatement {
+    const assignment = new BoundAssignment(target, value);
+    assignment.IsDiscarded = true;
+    return new BoundExpressionStatement(assignment);
+  }
+  private static Statements(list: List<BoundStatement>): ImmutableArray<BoundStatement> {
+    const builder = ImmutableArray.CreateBuilder<BoundStatement>(list.Count);
+    for (const statement of list) builder.Add(statement);
+    return builder.MoveToImmutable();
+  }
+  private SpillStatement(s: BoundStatement, output: List<BoundStatement>): void {
+    if (!this.Has(s)) { output.Add(s); return; }
+    if (s instanceof BoundBlock) { output.Add(this.SpillBlock(s as BoundBlock)); return; }
+    if (s instanceof BoundStatementList) {
+      for (const x of (s as BoundStatementList).Statements) this.SpillStatement(x, output);
+      return;
+    }
+    if (s instanceof BoundSequencePoint) {
+      const sp = s as BoundSequencePoint;
+      const inner = new List<BoundStatement>();
+      this.SpillStatement(sp.Statement, inner);
+      const result = new BoundSequencePoint(inner.Count == 1 ? inner[0] : new BoundStatementList(SuspensionSpiller.Statements(inner)), sp.SyntaxNodeForSpan);
+      result.Syntax = sp.Syntax;
+      output.Add(result);
+      return;
+    }
+    if (s instanceof BoundExpressionStatement) {
+      const es = s as BoundExpressionStatement;
+      let e: BoundExpression;
+      if (es.Expression instanceof BoundAwait && es.Expression.Type!.IsVoid) {
+        const a = es.Expression as BoundAwait;
+        const operand = this.SpillExpr(a.Operand, output);
+        const awaited = new BoundAwait(operand, a.Info, a.Type!);
+        awaited.Syntax = a.Syntax;
+        e = awaited;
+      } else e = this.SpillExpr(es.Expression, output);
+      const result = new BoundExpressionStatement(e);
+      result.Syntax = es.Syntax;
+      output.Add(result);
+      return;
+    }
+    if (s instanceof BoundLocalDeclaration) {
+      const ld = s as BoundLocalDeclaration;
+      const init = this.SpillExpr(ld.Initializer!, output);
+      const result = new BoundLocalDeclaration(ld.Local, init);
+      result.Syntax = ld.Syntax;
+      output.Add(result);
+      return;
+    }
+    if (s instanceof BoundIf) {
+      const i = s as BoundIf;
+      const c = this.SpillExpr(i.Condition, output);
+      const result = new BoundIf(c, this.SpillToOne(i.Consequence), i.Alternative == null ? null : this.SpillToOne(i.Alternative!));
+      result.Syntax = i.Syntax;
+      output.Add(result);
+      return;
+    }
+    if (s instanceof BoundWhile) {
+      const w = s as BoundWhile;
+      if (this.Has(w.Condition)) {
+        output.Add(new BoundLabel(w.ContinueLabel));
+        const c = this.SpillExpr(w.Condition, output);
+        output.Add(new BoundConditionalGoto(c, w.BreakLabel, false));
+        this.SpillStatement(w.Body, output);
+        output.Add(new BoundGoto(w.ContinueLabel));
+        output.Add(new BoundLabel(w.BreakLabel));
+      } else {
+        const result = new BoundWhile(w.Condition, this.SpillToOne(w.Body), w.BreakLabel, w.ContinueLabel);
+        result.Syntax = w.Syntax;
+        output.Add(result);
+      }
+      return;
+    }
+    if (s instanceof BoundDoWhile) {
+      const dw = s as BoundDoWhile;
+      if (this.Has(dw.Condition)) {
+        const top = new LabelSymbol("<top>");
+        output.Add(new BoundLabel(top));
+        this.SpillStatement(dw.Body, output);
+        output.Add(new BoundLabel(dw.ContinueLabel));
+        const c = this.SpillExpr(dw.Condition, output);
+        output.Add(new BoundConditionalGoto(c, top, true));
+        output.Add(new BoundLabel(dw.BreakLabel));
+      } else {
+        const result = new BoundDoWhile(dw.Condition, this.SpillToOne(dw.Body), dw.BreakLabel, dw.ContinueLabel);
+        result.Syntax = dw.Syntax;
+        output.Add(result);
+      }
+      return;
+    }
+    if (s instanceof BoundFor) {
+      const f = s as BoundFor;
+      if (this.Has(f.Condition) || this.Has(f.Increment)) {
+        const inner = new List<BoundStatement>();
+        if (f.Initializer != null) this.SpillStatement(f.Initializer!, inner);
+        const top = new LabelSymbol("<top>");
+        inner.Add(new BoundLabel(top));
+        if (f.Condition != null) {
+          const c = this.SpillExpr(f.Condition!, inner);
+          inner.Add(new BoundConditionalGoto(c, f.BreakLabel, false));
+        }
+        this.SpillStatement(f.Body, inner);
+        inner.Add(new BoundLabel(f.ContinueLabel));
+        if (f.Increment != null) this.SpillStatement(f.Increment!, inner);
+        inner.Add(new BoundGoto(top));
+        inner.Add(new BoundLabel(f.BreakLabel));
+        const result = new BoundBlock(f.Locals, SuspensionSpiller.Statements(inner));
+        result.Syntax = f.Syntax;
+        output.Add(result);
+      } else {
+        const result = new BoundFor(f.Locals, f.Initializer == null ? null : this.SpillToOne(f.Initializer!),
+          f.Condition, f.Increment, this.SpillToOne(f.Body), f.BreakLabel, f.ContinueLabel);
+        result.Syntax = f.Syntax;
+        output.Add(result);
+      }
+      return;
+    }
+    if (s instanceof BoundConditionalGoto) {
+      const cg = s as BoundConditionalGoto;
+      const result = new BoundConditionalGoto(this.SpillExpr(cg.Condition, output), cg.Label, cg.JumpIfTrue);
+      result.Syntax = cg.Syntax;
+      output.Add(result);
+      return;
+    }
+    if (s instanceof BoundReturn) {
+      const r = s as BoundReturn;
+      const result = new BoundReturn(r.Expression == null ? null : this.SpillExpr(r.Expression!, output));
+      result.Syntax = r.Syntax;
+      output.Add(result);
+      return;
+    }
+    if (s instanceof BoundThrow) {
+      const t = s as BoundThrow;
+      const result = new BoundThrow(t.Expression == null ? null : this.SpillExpr(t.Expression!, output));
+      result.Syntax = t.Syntax;
+      output.Add(result);
+      return;
+    }
+    if (s instanceof BoundYieldReturn) {
+      const y = s as BoundYieldReturn;
+      const result = new BoundYieldReturn(this.SpillExpr(y.Expression, output));
+      result.Syntax = y.Syntax;
+      output.Add(result);
+      return;
+    }
+    if (s instanceof BoundTry) {
+      const t = s as BoundTry;
+      const catches = ImmutableArray.CreateBuilder<BoundCatch>(t.Catches.Length);
+      for (const c of t.Catches) catches.Add(new BoundCatch(c.Local, c.ExceptionType, this.SpillBlock(c.Body)));
+      const result = new BoundTry(this.SpillBlock(t.Body), catches.MoveToImmutable(), t.Finally == null ? null : this.SpillBlock(t.Finally!));
+      result.Syntax = t.Syntax;
+      output.Add(result);
+      return;
+    }
+    output.Add(s);
+  }
+  private Temp(t: TypeSymbol): LocalSymbol { return this.newTemp(t); }
+  private static IsStable(e: BoundExpression): bool {
+    return e instanceof BoundLiteral || e instanceof BoundThis || e instanceof BoundLocal ||
+      e instanceof BoundParameter || e instanceof BoundDefaultValue || e instanceof BoundTypeExpression ||
+      e instanceof BoundBaseReference || (e instanceof BoundFieldAccess && (e as BoundFieldAccess).Field.IsConst);
+  }
+  private ToTemp(e: BoundExpression, prefix: List<BoundStatement>): BoundExpression {
+    e = this.SpillExpr(e, prefix);
+    if (SuspensionSpiller.IsStable(e) && !(e instanceof BoundLocal)) return e;
+    const t = this.Temp(e.Type!);
+    prefix.Add(SuspensionSpiller.Assign(new BoundLocal(t), e));
+    return new BoundLocal(t);
+  }
+  private SpillOperands(ops: List<BoundExpression?>, prefix: List<BoundStatement>): BoundExpression[] {
+    const result = new BoundExpression[ops.Count];
+    let last = -1;
+    for (let i = 0; i < ops.Count; i++) if (this.Has(ops[i])) last = i;
+    for (let i = 0; i < ops.Count; i++) {
+      const op = ops[i];
+      if (op == null) continue;
+      result[i] = i < last ? (SuspensionSpiller.IsStable(op) ? op : this.ToTemp(op, prefix)) :
+        i == last ? this.SpillExpr(op, prefix) : op;
+    }
+    return result;
+  }
+  private Operands(receiver: BoundExpression?, arguments: ImmutableArray<BoundExpression>): List<BoundExpression?> {
+    const ops = new List<BoundExpression?>();
+    ops.Add(receiver);
+    for (const a of arguments) ops.Add(a);
+    return ops;
+  }
+  private Expressions(values: BoundExpression[], start: int, count: int): ImmutableArray<BoundExpression> {
+    const builder = ImmutableArray.CreateBuilder<BoundExpression>(count);
+    for (let i = start; i < start + count; i++) builder.Add(values[i]);
+    return builder.MoveToImmutable();
+  }
+  SpillExpr(e: BoundExpression, prefix: List<BoundStatement>): BoundExpression {
+    if (!this.Has(e)) return e;
+    if (e instanceof BoundAwait) {
+      const a = e as BoundAwait;
+      const operand = this.SpillExpr(a.Operand, prefix);
+      const t = this.Temp(a.Type!);
+      const awaited = new BoundAwait(operand, a.Info, a.Type!);
+      awaited.Syntax = a.Syntax;
+      const statement = SuspensionSpiller.Assign(new BoundLocal(t), awaited);
+      statement.Syntax = a.Syntax;
+      prefix.Add(statement);
+      return new BoundLocal(t);
+    }
+    if (e instanceof BoundCall) {
+      const c = e as BoundCall;
+      const r = this.SpillOperands(this.Operands(c.Receiver, c.Arguments), prefix);
+      const result = new BoundCall(c.Receiver == null ? null : r[0], c.Method, this.Expressions(r, 1, r.Length - 1), c.Type);
+      result.Syntax = c.Syntax; result.IsBaseCall = c.IsBaseCall;
+      return result;
+    }
+    if (e instanceof BoundPropertyAccess) {
+      const pa = e as BoundPropertyAccess;
+      const r = this.SpillOperands(this.Operands(pa.Receiver, pa.Arguments), prefix);
+      const result = new BoundPropertyAccess(pa.Receiver == null ? null : r[0], pa.Property, this.Expressions(r, 1, r.Length - 1));
+      result.Syntax = pa.Syntax; result.IsBaseAccess = pa.IsBaseAccess;
+      return result;
+    }
+    if (e instanceof BoundFieldAccess) {
+      const fa = e as BoundFieldAccess;
+      const result = new BoundFieldAccess(this.SpillExpr(fa.Receiver!, prefix), fa.Field);
+      result.Syntax = fa.Syntax; return result;
+    }
+    if (e instanceof BoundObjectCreation) {
+      const oc = e as BoundObjectCreation;
+      const ops = new List<BoundExpression?>();
+      for (const a of oc.Arguments) ops.Add(a);
+      if (!oc.Initializers.IsDefaultOrEmpty) for (const i of oc.Initializers) ops.Add(i.Value);
+      const r = this.SpillOperands(ops, prefix);
+      let inits = oc.Initializers;
+      if (!inits.IsDefaultOrEmpty) {
+        const builder = ImmutableArray.CreateBuilder<BoundMemberInit>(inits.Length);
+        for (let k = 0; k < inits.Length; k++) builder.Add(new BoundMemberInit(inits[k].Member, r[oc.Arguments.Length + k]));
+        inits = builder.MoveToImmutable();
+      }
+      const result = new BoundObjectCreation(oc.Constructor, oc.Type!, this.Expressions(r, 0, oc.Arguments.Length), inits);
+      result.Syntax = oc.Syntax; return result;
+    }
+    if (e instanceof BoundArrayCreation) {
+      const ac = e as BoundArrayCreation;
+      const r = this.SpillOperands(this.Operands(ac.Length, ac.Initializers), prefix);
+      const result = new BoundArrayCreation(ac.Type!, ac.Length == null ? null : r[0], this.Expressions(r, 1, r.Length - 1));
+      result.Syntax = ac.Syntax; return result;
+    }
+    if (e instanceof BoundArrayAccess) {
+      const aa = e as BoundArrayAccess;
+      const ops = new List<BoundExpression?>(); ops.Add(aa.Array); ops.Add(aa.Index);
+      const r = this.SpillOperands(ops, prefix);
+      const result = new BoundArrayAccess(r[0], r[1], aa.Type!);
+      result.Syntax = aa.Syntax; return result;
+    }
+    if (e instanceof BoundConversion) {
+      const cv = e as BoundConversion;
+      const result = new BoundConversion(this.SpillExpr(cv.Operand, prefix), cv.Kind, cv.Type!, cv.Method);
+      result.Syntax = cv.Syntax; result.CaseIndex = cv.CaseIndex; result.ConstantFolded = cv.ConstantFolded; return result;
+    }
+    if (e instanceof BoundUnary) {
+      const u = e as BoundUnary;
+      const result = new BoundUnary(u.Kind, this.SpillExpr(u.Operand, prefix), u.Type!, u.Method);
+      result.Syntax = u.Syntax; result.Folded = u.Folded; return result;
+    }
+    if (e instanceof BoundBinary) {
+      const b = e as BoundBinary;
+      const ops = new List<BoundExpression?>(); ops.Add(b.Left); ops.Add(b.Right);
+      const r = this.SpillOperands(ops, prefix);
+      const result = new BoundBinary(b.Kind, r[0], r[1], b.Type!, b.OperandType, b.Method);
+      result.Syntax = b.Syntax; result.Folded = b.Folded; return result;
+    }
+    if (e instanceof BoundTypeTest) {
+      const tt = e as BoundTypeTest;
+      const result = new BoundTypeTest(this.SpillExpr(tt.Operand, prefix), tt.Target, tt.Type!, tt.Kind, tt.CaseIndex);
+      result.Syntax = tt.Syntax; return result;
+    }
+    if (e instanceof BoundDelegateCreation) {
+      const dc = e as BoundDelegateCreation;
+      const result = new BoundDelegateCreation(this.SpillExpr(dc.Receiver!, prefix), dc.Method, dc.Type!);
+      result.Syntax = dc.Syntax; return result;
+    }
+    if (e instanceof BoundThrowExpression) {
+      const te = e as BoundThrowExpression;
+      const result = new BoundThrowExpression(this.SpillExpr(te.Operand, prefix), te.Type!);
+      result.Syntax = te.Syntax; return result;
+    }
+    if (e instanceof BoundAddressOf) {
+      const ad = e as BoundAddressOf;
+      const result = new BoundAddressOf(this.SpillExpr(ad.Operand, prefix));
+      result.Syntax = ad.Syntax; return result;
+    }
+    if (e instanceof BoundIsNull) {
+      const isn = e as BoundIsNull;
+      const result = new BoundIsNull(this.SpillExpr(isn.Operand, prefix), isn.Type!);
+      result.Syntax = isn.Syntax; return result;
+    }
+    if (e instanceof BoundAssignment) return this.SpillAssignment(e as BoundAssignment, prefix);
+    if (e instanceof BoundSequence) {
+      const seq = e as BoundSequence;
+      for (const s of seq.SideEffects) this.SpillStatement(s, prefix);
+      const v = this.SpillExpr(seq.Value, prefix);
+      if (seq.Locals.IsDefaultOrEmpty) return v;
+      const result = new BoundSequence(seq.Locals, [], v);
+      result.Syntax = seq.Syntax; return result;
+    }
+    if (e instanceof BoundLogicalBinary) {
+      const lb = e as BoundLogicalBinary;
+      if (!this.Has(lb.Right)) {
+        const result = new BoundLogicalBinary(lb.IsAnd, this.SpillExpr(lb.Left, prefix), lb.Right, lb.Type!);
+        result.Syntax = lb.Syntax; return result;
+      }
+      const t = this.Temp(lb.Type!);
+      prefix.Add(SuspensionSpiller.Assign(new BoundLocal(t), this.SpillExpr(lb.Left, prefix)));
+      const inner = new List<BoundStatement>();
+      inner.Add(SuspensionSpiller.Assign(new BoundLocal(t), this.SpillExpr(lb.Right, inner)));
+      let cond: BoundExpression = new BoundLocal(t);
+      if (!lb.IsAnd) cond = new BoundUnary(UnaryOperatorKind.Not, cond, this.boolType);
+      prefix.Add(new BoundIf(cond, new BoundBlock([], SuspensionSpiller.Statements(inner)), null));
+      return new BoundLocal(t);
+    }
+    if (e instanceof BoundConditional) {
+      const co = e as BoundConditional;
+      if (!this.Has(co.WhenTrue) && !this.Has(co.WhenFalse)) {
+        const result = new BoundConditional(this.SpillExpr(co.Condition, prefix), co.WhenTrue, co.WhenFalse, co.Type!);
+        result.Syntax = co.Syntax; return result;
+      }
+      const t = this.Temp(co.Type!);
+      const c = this.SpillExpr(co.Condition, prefix);
+      const a = new List<BoundStatement>();
+      a.Add(SuspensionSpiller.Assign(new BoundLocal(t), this.SpillExpr(co.WhenTrue, a)));
+      const b = new List<BoundStatement>();
+      b.Add(SuspensionSpiller.Assign(new BoundLocal(t), this.SpillExpr(co.WhenFalse, b)));
+      prefix.Add(new BoundIf(c, new BoundBlock([], SuspensionSpiller.Statements(a)), new BoundBlock([], SuspensionSpiller.Statements(b))));
+      return new BoundLocal(t);
+    }
+    if (e instanceof BoundCoalesce) {
+      const cq = e as BoundCoalesce;
+      if (!this.Has(cq.Right)) {
+        const result = new BoundCoalesce(this.SpillExpr(cq.Left, prefix), cq.Right, cq.Type!);
+        result.Syntax = cq.Syntax; return result;
+      }
+      const left = this.ToTemp(cq.Left, prefix);
+      const res = this.Temp(cq.Type!);
+      const whenNull = new List<BoundStatement>();
+      whenNull.Add(SuspensionSpiller.Assign(new BoundLocal(res), this.SpillExpr(cq.Right, whenNull)));
+      const whenValue = SuspensionSpiller.Assign(new BoundLocal(res), new BoundCoalesce(left, new BoundDefaultValue(cq.Type!), cq.Type!));
+      prefix.Add(new BoundIf(new BoundIsNull(left, this.boolType), new BoundBlock([], SuspensionSpiller.Statements(whenNull)), whenValue));
+      return new BoundLocal(res);
+    }
+    if (e instanceof BoundConditionalAccess) {
+      const ca = e as BoundConditionalAccess;
+      if (!this.Has(ca.WhenNotNull)) {
+        const result = new BoundConditionalAccess(this.SpillExpr(ca.Receiver, prefix), ca.Placeholder, ca.WhenNotNull, ca.Type);
+        result.Syntax = ca.Syntax; return result;
+      }
+    }
+    throw new LoweringNotSupportedException("'await' is not supported inside this kind of expression (" + e.GetType().Name.Replace("Bound", "") + ")", e.Syntax);
+  }
+  private SpillAssignment(asg: BoundAssignment, prefix: List<BoundStatement>): BoundAssignment {
+    const target = asg.Target;
+    let newTarget = target;
+    if (target instanceof BoundFieldAccess && (target as BoundFieldAccess).Receiver != null) {
+      const fa = target as BoundFieldAccess;
+      const recv = fa.Receiver!;
+      const result = new BoundFieldAccess(SuspensionSpiller.IsStable(recv) && !this.Has(recv) ? recv : this.ToTemp(recv, prefix), fa.Field);
+      result.Syntax = fa.Syntax; newTarget = result;
+    } else if (target instanceof BoundArrayAccess) {
+      const aa = target as BoundArrayAccess;
+      const result = new BoundArrayAccess(this.Stabilize(aa.Array, prefix), this.Stabilize(aa.Index, prefix), aa.Type!);
+      result.Syntax = aa.Syntax; newTarget = result;
+    } else if (target instanceof BoundPropertyAccess) {
+      const pa = target as BoundPropertyAccess;
+      const receiver = pa.Receiver == null ? null : this.Stabilize(pa.Receiver!, prefix);
+      const arguments = ImmutableArray.CreateBuilder<BoundExpression>(pa.Arguments.Length);
+      for (const a of pa.Arguments) arguments.Add(this.Stabilize(a, prefix));
+      const result = new BoundPropertyAccess(receiver, pa.Property, arguments.MoveToImmutable());
+      result.Syntax = pa.Syntax; result.IsBaseAccess = pa.IsBaseAccess; newTarget = result;
+    }
+    const value = this.SpillExpr(asg.Value, prefix);
+    const result = new BoundAssignment(newTarget, value);
+    result.Syntax = asg.Syntax; result.IsDiscarded = asg.IsDiscarded;
+    return result;
+  }
+  private Stabilize(e: BoundExpression, prefix: List<BoundStatement>): BoundExpression {
+    return SuspensionSpiller.IsStable(e) && !this.Has(e) ? e : this.ToTemp(e, prefix);
+  }
+}
+
+export sealed class LoweringNotSupportedException extends Exception {
+  readonly Syntax: SyntaxNode? = null;
+  constructor() { super(); }
+  constructor(message: string) { super(message); }
+  constructor(message: string, innerException: Exception) { super(message, innerException); }
+  constructor(message: string, syntax: SyntaxNode?) { super(message); this.Syntax = syntax; }
+}
