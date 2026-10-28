@@ -402,6 +402,7 @@ public sealed class ClosureLowererParityTests
             Exception? actual = Assert.Throws<TargetInvocationException>(() => LowerActual(body)).InnerException;
             Assert.IsInstanceOfType<InvalidOperationException>(expected);
             Assert.IsInstanceOfType<InvalidOperationException>(actual);
+            Assert.AreEqual(expected.Message, actual.Message);
             CompareProgram();
         }
 

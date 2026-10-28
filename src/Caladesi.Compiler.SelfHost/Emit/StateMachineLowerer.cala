@@ -1,0 +1,649 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { List, Dictionary, HashSet, Stack, IEnumerable, ReferenceEqualityComparer } from "System.Collections.Generic";
+import {
+  BoundNode, BoundExpression, BoundStatement, BoundBlock, BoundLocal, BoundParameter,
+  BoundThis, BoundLocalDeclaration, BoundFor, BoundSequence, BoundAwait, BoundTry,
+  BoundCatch, BoundLiteral, BoundAssignment, BoundExpressionStatement, BoundFieldAccess,
+  BoundNoOp, BoundLabel, BoundGoto, BoundConditionalGoto, BoundBinary, BoundUnary,
+  BoundCall, BoundAddressOf, BoundDefaultValue, BoundReturn, BoundYieldReturn,
+  BoundYieldBreak, BoundIf, BoundObjectCreation, BoundConversion, BoundThrow,
+  BinaryOperatorKind, UnaryOperatorKind, ConversionKind
+} from "../Bound/BoundNodes";
+import { BoundTreeRewriter } from "../Bound/BoundTreeRewriter";
+import { Symbol, Accessibility } from "../Symbols/Symbol";
+import { TypeSymbol, TypeParameterSymbol } from "../Symbols/TypeSymbols";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { SpecialType } from "../Symbols/SpecialType";
+import { LocalSymbol, ParameterSymbol, FieldSymbol, MethodSymbol, MethodKind, LabelSymbol, ConstantValue } from "../Symbols/MemberSymbols";
+import { SynthesizedNamedType, SynthesizedFieldSymbol, SynthesizedMethodSymbol } from "../Symbols/Source/Synthesized";
+import { SynthesizedBodyKind } from "../Symbols/Source/SynthesizedBodyKind";
+import { LoweredProgram } from "./LoweredProgram";
+import { SynthesizedClassFactory } from "./SynthesizedClassFactory";
+import { SuspensionFinder, SuspensionSpiller } from "./Lowering/SuspensionSpiller";
+import { TryRewriter } from "./Lowering/TryRewriter";
+
+enum StateMachineKind { Async, Iterator, AsyncIterator }
+
+sealed class StateMachineCollector extends BoundTreeRewriter {
+  readonly Locals: List<LocalSymbol> = new List<LocalSymbol>();
+  readonly CatchLocals: HashSet<LocalSymbol> = new HashSet<LocalSymbol>(ReferenceEqualityComparer.Instance);
+  readonly Seen: HashSet<LocalSymbol> = new HashSet<LocalSymbol>(ReferenceEqualityComparer.Instance);
+  readonly AwaiterTypes: List<TypeSymbol> = new List<TypeSymbol>();
+  ThisType: TypeSymbol? = null;
+  private Add(local: LocalSymbol): void { if (this.Seen.Add(local)) this.Locals.Add(local); }
+  protected override VisitLocal(n: BoundLocal): BoundNode { this.Add(n.Local); return n; }
+  protected override VisitLocalDeclaration(n: BoundLocalDeclaration): BoundNode {
+    this.Add(n.Local); return super.VisitLocalDeclaration(n);
+  }
+  protected override VisitThis(n: BoundThis): BoundNode { this.ThisType = this.ThisType ?? n.Type; return n; }
+  protected override VisitBlock(n: BoundBlock): BoundNode {
+    for (const local of n.Locals) this.Add(local);
+    return super.VisitBlock(n);
+  }
+  protected override VisitFor(n: BoundFor): BoundNode {
+    for (const local of n.Locals) this.Add(local);
+    return super.VisitFor(n);
+  }
+  protected override VisitSequence(n: BoundSequence): BoundNode {
+    for (const local of n.Locals) this.Add(local);
+    return super.VisitSequence(n);
+  }
+  protected override VisitAwait(n: BoundAwait): BoundNode {
+    this.AwaiterTypes.Add(n.Info.AwaiterType); return super.VisitAwait(n);
+  }
+  protected override VisitTry(n: BoundTry): BoundNode {
+    this.Visit(n.Body);
+    for (const handler of n.Catches) {
+      if (handler.Local != null) this.CatchLocals.Add(handler.Local);
+      this.Visit(handler.Body);
+    }
+    if (n.Finally != null) this.Visit(n.Finally);
+    return n;
+  }
+}
+
+sealed class StateMachineTryInfo {
+  readonly Entries: List<[int, LabelSymbol]> = new List<[int, LabelSymbol]>();
+  constructor(public readonly Start: LabelSymbol) {}
+  Register(state: int, target: LabelSymbol): void {
+    for (const entry of this.Entries) {
+      const [existing, label] = entry;
+      if (existing == state) return;
+    }
+    this.Entries.Add([state, target]);
+  }
+}
+
+sealed class StateMachineHoister<TSourceFile> extends BoundTreeRewriter {
+  constructor(private readonly owner: StateMachineLowerer<TSourceFile>) { super(); }
+  private Hoisted(symbol: Symbol): BoundFieldAccess? {
+    return this.owner.VarFields.ContainsKey(symbol) ? this.owner.Field(this.owner.VarFields[symbol]) : null;
+  }
+  protected override VisitLocal(n: BoundLocal): BoundNode {
+    if (Object.ReferenceEquals(n.Local, this.owner.DisposingPlaceholder))
+      return this.owner.Field(this.owner.DisposingField!);
+    const hoisted = this.Hoisted(n.Local);
+    return hoisted == null ? n as BoundNode : hoisted!;
+  }
+  protected override VisitParameter(n: BoundParameter): BoundNode {
+    const hoisted = this.Hoisted(n.Parameter);
+    return hoisted == null ? n as BoundNode : hoisted!;
+  }
+  protected override VisitThis(n: BoundThis): BoundNode {
+    return this.owner.ThisField != null && !Object.ReferenceEquals(n.Type, this.owner.Closed)
+      ? this.owner.Field(this.owner.ThisField!) as BoundNode : n;
+  }
+  protected override VisitLocalDeclaration(n: BoundLocalDeclaration): BoundNode {
+    if (!this.owner.VarFields.ContainsKey(n.Local)) return super.VisitLocalDeclaration(n);
+    if (n.Initializer == null) {
+      const noop = new BoundNoOp(); noop.Syntax = n.Syntax; return noop;
+    }
+    const assignment = new BoundAssignment(this.owner.Field(this.owner.VarFields[n.Local]), this.VisitExpr(n.Initializer as BoundExpression));
+    assignment.Syntax = n.Syntax;
+    assignment.IsDiscarded = true;
+    const result = new BoundExpressionStatement(assignment); result.Syntax = n.Syntax; return result;
+  }
+  private Keep(locals: ImmutableArray<LocalSymbol>): ImmutableArray<LocalSymbol> {
+    if (locals.IsDefaultOrEmpty) return locals;
+    const kept = ImmutableArray.CreateBuilder<LocalSymbol>();
+    for (const local of locals) if (!this.owner.VarFields.ContainsKey(local)) kept.Add(local);
+    return kept.ToImmutable();
+  }
+  protected override VisitBlock(n: BoundBlock): BoundNode {
+    const statements = this.VisitStmts(n.Statements);
+    const result = new BoundBlock(this.Keep(n.Locals), statements); result.Syntax = n.Syntax; return result;
+  }
+  protected override VisitFor(n: BoundFor): BoundNode {
+    const initializer = this.VisitStmtOpt(n.Initializer);
+    const condition = this.VisitExprOpt(n.Condition);
+    const increment = this.VisitStmtOpt(n.Increment);
+    const body = this.VisitStmt(n.Body);
+    const result = new BoundFor(this.Keep(n.Locals), initializer, condition, increment, body, n.BreakLabel, n.ContinueLabel);
+    result.Syntax = n.Syntax; return result;
+  }
+  protected override VisitSequence(n: BoundSequence): BoundNode {
+    const effects = this.VisitStmts(n.SideEffects);
+    const value = this.VisitExpr(n.Value);
+    const result = new BoundSequence(this.Keep(n.Locals), effects, value); result.Syntax = n.Syntax; return result;
+  }
+}
+
+sealed class StateMachineStateRewriter<TSourceFile> extends BoundTreeRewriter {
+  private readonly tries: Stack<StateMachineTryInfo> = new Stack<StateMachineTryInfo>();
+  readonly Root: StateMachineTryInfo = new StateMachineTryInfo(new LabelSymbol("<root>"));
+  constructor(private readonly owner: StateMachineLowerer<TSourceFile>) { super(); this.tries.Push(this.Root); }
+  private NewState(label: LabelSymbol): int {
+    const state = this.owner.StateCount++;
+    this.tries.Peek().Register(state, label); return state;
+  }
+  protected override VisitTry(n: BoundTry): BoundNode {
+    const info = new StateMachineTryInfo(new LabelSymbol("<try>"));
+    this.tries.Push(info);
+    let body = this.Visit(n.Body)! as BoundBlock;
+    const catches = ImmutableArray.CreateBuilder<BoundCatch>();
+    for (const handler of n.Catches)
+      catches.Add(new BoundCatch(handler.Local, handler.ExceptionType, this.Visit(handler.Body)! as BoundBlock));
+    const fin: BoundBlock? = n.Finally == null ? null : this.Visit(n.Finally)! as BoundBlock;
+    this.tries.Pop();
+    if (info.Entries.Count > 0) {
+      const statements = new List<BoundStatement>();
+      statements.Add(new BoundLabel(info.Start));
+      for (const statement of this.owner.DispatchStatements(info)) statements.Add(statement);
+      for (const statement of body.Statements) statements.Add(statement);
+      const replacement = new BoundBlock(body.Locals, ImmutableArray.CreateRange<BoundStatement>(statements));
+      replacement.Syntax = body.Syntax; body = replacement;
+      for (const entry of info.Entries) {
+        const [state, target] = entry;
+        this.tries.Peek().Register(state, info.Start);
+      }
+    }
+    const result = new BoundTry(body, catches.ToImmutable(), fin); result.Syntax = n.Syntax; return result;
+  }
+  protected override VisitExpressionStatement(n: BoundExpressionStatement): BoundNode {
+    if (n.Expression instanceof BoundAwait)
+      return this.owner.LowerAwait(n.Expression as BoundAwait, null, label => this.NewState(label));
+    if (n.Expression instanceof BoundAssignment) {
+      const assignment = n.Expression as BoundAssignment;
+      if (assignment.Value instanceof BoundAwait)
+        return this.owner.LowerAwait(assignment.Value as BoundAwait, assignment.Target, label => this.NewState(label));
+    }
+    return super.VisitExpressionStatement(n);
+  }
+  protected override VisitReturn(n: BoundReturn): BoundNode { return this.owner.LowerReturn(n); }
+  protected override VisitYieldBreak(n: BoundYieldBreak): BoundNode {
+    return new BoundGoto(this.owner.Kind == StateMachineKind.AsyncIterator ? this.owner.ExitLabel : this.owner.EndLabel);
+  }
+  protected override VisitYieldReturn(n: BoundYieldReturn): BoundNode {
+    return this.owner.LowerYieldReturn(n, label => this.NewState(label), n.DisposeTarget);
+  }
+  protected override VisitAwait(n: BoundAwait): BoundNode { throw new InvalidOperationException("await survived spilling"); }
+}
+
+// Spill evaluation order before hoisting, then replace suspension points with resumable state dispatch.
+export sealed class StateMachineLowerer<TSourceFile> {
+  readonly Kind: StateMachineKind;
+  readonly VarFields: Dictionary<Symbol, SynthesizedFieldSymbol> =
+    new Dictionary<Symbol, SynthesizedFieldSymbol>(ReferenceEqualityComparer.Instance);
+  readonly EndLabel: LabelSymbol = new LabelSymbol("<end>");
+  readonly SuspendLabel: LabelSymbol = new LabelSymbol("<suspend>");
+  readonly ExitLabel: LabelSymbol = new LabelSymbol("<exit>");
+  Closed: NamedTypeSymbol;
+  ThisField: SynthesizedFieldSymbol? = null;
+  DisposingField: SynthesizedFieldSymbol? = null;
+  DisposingPlaceholder: LocalSymbol? = null;
+  StateCount: int = 0;
+  private tempCounter: int = 0;
+  private cls: SynthesizedNamedType;
+  private stateField: SynthesizedFieldSymbol;
+  private moveNext: SynthesizedMethodSymbol;
+  private thisType: TypeSymbol? = null;
+  private readonly awaiterFields: Dictionary<string, SynthesizedFieldSymbol> = new Dictionary<string, SynthesizedFieldSymbol>();
+  private payload: TypeSymbol? = null;
+  private builderType: NamedTypeSymbol? = null;
+  private builderField: SynthesizedFieldSymbol? = null;
+  private retvalField: SynthesizedFieldSymbol? = null;
+  private smLocal: LocalSymbol;
+  private currentField: SynthesizedFieldSymbol? = null;
+  private isEnumerable: bool = false;
+  private readonly initialParams: Dictionary<ParameterSymbol, SynthesizedFieldSymbol> = new Dictionary<ParameterSymbol, SynthesizedFieldSymbol>();
+  private getEnumerator: SynthesizedMethodSymbol? = null;
+  private moveNextAsync: SynthesizedMethodSymbol;
+  private disposeAsync: SynthesizedMethodSymbol;
+
+  private constructor(private readonly getSpecialType: Func<SpecialType, NamedTypeSymbol>,
+    private readonly getWellKnownType: Func<string, NamedTypeSymbol?>,
+    private readonly program: LoweredProgram<TSourceFile>, private readonly method: MethodSymbol,
+    private readonly container: NamedTypeSymbol, private readonly ordinal: int) {
+    this.Kind = method.IsIterator ? (method.IsAsync ? StateMachineKind.AsyncIterator : StateMachineKind.Iterator) : StateMachineKind.Async;
+  }
+  static Lower(getSpecialType: Func<SpecialType, NamedTypeSymbol>, getWellKnownType: Func<string, NamedTypeSymbol?>,
+    program: LoweredProgram<TSourceFile>, method: MethodSymbol, container: NamedTypeSymbol, ordinal: int, body: BoundBlock): void {
+    new StateMachineLowerer<TSourceFile>(getSpecialType, getWellKnownType, program, method, container, ordinal).Run(body);
+  }
+  private get Void(): TypeSymbol { return this.getSpecialType(SpecialType.Void); }
+  private get Bool(): TypeSymbol { return this.getSpecialType(SpecialType.Boolean); }
+  private get Int(): TypeSymbol { return this.getSpecialType(SpecialType.Int32); }
+  private Wk(name: string): NamedTypeSymbol {
+    return this.getWellKnownType(name) ?? throw new InvalidOperationException("missing well-known type " + name);
+  }
+  private NewTemp(type: TypeSymbol): LocalSymbol {
+    const local = new LocalSymbol("<>s__" + this.tempCounter++, type, false, this.method);
+    local.IsSynthesized = true; return local;
+  }
+  private IntLit(value: int): BoundLiteral { return new BoundLiteral(new ConstantValue(value), this.Int); }
+  private BoolLit(value: bool): BoundLiteral { return new BoundLiteral(new ConstantValue(value), this.Bool); }
+  static Assign(target: BoundExpression, value: BoundExpression): BoundExpressionStatement {
+    const assignment = new BoundAssignment(target, value); assignment.IsDiscarded = true;
+    return new BoundExpressionStatement(assignment);
+  }
+  static Block(statements: IEnumerable<BoundStatement>): BoundBlock {
+    return new BoundBlock([], ImmutableArray.CreateRange<BoundStatement>(statements));
+  }
+  private Run(original: BoundBlock): void {
+    this.AnalyzeSignature();
+    const finder = new SuspensionFinder();
+    const spiller = new SuspensionSpiller(finder, type => this.NewTemp(type), this.Bool);
+    let body = spiller.Spill(original);
+    if (this.Kind != StateMachineKind.Async) this.DisposingPlaceholder = this.NewTemp(this.Bool);
+    const disposing: Func<BoundExpression>? = this.Kind == StateMachineKind.Async ? null : () => new BoundLocal(this.DisposingPlaceholder!);
+    const tryRewriter = new TryRewriter(this.Bool, this.Int, this.Wk("System.Exception"),
+      this.Wk("System.Runtime.ExceptionServices.ExceptionDispatchInfo"), finder, type => this.NewTemp(type),
+      this.Kind == StateMachineKind.Async ? this.payload : null, disposing,
+      this.Kind == StateMachineKind.AsyncIterator ? this.ExitLabel : this.EndLabel);
+    body = tryRewriter.Visit(body)! as BoundBlock;
+    const collected = new StateMachineCollector(); collected.Visit(body);
+    this.DeclareMembers(collected);
+    body = new StateMachineHoister<TSourceFile>(this).Visit(body)! as BoundBlock;
+    const states = new StateMachineStateRewriter<TSourceFile>(this);
+    body = states.Visit(body)! as BoundBlock;
+    this.program.Bodies[this.moveNext] = this.Kind == StateMachineKind.Iterator
+      ? this.AssembleIteratorMoveNext(body, states) : this.AssembleAsyncMoveNext(body, states);
+    if (this.Kind != StateMachineKind.Iterator)
+      this.program.Bodies[this.Member("SetStateMachine")] = StateMachineLowerer<TSourceFile>.Block([]);
+    this.program.Types.Add(this.cls);
+    if (this.Kind == StateMachineKind.Iterator) this.BuildIteratorSupportBodies();
+    else if (this.Kind == StateMachineKind.AsyncIterator) this.BuildAsyncIteratorSupportBodies();
+    this.program.Bodies[this.method] = this.Kind == StateMachineKind.Async ? this.BuildAsyncStub() : this.BuildIteratorStub();
+  }
+  private AnalyzeSignature(): void {
+    const rt = this.method.ReturnType.StripNullable();
+    if (this.Kind != StateMachineKind.Async) {
+      this.payload = rt instanceof NamedTypeSymbol && (rt as NamedTypeSymbol).IsGenericType
+        ? (rt as NamedTypeSymbol).TypeArguments[0] : this.getSpecialType(SpecialType.Object);
+      if (this.Kind == StateMachineKind.AsyncIterator)
+        this.builderType = this.Wk("System.Runtime.CompilerServices.AsyncTaskMethodBuilder`1").Construct([this.Bool]);
+      return;
+    }
+    let builder: string;
+    let payload: TypeSymbol? = null;
+    if (rt.IsVoid) builder = "System.Runtime.CompilerServices.AsyncVoidMethodBuilder";
+    else {
+      const named = rt as NamedTypeSymbol;
+      switch (named.OriginalDefinition.SpecialType) {
+        case SpecialType.Task: builder = "System.Runtime.CompilerServices.AsyncTaskMethodBuilder"; break;
+        case SpecialType.TaskT: builder = "System.Runtime.CompilerServices.AsyncTaskMethodBuilder`1"; payload = named.TypeArguments[0]; break;
+        case SpecialType.ValueTask: builder = "System.Runtime.CompilerServices.AsyncValueTaskMethodBuilder"; break;
+        case SpecialType.ValueTaskT: builder = "System.Runtime.CompilerServices.AsyncValueTaskMethodBuilder`1"; payload = named.TypeArguments[0]; break;
+        default: throw new NotSupportedException("unsupported async return type " + rt.ToDisplayString());
+      }
+    }
+    const type = this.Wk(builder);
+    this.builderType = payload != null ? type.Construct([payload]) : type;
+    this.payload = payload;
+  }
+  private NewMethod(name: string, ret: TypeSymbol, isPublic: bool = true): SynthesizedMethodSymbol {
+    return this.NewMethodWithParameters(name, ret, isPublic, []);
+  }
+  private NewMethodWithParameters(name: string, ret: TypeSymbol, isPublic: bool,
+    parameters: ImmutableArray<ParameterSymbol>): SynthesizedMethodSymbol {
+    const result = new SynthesizedMethodSymbol(this.cls, name, name == ".ctor" ? MethodKind.Constructor : MethodKind.Ordinary,
+      isPublic ? Accessibility.Public : Accessibility.Private, false, ret, parameters);
+    result.SynthesizedKind = SynthesizedBodyKind.Custom; result.SourceMethod = this.method;
+    this.cls.AddMember(result); return result;
+  }
+  private NewField(name: string, type: TypeSymbol): SynthesizedFieldSymbol {
+    const result = new SynthesizedFieldSymbol(this.cls, name, type); this.cls.AddMember(result); return result;
+  }
+  private Member(name: string): SynthesizedMethodSymbol {
+    for (const member of this.cls.Members)
+      if (member instanceof SynthesizedMethodSymbol && member.Name == name) return member as SynthesizedMethodSymbol;
+    throw new InvalidOperationException("Sequence contains no matching element");
+  }
+  private FindMethod(type: NamedTypeSymbol, name: string, count: int, arity: int = 0): MethodSymbol {
+    for (const member of type.GetMembers(name)) {
+      if (member instanceof MethodSymbol) {
+        const method = member as MethodSymbol;
+        if ((count < 0 || method.Parameters.Length == count) && method.Arity == arity) return method;
+      }
+    }
+    throw new InvalidOperationException("Sequence contains no matching element");
+  }
+  private Constructor(type: NamedTypeSymbol, count: int = -1): MethodSymbol {
+    for (const ctor of type.InstanceConstructors) if (count < 0 || ctor.Parameters.Length == count) return ctor;
+    throw new InvalidOperationException("Sequence contains no matching element");
+  }
+  private DeclareMembers(collected: StateMachineCollector): void {
+    const [cls, closed] = SynthesizedClassFactory.Create(this.getSpecialType(SpecialType.Object), this.container, this.method,
+      "<" + this.method.Name + ">d__" + this.ordinal, null);
+    this.cls = cls; this.Closed = closed;
+    this.NewMethod(".ctor", this.Void);
+    this.moveNext = this.NewMethod("MoveNext", this.Kind == StateMachineKind.Iterator ? this.Bool : this.Void);
+    this.stateField = this.NewField("<>1__state", this.Int);
+    this.smLocal = new LocalSymbol("<sm>", closed, false, this.method); this.smLocal.IsSynthesized = true;
+    if (this.Kind == StateMachineKind.Async) this.DeclareAsyncMembers();
+    else if (this.Kind == StateMachineKind.Iterator) this.DeclareIteratorMembers();
+    else this.DeclareAsyncIteratorMembers();
+    if (!this.method.IsStatic) {
+      this.thisType = collected.ThisType ?? (this.container.IsGenericType ? this.container.Construct(this.container.TypeArguments) : this.container);
+      this.ThisField = this.NewField("<>4__this", this.thisType as TypeSymbol);
+    }
+    for (const parameter of this.method.Parameters) this.VarFields[parameter] = this.NewField(parameter.Name, parameter.Type);
+    let ordinal = 0;
+    for (const local of collected.Locals) {
+      if (collected.CatchLocals.Contains(local) || Object.ReferenceEquals(local, this.DisposingPlaceholder)) continue;
+      this.VarFields[local] = this.NewField("<" + local.Name + ">5__" + ordinal++, local.Type);
+    }
+    for (const type of collected.AwaiterTypes) {
+      const key = type.ToDisplayString();
+      if (!this.awaiterFields.ContainsKey(key)) this.awaiterFields[key] = this.NewField("<>u__" + (this.awaiterFields.Count + 1), type);
+    }
+    if (this.Kind != StateMachineKind.Async && this.isEnumerable)
+      for (const parameter of this.method.Parameters) this.initialParams[parameter] = this.NewField("<>3__" + parameter.Name, parameter.Type);
+  }
+  private CF(field: FieldSymbol): FieldSymbol { return SynthesizedClassFactory.ClosedField(this.Closed, field); }
+  private CF2(method: MethodSymbol): MethodSymbol { return SynthesizedClassFactory.ClosedMethod(this.Closed, method); }
+  private SelfThis(): BoundThis { return new BoundThis(this.Closed); }
+  Field(field: SynthesizedFieldSymbol): BoundFieldAccess { return new BoundFieldAccess(this.SelfThis(), this.CF(field)); }
+  private FieldOn(receiver: BoundExpression, field: SynthesizedFieldSymbol): BoundFieldAccess {
+    return new BoundFieldAccess(receiver, this.CF(field));
+  }
+  private State(): BoundFieldAccess { return this.Field(this.stateField); }
+  *DispatchStatements(info: StateMachineTryInfo): IEnumerable<BoundStatement> {
+    for (const entry of info.Entries) {
+      const [state, target] = entry;
+      yield new BoundConditionalGoto(new BoundBinary(BinaryOperatorKind.Equal, this.State(), this.IntLit(state), this.Bool, this.Int), target, true);
+    }
+  }
+  private DeclareAsyncMembers(): void {
+    this.cls.AddInterface(this.Wk("System.Runtime.CompilerServices.IAsyncStateMachine"));
+    this.builderField = this.NewField("<>t__builder", this.builderType!);
+    if (this.payload != null) this.retvalField = this.NewField("<>s__retval", this.payload!);
+    this.NewMethodWithParameters("SetStateMachine", this.Void, true,
+      [new ParameterSymbol("stateMachine", this.Wk("System.Runtime.CompilerServices.IAsyncStateMachine"), 0, null)]);
+  }
+  private Builder(): BoundFieldAccess { return this.Field(this.builderField!); }
+  private BuilderMethod(name: string, count: int, arity: int = 0): MethodSymbol {
+    return this.FindMethod(this.builderType!, name, count, arity);
+  }
+  private CallStmt(receiver: BoundExpression, method: MethodSymbol): BoundExpressionStatement {
+    return this.CallStmt(receiver, method, []);
+  }
+  private CallStmt(receiver: BoundExpression, method: MethodSymbol, args: BoundExpression[]): BoundExpressionStatement {
+    return new BoundExpressionStatement(new BoundCall(receiver, method, ImmutableArray.CreateRange<BoundExpression>(args)));
+  }
+  LowerAwait(aw: BoundAwait, target: BoundExpression?, newState: Func<LabelSymbol, int>): BoundBlock {
+    const info = aw.Info;
+    const awaiterDef = this.awaiterFields[info.AwaiterType.ToDisplayString()];
+    const resume = new LabelSymbol("<resume>");
+    const state = newState(resume);
+    const getAwaiter = info.GetAwaiter.IsStatic
+      ? new BoundCall(null, info.GetAwaiter, [aw.Operand]) : new BoundCall(aw.Operand, info.GetAwaiter, []);
+    const isCompleted = info.IsCompletedGetter ?? info.IsCompleted!.GetMethod!;
+    let critical = false;
+    for (const iface of info.AwaiterType.AllInterfaces)
+      if (iface.OriginalDefinition.MetadataName == "ICriticalNotifyCompletion") critical = true;
+    const awaitOn = this.FindMethod(this.builderType!, critical ? "AwaitUnsafeOnCompleted" : "AwaitOnCompleted", -1, 2)
+      .Construct([info.AwaiterType, this.Closed]);
+    const statements = new List<BoundStatement>();
+    statements.Add(StateMachineLowerer<TSourceFile>.Assign(this.Field(awaiterDef), getAwaiter));
+    statements.Add(new BoundIf(new BoundUnary(UnaryOperatorKind.Not, new BoundCall(this.Field(awaiterDef), isCompleted, []), this.Bool),
+      StateMachineLowerer<TSourceFile>.Block([
+        StateMachineLowerer<TSourceFile>.Assign(this.State(), this.IntLit(state)),
+        this.CallStmt(this.Builder(), awaitOn, [new BoundAddressOf(this.Field(awaiterDef)), new BoundAddressOf(new BoundLocal(this.smLocal))]),
+        new BoundGoto(this.SuspendLabel)
+      ]), null));
+    statements.Add(new BoundLabel(resume));
+    statements.Add(StateMachineLowerer<TSourceFile>.Assign(this.State(), this.IntLit(-1)));
+    const result = new BoundCall(this.Field(awaiterDef), info.GetResult, []);
+    statements.Add(target != null ? StateMachineLowerer<TSourceFile>.Assign(target, result) : new BoundExpressionStatement(result));
+    statements.Add(StateMachineLowerer<TSourceFile>.Assign(this.Field(awaiterDef), new BoundDefaultValue(info.AwaiterType)));
+    return StateMachineLowerer<TSourceFile>.Block(statements);
+  }
+  LowerReturn(n: BoundReturn): BoundStatement {
+    if (this.Kind == StateMachineKind.Iterator) return new BoundGoto(this.EndLabel);
+    const statements = new List<BoundStatement>();
+    if (n.Expression != null && this.retvalField != null)
+      statements.Add(StateMachineLowerer<TSourceFile>.Assign(this.Field(this.retvalField!), n.Expression as BoundExpression));
+    else if (n.Expression != null) statements.Add(new BoundExpressionStatement(n.Expression as BoundExpression));
+    statements.Add(new BoundGoto(this.ExitLabel));
+    return StateMachineLowerer<TSourceFile>.Block(statements);
+  }
+  private AssembleAsyncMoveNext(body: BoundBlock, states: StateMachineStateRewriter<TSourceFile>): BoundBlock {
+    const exType = this.Wk("System.Exception");
+    const ex = new LocalSymbol("ex", exType, false, this.method); ex.IsSynthesized = true;
+    const tryBody = new List<BoundStatement>();
+    for (const statement of this.DispatchStatements(states.Root)) tryBody.Add(statement);
+    tryBody.Add(body);
+    const catchBody = StateMachineLowerer<TSourceFile>.Block([
+      StateMachineLowerer<TSourceFile>.Assign(this.State(), this.IntLit(-2)),
+      this.CallStmt(this.Builder(), this.BuilderMethod("SetException", 1), [new BoundLocal(ex)]),
+      new BoundReturn(null)
+    ]);
+    const setResult: BoundStatement = this.Kind == StateMachineKind.AsyncIterator
+      ? this.CallStmt(this.Builder(), this.BuilderMethod("SetResult", 1), [this.BoolLit(false)])
+      : this.payload != null ? this.CallStmt(this.Builder(), this.BuilderMethod("SetResult", 1), [this.Field(this.retvalField!)])
+      : this.CallStmt(this.Builder(), this.BuilderMethod("SetResult", 0));
+    return new BoundBlock([this.smLocal], [
+      StateMachineLowerer<TSourceFile>.Assign(new BoundLocal(this.smLocal), this.SelfThis()),
+      new BoundTry(StateMachineLowerer<TSourceFile>.Block(tryBody), [new BoundCatch(ex, exType, catchBody)], null),
+      new BoundLabel(this.ExitLabel),
+      StateMachineLowerer<TSourceFile>.Assign(this.State(), this.IntLit(-2)), setResult, new BoundLabel(this.SuspendLabel)
+    ]);
+  }
+  private BuildAsyncStub(): BoundBlock {
+    const sm = new LocalSymbol("sm", this.Closed, false, this.method); sm.IsSynthesized = true;
+    const statements = new List<BoundStatement>();
+    statements.Add(StateMachineLowerer<TSourceFile>.Assign(new BoundLocal(sm), new BoundObjectCreation(this.Constructor(this.Closed), this.Closed, [], [])));
+    statements.Add(StateMachineLowerer<TSourceFile>.Assign(this.FieldOn(new BoundLocal(sm), this.builderField!), new BoundCall(null, this.BuilderMethod("Create", 0), [])));
+    if (this.ThisField != null)
+      statements.Add(StateMachineLowerer<TSourceFile>.Assign(this.FieldOn(new BoundLocal(sm), this.ThisField as SynthesizedFieldSymbol), new BoundThis(this.thisType!)));
+    for (const parameter of this.method.Parameters)
+      statements.Add(StateMachineLowerer<TSourceFile>.Assign(this.FieldOn(new BoundLocal(sm), this.VarFields[parameter]), new BoundParameter(parameter)));
+    statements.Add(StateMachineLowerer<TSourceFile>.Assign(this.FieldOn(new BoundLocal(sm), this.stateField), this.IntLit(-1)));
+    const start = this.BuilderMethod("Start", 1, 1).Construct([this.Closed]);
+    statements.Add(this.CallStmt(this.FieldOn(new BoundLocal(sm), this.builderField!), start, [new BoundAddressOf(new BoundLocal(sm))]));
+    let task: MethodSymbol? = null;
+    for (const member of this.builderType!.GetMembers("get_Task")) {
+      if (member instanceof MethodSymbol) { task = member as MethodSymbol; break; }
+    }
+    statements.Add(new BoundReturn(task == null ? null : new BoundCall(this.FieldOn(new BoundLocal(sm), this.builderField!), task, [])));
+    return new BoundBlock([sm], ImmutableArray.CreateRange<BoundStatement>(statements));
+  }
+
+  private DeclareIteratorMembers(): void {
+    const rt = this.method.ReturnType.StripNullable() as NamedTypeSymbol;
+    const name = rt.OriginalDefinition.MetadataName;
+    this.isEnumerable = name == "IEnumerable`1" || name == "IEnumerable" || name == "IAsyncEnumerable`1";
+    const enumerator = this.Wk("System.Collections.Generic.IEnumerator`1").Construct([this.payload!]);
+    const enumeratorObj = this.Wk("System.Collections.IEnumerator");
+    if (this.isEnumerable) {
+      this.cls.AddInterface(this.Wk("System.Collections.Generic.IEnumerable`1").Construct([this.payload!]));
+      this.cls.AddInterface(this.Wk("System.Collections.IEnumerable"));
+    }
+    this.cls.AddInterface(enumerator); this.cls.AddInterface(enumeratorObj); this.cls.AddInterface(this.Wk("System.IDisposable"));
+    this.currentField = this.NewField("<>2__current", this.payload!);
+    this.DisposingField = this.NewField("<>__disposing", this.Bool);
+    this.NewMethod("get_Current", this.payload!);
+    const explicitCurrent = new SynthesizedMethodSymbol(this.cls, "System.Collections.IEnumerator.get_Current",
+      MethodKind.Ordinary, Accessibility.Private, false, this.getSpecialType(SpecialType.Object), []);
+    explicitCurrent.SynthesizedKind = SynthesizedBodyKind.Custom;
+    explicitCurrent.Overrides = [this.FindMethod(enumeratorObj, "get_Current", -1)];
+    this.cls.AddMember(explicitCurrent);
+    this.NewMethod("Reset", this.Void); this.NewMethod("Dispose", this.Void);
+    if (this.isEnumerable) {
+      this.getEnumerator = this.NewMethod("GetEnumerator", enumerator);
+      const explicitGet = new SynthesizedMethodSymbol(this.cls, "System.Collections.IEnumerable.GetEnumerator",
+        MethodKind.Ordinary, Accessibility.Private, false, enumeratorObj, []);
+      explicitGet.SynthesizedKind = SynthesizedBodyKind.Custom;
+      explicitGet.Overrides = [this.FindMethod(this.Wk("System.Collections.IEnumerable"), "GetEnumerator", -1)];
+      this.cls.AddMember(explicitGet);
+    }
+  }
+  LowerYieldReturn(n: BoundYieldReturn, newState: Func<LabelSymbol, int>, disposeTarget: LabelSymbol?): BoundBlock {
+    const resume = new LabelSymbol("<resume>");
+    const state = newState(resume);
+    if (this.Kind == StateMachineKind.AsyncIterator) return StateMachineLowerer<TSourceFile>.Block([
+      StateMachineLowerer<TSourceFile>.Assign(this.Field(this.currentField!), n.Expression),
+      StateMachineLowerer<TSourceFile>.Assign(this.State(), this.IntLit(state)),
+      this.CallStmt(this.Builder(), this.BuilderMethod("SetResult", 1), [this.BoolLit(true)]),
+      new BoundGoto(this.SuspendLabel), new BoundLabel(resume),
+      StateMachineLowerer<TSourceFile>.Assign(this.State(), this.IntLit(-1)),
+      new BoundIf(this.Field(this.DisposingField!), new BoundGoto(disposeTarget ?? this.ExitLabel), null)
+    ]);
+    return StateMachineLowerer<TSourceFile>.Block([
+      StateMachineLowerer<TSourceFile>.Assign(this.Field(this.currentField!), n.Expression),
+      StateMachineLowerer<TSourceFile>.Assign(this.State(), this.IntLit(state)),
+      new BoundReturn(this.BoolLit(true)), new BoundLabel(resume),
+      StateMachineLowerer<TSourceFile>.Assign(this.State(), this.IntLit(-1)),
+      new BoundIf(this.Field(this.DisposingField!), new BoundGoto(disposeTarget ?? this.EndLabel), null)
+    ]);
+  }
+  private AssembleIteratorMoveNext(body: BoundBlock, states: StateMachineStateRewriter<TSourceFile>): BoundBlock {
+    const exType = this.Wk("System.Exception");
+    const ex = new LocalSymbol("ex", exType, false, this.method); ex.IsSynthesized = true;
+    const tryBody = new List<BoundStatement>();
+    for (const statement of this.DispatchStatements(states.Root)) tryBody.Add(statement);
+    tryBody.Add(body);
+    const falseLit = this.BoolLit(false);
+    return StateMachineLowerer<TSourceFile>.Block([
+      new BoundIf(new BoundBinary(BinaryOperatorKind.Equal, this.State(), this.IntLit(-2), this.Bool, this.Int), new BoundReturn(falseLit), null),
+      new BoundTry(StateMachineLowerer<TSourceFile>.Block(tryBody), [new BoundCatch(ex, exType,
+        StateMachineLowerer<TSourceFile>.Block([StateMachineLowerer<TSourceFile>.Assign(this.State(), this.IntLit(-2)), new BoundThrow(null)]))], null),
+      new BoundLabel(this.EndLabel), StateMachineLowerer<TSourceFile>.Assign(this.State(), this.IntLit(-2)), new BoundReturn(falseLit)
+    ]);
+  }
+  private BuildIteratorStub(): BoundBlock {
+    const sm = new LocalSymbol("sm", this.Closed, false, this.method); sm.IsSynthesized = true;
+    const statements = new List<BoundStatement>();
+    statements.Add(StateMachineLowerer<TSourceFile>.Assign(new BoundLocal(sm), new BoundObjectCreation(this.Constructor(this.Closed), this.Closed, [], [])));
+    statements.Add(StateMachineLowerer<TSourceFile>.Assign(this.FieldOn(new BoundLocal(sm), this.stateField), this.IntLit(this.isEnumerable ? -3 : -1)));
+    if (this.ThisField != null)
+      statements.Add(StateMachineLowerer<TSourceFile>.Assign(this.FieldOn(new BoundLocal(sm), this.ThisField as SynthesizedFieldSymbol), new BoundThis(this.thisType!)));
+    for (const parameter of this.method.Parameters) {
+      const target = this.isEnumerable ? this.initialParams[parameter] : this.VarFields[parameter];
+      statements.Add(StateMachineLowerer<TSourceFile>.Assign(this.FieldOn(new BoundLocal(sm), target), new BoundParameter(parameter)));
+    }
+    statements.Add(new BoundReturn(new BoundConversion(new BoundLocal(sm), ConversionKind.ImplicitReference, this.method.ReturnType.StripNullable())));
+    return new BoundBlock([sm], ImmutableArray.CreateRange<BoundStatement>(statements));
+  }
+  private BuildIteratorSupportBodies(): void {
+    const objType = this.getSpecialType(SpecialType.Object);
+    this.program.Bodies[this.Member("get_Current")] = StateMachineLowerer<TSourceFile>.Block([new BoundReturn(this.Field(this.currentField!))]);
+    const asObject = new BoundConversion(this.Field(this.currentField!),
+      this.payload!.IsValueType || this.payload instanceof TypeParameterSymbol ? ConversionKind.Boxing : ConversionKind.ImplicitReference, objType);
+    this.program.Bodies[this.Member("System.Collections.IEnumerator.get_Current")] = StateMachineLowerer<TSourceFile>.Block([new BoundReturn(asObject)]);
+    const nse = this.Wk("System.NotSupportedException");
+    this.program.Bodies[this.Member("Reset")] = StateMachineLowerer<TSourceFile>.Block([
+      new BoundThrow(new BoundObjectCreation(this.Constructor(nse, 0), nse, [], []))
+    ]);
+    this.program.Bodies[this.Member("Dispose")] = StateMachineLowerer<TSourceFile>.Block([
+      new BoundIf(new BoundBinary(BinaryOperatorKind.GreaterThanOrEqual, this.State(), this.IntLit(0), this.Bool, this.Int),
+        StateMachineLowerer<TSourceFile>.Block([
+          StateMachineLowerer<TSourceFile>.Assign(this.Field(this.DisposingField!), this.BoolLit(true)),
+          new BoundExpressionStatement(new BoundCall(this.SelfThis(), this.CF2(this.moveNext), []))
+        ]), null),
+      StateMachineLowerer<TSourceFile>.Assign(this.State(), this.IntLit(-2))
+    ]);
+    if (!this.isEnumerable) return;
+    this.BuildGetEnumeratorBody();
+    const explicitGet = this.Member("System.Collections.IEnumerable.GetEnumerator");
+    this.program.Bodies[explicitGet] = StateMachineLowerer<TSourceFile>.Block([
+      new BoundReturn(new BoundConversion(new BoundCall(this.SelfThis(), this.CF2(this.getEnumerator!), []),
+        ConversionKind.ImplicitReference, explicitGet.ReturnType))
+    ]);
+  }
+  private BuildGetEnumeratorBody(): void {
+    const result = new LocalSymbol("r", this.Closed, false, this.method); result.IsSynthesized = true;
+    const fresh = new List<BoundStatement>();
+    fresh.Add(StateMachineLowerer<TSourceFile>.Assign(new BoundLocal(result), new BoundObjectCreation(this.Constructor(this.Closed), this.Closed, [], [])));
+    fresh.Add(StateMachineLowerer<TSourceFile>.Assign(this.FieldOn(new BoundLocal(result), this.stateField), this.IntLit(-1)));
+    if (this.ThisField != null)
+      fresh.Add(StateMachineLowerer<TSourceFile>.Assign(this.FieldOn(new BoundLocal(result), this.ThisField as SynthesizedFieldSymbol), this.Field(this.ThisField as SynthesizedFieldSymbol)));
+    const body = new List<BoundStatement>();
+    body.Add(new BoundIf(new BoundBinary(BinaryOperatorKind.Equal, this.State(), this.IntLit(-3), this.Bool, this.Int),
+      StateMachineLowerer<TSourceFile>.Block([
+        StateMachineLowerer<TSourceFile>.Assign(this.State(), this.IntLit(-1)),
+        StateMachineLowerer<TSourceFile>.Assign(new BoundLocal(result), this.SelfThis())
+      ]), StateMachineLowerer<TSourceFile>.Block(fresh)));
+    for (const parameter of this.method.Parameters)
+      body.Add(StateMachineLowerer<TSourceFile>.Assign(this.FieldOn(new BoundLocal(result), this.VarFields[parameter]), this.Field(this.initialParams[parameter])));
+    body.Add(new BoundReturn(new BoundConversion(new BoundLocal(result), ConversionKind.ImplicitReference, this.getEnumerator!.ReturnType)));
+    this.program.Bodies[this.getEnumerator!] = new BoundBlock([result], ImmutableArray.CreateRange<BoundStatement>(body));
+  }
+  private DeclareAsyncIteratorMembers(): void {
+    const rt = this.method.ReturnType.StripNullable() as NamedTypeSymbol;
+    this.isEnumerable = rt.OriginalDefinition.MetadataName == "IAsyncEnumerable`1";
+    const enumerator = this.Wk("System.Collections.Generic.IAsyncEnumerator`1").Construct([this.payload!]);
+    const valueTaskBool = this.Wk("System.Threading.Tasks.ValueTask`1").Construct([this.Bool]);
+    const valueTask = this.Wk("System.Threading.Tasks.ValueTask");
+    this.cls.AddInterface(this.Wk("System.Runtime.CompilerServices.IAsyncStateMachine"));
+    if (this.isEnumerable) this.cls.AddInterface(this.Wk("System.Collections.Generic.IAsyncEnumerable`1").Construct([this.payload!]));
+    this.cls.AddInterface(enumerator);
+    this.builderField = this.NewField("<>t__builder", this.builderType!);
+    this.currentField = this.NewField("<>2__current", this.payload!);
+    this.DisposingField = this.NewField("<>__disposing", this.Bool);
+    this.NewMethodWithParameters("SetStateMachine", this.Void, true,
+      [new ParameterSymbol("stateMachine", this.Wk("System.Runtime.CompilerServices.IAsyncStateMachine"), 0, null)]);
+    this.NewMethod("get_Current", this.payload!);
+    this.moveNextAsync = this.NewMethod("MoveNextAsync", valueTaskBool);
+    this.disposeAsync = this.NewMethod("DisposeAsync", valueTask);
+    if (this.isEnumerable)
+      this.getEnumerator = this.NewMethodWithParameters("GetAsyncEnumerator", enumerator, true,
+        [new ParameterSymbol("cancellationToken", this.Wk("System.Threading.CancellationToken"), 0, null)]);
+  }
+  private BuildAsyncIteratorSupportBodies(): void {
+    this.program.Bodies[this.Member("get_Current")] = StateMachineLowerer<TSourceFile>.Block([new BoundReturn(this.Field(this.currentField!))]);
+    const valueTaskBool = this.moveNextAsync.ReturnType as NamedTypeSymbol;
+    const valueTask = this.disposeAsync.ReturnType as NamedTypeSymbol;
+    const sm = this.smLocal;
+    const start = this.BuilderMethod("Start", 1, 1).Construct([this.Closed]);
+    let ctorValue: MethodSymbol? = null;
+    let ctorTask: MethodSymbol? = null;
+    for (const ctor of valueTaskBool.InstanceConstructors) {
+      if (ctor.Parameters.Length != 1) continue;
+      if (ctor.Parameters[0].Type.SpecialType == SpecialType.Boolean) { if (ctorValue == null) ctorValue = ctor; }
+      else if (ctorTask == null) ctorTask = ctor;
+    }
+    if (ctorValue == null || ctorTask == null) throw new InvalidOperationException("Sequence contains no matching element");
+    const taskGetter = this.FindMethod(this.builderType!, "get_Task", -1);
+    this.program.Bodies[this.moveNextAsync] = new BoundBlock([sm], [
+      new BoundIf(new BoundBinary(BinaryOperatorKind.Equal, this.State(), this.IntLit(-2), this.Bool, this.Int),
+        new BoundReturn(new BoundObjectCreation(ctorValue, valueTaskBool, [this.BoolLit(false)], [])), null),
+      StateMachineLowerer<TSourceFile>.Assign(this.Field(this.builderField!), new BoundCall(null, this.BuilderMethod("Create", 0), [])),
+      StateMachineLowerer<TSourceFile>.Assign(new BoundLocal(sm), this.SelfThis()),
+      this.CallStmt(this.Builder(), start, [new BoundAddressOf(new BoundLocal(sm))]),
+      new BoundReturn(new BoundObjectCreation(ctorTask, valueTaskBool, [new BoundCall(this.Builder(), taskGetter, [])], []))
+    ]);
+    let vtCtorTask: MethodSymbol? = null;
+    for (const ctor of valueTask.InstanceConstructors)
+      if (ctor.Parameters.Length == 1 && ctor.Parameters[0].Type.SpecialType != SpecialType.Boolean && ctor.Parameters[0].Type.Name == "Task") {
+        vtCtorTask = ctor; break;
+      }
+    if (vtCtorTask == null) throw new InvalidOperationException("Sequence contains no matching element");
+    const asTask = this.FindMethod(valueTaskBool, "AsTask", 0);
+    const task = this.Wk("System.Threading.Tasks.Task");
+    this.program.Bodies[this.disposeAsync] = StateMachineLowerer<TSourceFile>.Block([
+      new BoundIf(new BoundBinary(BinaryOperatorKind.GreaterThanOrEqual, this.State(), this.IntLit(0), this.Bool, this.Int),
+        StateMachineLowerer<TSourceFile>.Block([
+          StateMachineLowerer<TSourceFile>.Assign(this.Field(this.DisposingField!), this.BoolLit(true)),
+          new BoundReturn(new BoundObjectCreation(vtCtorTask, valueTask, [
+            new BoundConversion(new BoundCall(new BoundCall(this.SelfThis(), this.CF2(this.moveNextAsync), []), asTask, []),
+              ConversionKind.ImplicitReference, task)
+          ], []))
+        ]), null),
+      StateMachineLowerer<TSourceFile>.Assign(this.State(), this.IntLit(-2)),
+      new BoundReturn(new BoundDefaultValue(valueTask))
+    ]);
+    if (this.isEnumerable) this.BuildGetEnumeratorBody();
+  }
+}

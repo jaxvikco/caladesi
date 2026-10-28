@@ -1,0 +1,77 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { ReferenceSet } from "Caladesi.Compiler.Symbols.Metadata";
+import { StateMachineLowerer, LoweredProgram } from "Caladesi.Compiler.Emit";
+import { SynthesizedNamedType, SynthesizedMethodSymbol } from "Caladesi.Compiler.Symbols.Source";
+import { SpecialType, TypeSymbol, TypeKind, Accessibility, MethodKind, ParameterSymbol, LocalSymbol } from "Caladesi.Compiler.Symbols";
+import { BoundBlock, BoundStatement, BoundYieldReturn, BoundYieldBreak, BoundLiteral } from "Caladesi.Compiler.Bound";
+import { ConstantValue } from "Caladesi.Compiler.Symbols";
+
+@TestClass
+export class StateMachineLowererTests {
+  @TestMethod
+  asyncTaskCreatesBuilderAndMoveNext(): void {
+    const references = ReferenceSet.Create([typeof(object).Assembly.Location]);
+    const objectType = references.GetSpecialType(SpecialType.Object)!;
+    const taskType = references.GetSpecialType(SpecialType.Task)!;
+    const container = new SynthesizedNamedType("Container", objectType, TypeKind.Class);
+    const method = new SynthesizedMethodSymbol(container, "run", MethodKind.Ordinary,
+      Accessibility.Public, true, taskType, ImmutableArray<ParameterSymbol>.Empty);
+    method.IsAsyncMethod = true;
+    const body = new BoundBlock(ImmutableArray<LocalSymbol>.Empty, ImmutableArray<BoundStatement>.Empty);
+    const program = new LoweredProgram<string>();
+    StateMachineLowerer<string>.Lower(
+      type => references.GetSpecialType(type)!,
+      name => references.FindType(name),
+      program, method, container, 0, body);
+    if (program.Types.Count != 1 || !program.Bodies.ContainsKey(method) ||
+        Object.ReferenceEquals(program.Bodies[method], body)) {
+      throw new Exception("Async method must generate a state machine and replace its method body");
+    }
+    let hasMoveNext = false;
+    let hasSetStateMachine = false;
+    for (const member of program.Types[0].GetMembers()) {
+      if (member.Name == "MoveNext") hasMoveNext = true;
+      if (member.Name == "SetStateMachine") hasSetStateMachine = true;
+    }
+    if (!hasMoveNext || !hasSetStateMachine || program.Bodies.Count < 3) {
+      throw new Exception("Async state-machine support methods");
+    }
+  }
+
+  @TestMethod
+  iteratorCreatesStateMachineAndStub(): void {
+    const references = ReferenceSet.Create([typeof(object).Assembly.Location]);
+    const objectType = references.GetSpecialType(SpecialType.Object)!;
+    const integer = references.GetSpecialType(SpecialType.Int32)!;
+    const enumerable = references.FindType("System.Collections.Generic.IEnumerable`1")!;
+    const arguments: TypeSymbol[] = [integer];
+    const returnType = enumerable.Construct(arguments);
+    const container = new SynthesizedNamedType("Container", objectType, TypeKind.Class);
+    const method = new SynthesizedMethodSymbol(container, "numbers", MethodKind.Ordinary,
+      Accessibility.Public, true, returnType, ImmutableArray<ParameterSymbol>.Empty);
+    method.IsIteratorMethod = true;
+    const statements = ImmutableArray.CreateBuilder<BoundStatement>();
+    statements.Add(new BoundYieldReturn(new BoundLiteral(new ConstantValue(1), integer)));
+    statements.Add(new BoundYieldBreak());
+    const body = new BoundBlock(ImmutableArray<LocalSymbol>.Empty, statements.ToImmutable());
+    const program = new LoweredProgram<string>();
+    StateMachineLowerer<string>.Lower(
+      type => references.GetSpecialType(type)!,
+      name => references.FindType(name),
+      program, method, container, 0, body);
+    if (program.Types.Count != 1 || !program.Bodies.ContainsKey(method) ||
+        Object.ReferenceEquals(program.Bodies[method], body)) {
+      throw new Exception("Iterator must generate a state machine and replace its method body");
+    }
+    let hasMoveNext = false;
+    let hasDispose = false;
+    for (const member of program.Types[0].GetMembers()) {
+      if (member.Name == "MoveNext") hasMoveNext = true;
+      if (member.Name == "Dispose") hasDispose = true;
+    }
+    if (!hasMoveNext || !hasDispose || program.Bodies.Count < 3) {
+      throw new Exception("Iterator state-machine support methods");
+    }
+  }
+}
