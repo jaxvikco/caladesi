@@ -1,0 +1,5 @@
+Running tests from /home/runner/work/caladesi/caladesi/tests/Caladesi.Compiler.SelfHost.Tests/bin/Debug/net10.0/Caladesi.Compiler.SelfHost.Tests.dll (net10.0|x64)
+/home/runner/work/caladesi/caladesi/tests/Caladesi.Compiler.SelfHost.Tests/bin/Debug/net10.0/Caladesi.Compiler.SelfHost.Tests.dll (net10.0|x64) passed (544ms)
+Running tests from /home/runner/work/caladesi/caladesi/tests/Caladesi.Compiler.Tests/bin/Debug/net10.0/Caladesi.Compiler.Tests.dll (net10.0|x64)
+/home/runner/work/caladesi/caladesi/tests/Caladesi.Compiler.Tests/bin/Debug/net10.0/Caladesi.Compiler.Tests.dll (net10.0|x64) passed (28s 567ms)
+Running tests from /home/runner/work/caladesi/caladesi/tests/Caladesi.E2E/bin/Debug/net10.0/Caladesi.E2E.dll (net10.0|x64)
