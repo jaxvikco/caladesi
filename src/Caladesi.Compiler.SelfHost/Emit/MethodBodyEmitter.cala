@@ -1,0 +1,1160 @@
+import { Dictionary, Stack } from "System.Collections.Generic";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { BigInteger } from "System.Numerics";
+import { CultureInfo } from "System.Globalization";
+import { ILOpCode } from "System.Reflection.Metadata";
+import { LabelHandle } from "System.Reflection.Metadata.Ecma335";
+import { MetadataEmitter } from "./MetadataEmitter";
+import { ILBuilder, LocalSlot } from "./ILBuilder";
+import { TypeSymbol, NullableTypeSymbol, TypeParameterSymbol, TypeKind } from "../Symbols/TypeSymbols";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { SpecialType, SpecialTypes } from "../Symbols/SpecialType";
+import { MethodSymbol, MethodKind, FieldSymbol, PropertySymbol, LocalSymbol, ParameterSymbol, LabelSymbol } from "../Symbols/MemberSymbols";
+import { SyntaxNode } from "../Syntax/SyntaxElement";
+import { SourceText } from "../Text/SourceText";
+import { BoundNode, BoundStatement, BoundBlock, BoundStatementList, BoundNoOp, BoundSequencePoint,
+  BoundExpressionStatement, BoundLocalDeclaration, BoundIf, BoundWhile, BoundDoWhile, BoundFor,
+  BoundGoto, BoundConditionalGoto, BoundLabel, BoundReturn, BoundThrow, BoundTry, BoundYieldReturn, BoundYieldBreak,
+  BoundExpression, BoundLiteral, BoundIsNull, BoundAddressOf, BoundLocal, BoundParameter, BoundThis, BoundBaseReference,
+  BoundFieldAccess, BoundPropertyAccess, BoundCall, BoundObjectCreation, BoundDefaultValue, BoundArrayCreation,
+  BoundArrayAccess, BoundConversion, ConversionKind, BoundUnary, UnaryOperatorKind, BoundBinary, BinaryOperatorKind,
+  BoundLogicalBinary, BoundAssignment, BoundConditional, BoundCoalesce, BoundConditionalAccess, BoundConditionalReceiver,
+  BoundTypeTest, TypeTestKind, BoundDelegateCreation, BoundSequence, BoundTypeOf, BoundThrowExpression,
+  BoundLambda, BoundAwait, BoundUnbound, BoundMethodGroup, BoundTypeExpression, BoundNamespaceExpression,
+  BoundBadExpression } from "../Bound/BoundNodes";
+
+class MethodBodyTryIds {
+  constructor(readonly Outer: int, readonly Body: int, readonly Catches: int[], readonly Finally: int) {}
+}
+
+class MethodBodyConditionalReceiver {
+  constructor(readonly Slot: LocalSlot, readonly ReceiverType: TypeSymbol, readonly IsNullableValue: bool) {}
+}
+
+export sealed class MethodBodyEmitter {
+  private readonly locals: Dictionary<LocalSymbol, LocalSlot> = new Dictionary<LocalSymbol, LocalSlot>();
+  private readonly paramIndex: Dictionary<ParameterSymbol, int> = new Dictionary<ParameterSymbol, int>();
+  private readonly labels: Dictionary<LabelSymbol, LabelHandle> = new Dictionary<LabelSymbol, LabelHandle>();
+  private readonly labelTry: Dictionary<LabelSymbol, int> = new Dictionary<LabelSymbol, int>();
+  private readonly tryParent: Dictionary<int, int> = new Dictionary<int, int>();
+  private readonly condReceivers: Dictionary<BoundConditionalReceiver, MethodBodyConditionalReceiver> = new Dictionary<BoundConditionalReceiver, MethodBodyConditionalReceiver>();
+  private readonly tryStack: Stack<int> = new Stack<int>();
+  private readonly tryIds: Dictionary<BoundTry, MethodBodyTryIds> = new Dictionary<BoundTry, MethodBodyTryIds>();
+  private nextTryId: int = 1;
+  private returnSlot: LocalSlot? = null;
+  private returnLabel: LabelHandle = new LabelHandle();
+  private returnLabelUsed: bool = false;
+  private readonly hasReturnValue: bool;
+  private readonly thisIsByRef: bool;
+
+  constructor(private readonly metadata: MetadataEmitter, private readonly method: MethodSymbol,
+    private readonly il: ILBuilder, private readonly getSpecialType: Func<SpecialType, NamedTypeSymbol>,
+    private readonly getWellKnownType: Func<string, NamedTypeSymbol?>, private readonly source: SourceText?) {
+    this.hasReturnValue = !method.ReturnType.ReturnsNothing && method.MethodKind != MethodKind.Constructor
+      && method.MethodKind != MethodKind.StaticConstructor;
+    this.thisIsByRef = method.ContainingType != null && method.ContainingType.IsValueType;
+    const offset = method.IsStatic ? 0 : 1;
+    for (const parameter of method.Parameters) this.paramIndex[parameter] = parameter.Ordinal + offset;
+  }
+
+  EmitBody(body: BoundBlock): void {
+    this.PreScanLabels(body, 0);
+    this.returnLabel = this.il.NewLabel();
+    this.EmitStatement(body);
+    if (this.hasReturnValue) this.EmitDefault(this.method.ReturnType);
+    this.il.Op(ILOpCode.Ret, this.hasReturnValue ? -1 : 0);
+    if (this.returnLabelUsed) {
+      this.il.Mark(this.returnLabel);
+      if (this.returnSlot != null) this.il.Ldloc(this.returnSlot.Index);
+      this.il.Op(ILOpCode.Ret, this.returnSlot != null ? -1 : 0);
+    }
+  }
+
+  private PreScanLabels(node: BoundNode, tryId: int): void {
+    if (node instanceof BoundLabel) { this.labelTry[(node as BoundLabel).Label] = tryId; return; }
+    if (node instanceof BoundBlock) {
+      for (const statement of (node as BoundBlock).Statements) this.PreScanLabels(statement, tryId);
+      return;
+    }
+    if (node instanceof BoundStatementList) {
+      for (const statement of (node as BoundStatementList).Statements) this.PreScanLabels(statement, tryId);
+      return;
+    }
+    if (node instanceof BoundIf) {
+      const branch = node as BoundIf;
+      this.PreScanLabels(branch.Consequence, tryId);
+      if (branch.Alternative != null) this.PreScanLabels(branch.Alternative, tryId);
+      return;
+    }
+    if (node instanceof BoundWhile) {
+      const loop = node as BoundWhile;
+      this.labelTry[loop.BreakLabel] = tryId; this.labelTry[loop.ContinueLabel] = tryId;
+      this.PreScanLabels(loop.Body, tryId); return;
+    }
+    if (node instanceof BoundDoWhile) {
+      const loop = node as BoundDoWhile;
+      this.labelTry[loop.BreakLabel] = tryId; this.labelTry[loop.ContinueLabel] = tryId;
+      this.PreScanLabels(loop.Body, tryId); return;
+    }
+    if (node instanceof BoundFor) {
+      const loop = node as BoundFor;
+      this.labelTry[loop.BreakLabel] = tryId; this.labelTry[loop.ContinueLabel] = tryId;
+      if (loop.Initializer != null) this.PreScanLabels(loop.Initializer, tryId);
+      if (loop.Increment != null) this.PreScanLabels(loop.Increment, tryId);
+      this.PreScanLabels(loop.Body, tryId); return;
+    }
+    if (node instanceof BoundTry) {
+      const region = node as BoundTry;
+      const outer = region.Finally != null ? this.nextTryId++ : 0;
+      const body = this.nextTryId++;
+      const catches: int[] = new int[region.Catches.Length];
+      for (let i = 0; i < catches.Length; i++) catches[i] = this.nextTryId++;
+      const ids = new MethodBodyTryIds(outer, body, catches, region.Finally != null ? this.nextTryId++ : 0);
+      this.tryIds[region] = ids;
+      const parent = ids.Outer != 0 ? ids.Outer : tryId;
+      if (ids.Outer != 0) this.tryParent[ids.Outer] = tryId;
+      this.tryParent[ids.Body] = parent;
+      for (const id of ids.Catches) this.tryParent[id] = parent;
+      if (ids.Finally != 0) this.tryParent[ids.Finally] = tryId;
+      this.PreScanLabels(region.Body, ids.Body);
+      for (let i = 0; i < region.Catches.Length; i++) this.PreScanLabels(region.Catches[i].Body, ids.Catches[i]);
+      if (region.Finally != null) this.PreScanLabels(region.Finally, ids.Finally);
+      return;
+    }
+    if (node instanceof BoundSequencePoint) this.PreScanLabels((node as BoundSequencePoint).Statement, tryId);
+  }
+
+  private GetLabel(label: LabelSymbol): LabelHandle {
+    const [found, handle] = this.labels.TryGetValue(label);
+    if (found) return handle;
+    const created = this.il.NewLabel();
+    this.labels[label] = created;
+    return created;
+  }
+  private get CurrentTry(): int { return this.tryStack.Count == 0 ? 0 : this.tryStack.Peek(); }
+  private GetLocal(local: LocalSymbol): LocalSlot {
+    const [found, slot] = this.locals.TryGetValue(local);
+    if (found) return slot;
+    const created = this.il.NewLocal(this.metadata.ClrType(local.Type), local.IsSynthesized ? null : local.Name);
+    this.locals[local] = created;
+    return created;
+  }
+  private TempLocal(type: TypeSymbol): LocalSlot { return this.il.NewLocal(this.metadata.ClrType(type)); }
+
+  private EmitStatement(statement: BoundStatement): void {
+    if (statement instanceof BoundBlock) {
+      const block = statement as BoundBlock;
+      for (const local of block.Locals) this.GetLocal(local);
+      for (const child of block.Statements) this.EmitStatement(child);
+      return;
+    }
+    if (statement instanceof BoundStatementList) {
+      for (const child of (statement as BoundStatementList).Statements) this.EmitStatement(child);
+      return;
+    }
+    if (statement instanceof BoundNoOp) return;
+    if (statement instanceof BoundSequencePoint) {
+      const point = statement as BoundSequencePoint;
+      this.MarkSequencePoint(point.SyntaxNodeForSpan); this.EmitStatement(point.Statement); return;
+    }
+    if (statement instanceof BoundExpressionStatement) {
+      this.MarkSequencePoint(statement.Syntax);
+      this.EmitExpression((statement as BoundExpressionStatement).Expression, false); return;
+    }
+    if (statement instanceof BoundLocalDeclaration) {
+      const declaration = statement as BoundLocalDeclaration;
+      this.MarkSequencePoint(declaration.Syntax);
+      if (declaration.Initializer != null) {
+        this.EmitExpression(declaration.Initializer, true); this.il.Stloc(this.GetLocal(declaration.Local).Index);
+      }
+      return;
+    }
+    if (statement instanceof BoundIf) { this.EmitIf(statement as BoundIf); return; }
+    if (statement instanceof BoundWhile) { this.EmitWhile(statement as BoundWhile); return; }
+    if (statement instanceof BoundDoWhile) { this.EmitDoWhile(statement as BoundDoWhile); return; }
+    if (statement instanceof BoundFor) { this.EmitFor(statement as BoundFor); return; }
+    if (statement instanceof BoundGoto) { this.EmitGoto((statement as BoundGoto).Label); return; }
+    if (statement instanceof BoundConditionalGoto) {
+      const branch = statement as BoundConditionalGoto;
+      if (this.RequiresLeave(branch.Label)) {
+        const skip = this.il.NewLabel();
+        this.EmitBranchIf(branch.Condition, skip, !branch.JumpIfTrue);
+        this.il.Branch(ILOpCode.Leave, this.GetLabel(branch.Label)); this.il.Mark(skip);
+      } else this.EmitBranchIf(branch.Condition, this.GetLabel(branch.Label), branch.JumpIfTrue);
+      return;
+    }
+    if (statement instanceof BoundLabel) { this.il.Mark(this.GetLabel((statement as BoundLabel).Label)); return; }
+    if (statement instanceof BoundReturn) { this.EmitReturn(statement as BoundReturn); return; }
+    if (statement instanceof BoundThrow) {
+      const thrown = statement as BoundThrow;
+      this.MarkSequencePoint(thrown.Syntax);
+      if (thrown.Expression == null) this.il.Op(ILOpCode.Rethrow, 0);
+      else { this.EmitExpression(thrown.Expression, true); this.il.Op(ILOpCode.Throw, -1); }
+      return;
+    }
+    if (statement instanceof BoundTry) { this.EmitTry(statement as BoundTry); return; }
+    if (statement instanceof BoundYieldReturn || statement instanceof BoundYieldBreak)
+      throw new InvalidOperationException("yield statements must be lowered before emit");
+    throw new InvalidOperationException("Unhandled statement " + statement.GetType().Name);
+  }
+
+  private MarkSequencePoint(node: SyntaxNode?): void {
+    if (node == null || this.source == null) return;
+    const span = node.Span;
+    if (span.Length == 0) return;
+    const position = this.source.GetLinePositionSpan(span);
+    this.il.MarkSequencePoint(position.Start.Line + 1, position.Start.Character + 1,
+      position.End.Line + 1, position.End.Character + 1);
+  }
+  private EmitGoto(label: LabelSymbol): void {
+    const target = this.GetLabel(label);
+    this.il.Branch(this.RequiresLeave(label) ? ILOpCode.Leave : ILOpCode.Br, target);
+  }
+  private RequiresLeave(label: LabelSymbol): bool {
+    const [found, value] = this.labelTry.TryGetValue(label);
+    const target = found ? value : 0;
+    const current = this.CurrentTry;
+    if (target == current) return false;
+    let region = target;
+    while (region != 0) {
+      if (region == current) return false;
+      const [hasParent, parent] = this.tryParent.TryGetValue(region);
+      region = hasParent ? parent : 0;
+    }
+    return current != 0;
+  }
+  private EmitReturn(statement: BoundReturn): void {
+    this.MarkSequencePoint(statement.Syntax);
+    if (statement.Expression != null) this.EmitExpression(statement.Expression, true);
+    if (this.tryStack.Count > 0) {
+      if (statement.Expression != null) {
+        if (this.returnSlot == null) this.returnSlot = this.TempLocal(this.method.ReturnType);
+        this.il.Stloc(this.returnSlot.Index);
+      }
+      this.returnLabelUsed = true;
+      this.il.Branch(ILOpCode.Leave, this.returnLabel);
+    } else this.il.Op(ILOpCode.Ret, statement.Expression != null ? -1 : 0);
+  }
+  private EmitIf(branch: BoundIf): void {
+    this.MarkSequencePoint(branch.Condition.Syntax);
+    const alternative = this.il.NewLabel();
+    this.EmitBranchIf(branch.Condition, alternative, false);
+    this.EmitStatement(branch.Consequence);
+    if (branch.Alternative != null) {
+      const end = this.il.NewLabel();
+      this.il.Branch(ILOpCode.Br, end); this.il.Mark(alternative);
+      this.EmitStatement(branch.Alternative!); this.il.Mark(end);
+    } else this.il.Mark(alternative);
+  }
+  private EmitWhile(loop: BoundWhile): void {
+    const body = this.il.NewLabel();
+    const cont = this.GetLabel(loop.ContinueLabel);
+    const end = this.GetLabel(loop.BreakLabel);
+    this.il.Branch(ILOpCode.Br, cont); this.il.Mark(body);
+    this.EmitStatement(loop.Body); this.il.Mark(cont);
+    this.MarkSequencePoint(loop.Condition.Syntax);
+    this.EmitBranchIf(loop.Condition, body, true); this.il.Mark(end);
+  }
+  private EmitDoWhile(loop: BoundDoWhile): void {
+    const body = this.il.NewLabel();
+    this.il.Mark(body); this.EmitStatement(loop.Body);
+    this.il.Mark(this.GetLabel(loop.ContinueLabel));
+    this.EmitBranchIf(loop.Condition, body, true);
+    this.il.Mark(this.GetLabel(loop.BreakLabel));
+  }
+  private EmitFor(loop: BoundFor): void {
+    for (const local of loop.Locals) this.GetLocal(local);
+    if (loop.Initializer != null) this.EmitStatement(loop.Initializer);
+    const body = this.il.NewLabel();
+    const cont = this.GetLabel(loop.ContinueLabel);
+    const condition = this.il.NewLabel();
+    this.il.Branch(ILOpCode.Br, condition); this.il.Mark(body);
+    this.EmitStatement(loop.Body); this.il.Mark(cont);
+    if (loop.Increment != null) this.EmitStatement(loop.Increment);
+    this.il.Mark(condition);
+    if (loop.Condition != null) this.EmitBranchIf(loop.Condition, body, true);
+    else this.il.Branch(ILOpCode.Br, body);
+    this.il.Mark(this.GetLabel(loop.BreakLabel));
+  }
+  private EmitTry(region: BoundTry): void {
+    const ids = this.tryIds[region];
+    const flow = this.il.ControlFlow;
+    const start = this.il.NewLabel();
+    const finish = this.il.NewLabel();
+    const end = this.il.NewLabel();
+    const hasFinally = region.Finally != null;
+    let outerStart = new LabelHandle();
+    let outerEnd = new LabelHandle();
+    if (hasFinally) {
+      outerStart = this.il.NewLabel(); outerEnd = this.il.NewLabel();
+      this.il.Mark(outerStart); this.tryStack.Push(ids.Outer);
+    }
+    this.il.Mark(start); this.tryStack.Push(ids.Body);
+    this.EmitStatement(region.Body); this.il.Branch(ILOpCode.Leave, end);
+    this.tryStack.Pop(); this.il.Mark(finish);
+    for (let i = 0; i < region.Catches.Length; i++) {
+      const handler = region.Catches[i];
+      const handlerStart = this.il.NewLabel();
+      const handlerEnd = this.il.NewLabel();
+      this.il.Mark(handlerStart); this.tryStack.Push(ids.Catches[i]); this.il.ResetDepth(1);
+      if (handler.Local != null) this.il.Stloc(this.GetLocal(handler.Local).Index);
+      else this.il.Op(ILOpCode.Pop, -1);
+      this.EmitStatement(handler.Body); this.il.Branch(ILOpCode.Leave, end);
+      this.tryStack.Pop(); this.il.Mark(handlerEnd);
+      flow.AddCatchRegion(start, finish, handlerStart, handlerEnd, this.metadata.GetTypeEntity(handler.ExceptionType));
+    }
+    if (hasFinally) {
+      this.il.Mark(end); this.il.Branch(ILOpCode.Leave, outerEnd); this.tryStack.Pop();
+      const protectedEnd = this.il.NewLabel();
+      const finallyStart = this.il.NewLabel();
+      const finallyEnd = this.il.NewLabel();
+      this.il.Mark(protectedEnd); this.il.Mark(finallyStart);
+      this.tryStack.Push(ids.Finally); this.il.ResetDepth(0);
+      this.EmitStatement(region.Finally!); this.il.Op(ILOpCode.Endfinally, 0);
+      this.tryStack.Pop(); this.il.Mark(finallyEnd);
+      flow.AddFinallyRegion(outerStart, protectedEnd, finallyStart, finallyEnd); this.il.Mark(outerEnd);
+    } else this.il.Mark(end);
+    this.il.ResetDepth(0);
+  }
+
+  EmitExpression(expression: BoundExpression, used: bool): void {
+    const constant = expression.ConstantValue;
+    if (constant != null && !(expression instanceof BoundAssignment) && !(expression instanceof BoundSequence)
+      && !(expression instanceof BoundCall) && expression.Type != null && !expression.Type.IsErrorType) {
+      if (used) this.EmitConstant(constant.Value, expression.Type);
+      return;
+    }
+    if (expression instanceof BoundLiteral) {
+      const literal = expression as BoundLiteral;
+      if (used) this.EmitConstant(literal.Value.Value, literal.Type!);
+      return;
+    }
+    if (expression instanceof BoundIsNull) {
+      const operand = (expression as BoundIsNull).Operand;
+      const type = this.metadata.ClrType(operand.Type!);
+      if (MetadataEmitter.IsNullableValue(operand.Type!)) {
+        this.EmitAddress(operand);
+        this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(this.FindMethod(type as NamedTypeSymbol, "get_HasValue")), 1, 1);
+        this.il.LdcI4(0); this.il.Op(ILOpCode.Ceq, -1);
+      } else if (MetadataEmitter.IsValueTypeLike(type)) {
+        this.EmitExpression(operand, false); this.il.LdcI4(0);
+      } else {
+        this.EmitExpression(operand, true);
+        if (type instanceof TypeParameterSymbol) this.il.Token(ILOpCode.Box, this.metadata.GetTypeEntity(type), 0);
+        this.il.Op(ILOpCode.Ldnull, 1); this.il.Op(ILOpCode.Ceq, -1);
+      }
+      this.Discard(used); return;
+    }
+    if (expression instanceof BoundAddressOf) { this.EmitAddress((expression as BoundAddressOf).Operand); this.Discard(used); return; }
+    if (expression instanceof BoundLocal) { if (used) this.il.Ldloc(this.GetLocal((expression as BoundLocal).Local).Index); return; }
+    if (expression instanceof BoundParameter) { if (used) this.il.Ldarg(this.paramIndex[(expression as BoundParameter).Parameter]); return; }
+    if (expression instanceof BoundThis) {
+      if (used) { this.il.Ldarg(0); if (this.thisIsByRef) this.EmitLdobj(this.method.ContainingType!); }
+      return;
+    }
+    if (expression instanceof BoundBaseReference) { if (used) this.il.Ldarg(0); return; }
+    if (expression instanceof BoundFieldAccess) { this.EmitFieldLoad(expression as BoundFieldAccess, used); return; }
+    if (expression instanceof BoundPropertyAccess) { this.EmitPropertyGet(expression as BoundPropertyAccess, used); return; }
+    if (expression instanceof BoundCall) {
+      const call = expression as BoundCall;
+      this.EmitCallCore(call.Method, call.Receiver, call.Arguments, call.IsBaseCall, used); return;
+    }
+    if (expression instanceof BoundObjectCreation) { this.EmitObjectCreation(expression as BoundObjectCreation, used); return; }
+    if (expression instanceof BoundDefaultValue) { if (used) this.EmitDefault(expression.Type!); return; }
+    if (expression instanceof BoundArrayCreation) { this.EmitArrayCreation(expression as BoundArrayCreation, used); return; }
+    if (expression instanceof BoundArrayAccess) {
+      const access = expression as BoundArrayAccess;
+      this.EmitExpression(access.Array, true); this.EmitExpression(access.Index, true);
+      this.EmitLdelem(access.Type!); this.Discard(used); return;
+    }
+    if (expression instanceof BoundConversion) { this.EmitConversion(expression as BoundConversion, used); return; }
+    if (expression instanceof BoundUnary) { this.EmitUnary(expression as BoundUnary, used); return; }
+    if (expression instanceof BoundBinary) { this.EmitBinary(expression as BoundBinary, used); return; }
+    if (expression instanceof BoundLogicalBinary) { this.EmitLogical(expression as BoundLogicalBinary, used); return; }
+    if (expression instanceof BoundAssignment) { this.EmitAssignment(expression as BoundAssignment, used); return; }
+    if (expression instanceof BoundConditional) { this.EmitConditional(expression as BoundConditional, used); return; }
+    if (expression instanceof BoundCoalesce) { this.EmitCoalesce(expression as BoundCoalesce, used); return; }
+    if (expression instanceof BoundConditionalAccess) { this.EmitConditionalAccess(expression as BoundConditionalAccess, used); return; }
+    if (expression instanceof BoundConditionalReceiver) { this.EmitConditionalReceiver(expression as BoundConditionalReceiver, used); return; }
+    if (expression instanceof BoundTypeTest) { this.EmitTypeTest(expression as BoundTypeTest, used); return; }
+    if (expression instanceof BoundDelegateCreation) { this.EmitDelegateCreation(expression as BoundDelegateCreation, used); return; }
+    if (expression instanceof BoundSequence) {
+      const sequence = expression as BoundSequence;
+      for (const local of sequence.Locals) this.GetLocal(local);
+      for (const statement of sequence.SideEffects) this.EmitStatement(statement);
+      this.EmitExpression(sequence.Value, used); return;
+    }
+    if (expression instanceof BoundTypeOf) {
+      const typeOf = expression as BoundTypeOf;
+      this.il.Token(ILOpCode.Ldtoken, this.metadata.GetTypeEntity(typeOf.Operand), 1);
+      this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(this.FindMethod(typeOf.Type! as NamedTypeSymbol, "GetTypeFromHandle")), 1, 1);
+      this.Discard(used); return;
+    }
+    if (expression instanceof BoundThrowExpression) {
+      this.EmitExpression((expression as BoundThrowExpression).Operand, true); this.il.Op(ILOpCode.Throw, -1); return;
+    }
+    if (expression instanceof BoundLambda || expression instanceof BoundAwait || expression instanceof BoundUnbound
+      || expression instanceof BoundMethodGroup || expression instanceof BoundTypeExpression
+      || expression instanceof BoundNamespaceExpression || expression instanceof BoundBadExpression)
+      throw new InvalidOperationException("Expression must be lowered before emit: " + expression.GetType().Name);
+    throw new InvalidOperationException("Unhandled expression " + expression.GetType().Name);
+  }
+
+  private Discard(used: bool): void { if (!used) this.il.Op(ILOpCode.Pop, -1); }
+  private FindMethod(type: NamedTypeSymbol, name: string): MethodSymbol {
+    for (const member of type.GetMembers(name)) if (member instanceof MethodSymbol) return member as MethodSymbol;
+    throw new InvalidOperationException("Sequence contains no elements");
+  }
+  private FindMethodWithArity(type: NamedTypeSymbol, name: string, count: int): MethodSymbol {
+    for (const member of type.GetMembers(name))
+      if (member instanceof MethodSymbol && (member as MethodSymbol).Parameters.Length == count) return member as MethodSymbol;
+    throw new InvalidOperationException("Sequence contains no matching element");
+  }
+  private FindConstructor(type: NamedTypeSymbol, count: int): MethodSymbol {
+    for (const ctor of type.InstanceConstructors) if (ctor.Parameters.Length == count) return ctor;
+    throw new InvalidOperationException("Sequence contains no matching element");
+  }
+  private FindCaseConstructor(type: NamedTypeSymbol, caseType: TypeSymbol): MethodSymbol {
+    for (const ctor of type.InstanceConstructors)
+      if (ctor.Parameters.Length == 1 && ctor.Parameters[0].Type.Equals(caseType)) return ctor;
+    throw new InvalidOperationException("Sequence contains no matching element");
+  }
+  private FindField(type: NamedTypeSymbol, name: string): FieldSymbol {
+    for (const member of type.GetMembers(name)) if (member instanceof FieldSymbol) return member as FieldSymbol;
+    throw new InvalidOperationException("Sequence contains no elements");
+  }
+
+  private EmitConstant(value: object?, type: TypeSymbol): void {
+    let target = type;
+    if (target instanceof NullableTypeSymbol && value != null) target = (target as NullableTypeSymbol).Underlying;
+    if (target.TypeKind == TypeKind.Enum) target = (target as NamedTypeSymbol).EnumUnderlyingType!;
+    if (value == null) { this.EmitDefault(type); return; }
+    switch (target.SpecialType) {
+      case SpecialType.Boolean: this.il.LdcI4((value as bool) ? 1 : 0); return;
+      case SpecialType.Char: this.il.LdcI4(value instanceof char ? (value as char) as int : Convert.ToInt32(value)); return;
+      case SpecialType.SByte:
+      case SpecialType.Byte:
+      case SpecialType.Int16:
+      case SpecialType.UInt16:
+      case SpecialType.Int32:
+        this.il.LdcI4(Convert.ToInt32(value instanceof char ? ((value as char) as int) as object : value)); return;
+      case SpecialType.UInt32: this.il.LdcI4(Convert.ToUInt32(value) as int); return;
+      case SpecialType.Int64: this.il.LdcI8(Convert.ToInt64(value)); return;
+      case SpecialType.UInt64: this.il.LdcI8(Convert.ToUInt64(value) as long); return;
+      case SpecialType.Single: this.il.LdcR4(Convert.ToSingle(value)); return;
+      case SpecialType.Double: this.il.LdcR8(Convert.ToDouble(value)); return;
+      case SpecialType.IntPtr: this.il.LdcI4(Convert.ToInt32(value)); this.il.Op(ILOpCode.Conv_i, 0); return;
+      case SpecialType.UIntPtr: this.il.LdcI4(Convert.ToUInt32(value) as int); this.il.Op(ILOpCode.Conv_u, 0); return;
+      case SpecialType.String: this.il.LdStr(this.metadata.Metadata.GetOrAddUserString(value as string)); return;
+      case SpecialType.Decimal: {
+        const bits = Decimal.GetBits(Convert.ToDecimal(value));
+        const ctor = this.FindConstructor(this.getSpecialType(SpecialType.Decimal), 5);
+        this.il.LdcI4(bits[0]); this.il.LdcI4(bits[1]); this.il.LdcI4(bits[2]);
+        this.il.LdcI4((bits[3] & (-2147483647 - 1)) != 0 ? 1 : 0);
+        this.il.LdcI4((bits[3] >> 16) & 255);
+        this.il.Call(ILOpCode.Newobj, this.metadata.GetMethodEntity(ctor), 5, 1); return;
+      }
+      case SpecialType.BigInteger: {
+        let parse: MethodSymbol? = null;
+        for (const member of this.getSpecialType(SpecialType.BigInteger).GetMembers("Parse")) {
+          if (member instanceof MethodSymbol) {
+            const candidate = member as MethodSymbol;
+            if (candidate.IsStatic && candidate.Parameters.Length == 1 && candidate.Parameters[0].Type.SpecialType == SpecialType.String) {
+              parse = candidate; break;
+            }
+          }
+        }
+        if (parse == null) throw new InvalidOperationException("Sequence contains no matching element");
+        this.il.LdStr(this.metadata.Metadata.GetOrAddUserString((value as BigInteger).ToString(CultureInfo.InvariantCulture)));
+        this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(parse), 1, 1); return;
+      }
+      case SpecialType.Object:
+        if (value instanceof string) { this.il.LdStr(this.metadata.Metadata.GetOrAddUserString(value as string)); return; }
+        break;
+    }
+    throw new InvalidOperationException("Cannot emit constant " + value + " of type " + type.ToDisplayString());
+  }
+
+  EmitDefault(type: TypeSymbol): void {
+    const target = this.metadata.ClrType(type);
+    if (target.IsNullType || (!MetadataEmitter.IsValueTypeLike(target) && !(target instanceof TypeParameterSymbol))) {
+      this.il.Op(ILOpCode.Ldnull, 1); return;
+    }
+    switch (target.SpecialType) {
+      case SpecialType.Boolean:
+      case SpecialType.Char:
+      case SpecialType.SByte:
+      case SpecialType.Byte:
+      case SpecialType.Int16:
+      case SpecialType.UInt16:
+      case SpecialType.Int32:
+      case SpecialType.UInt32: this.il.LdcI4(0); return;
+      case SpecialType.Int64:
+      case SpecialType.UInt64: this.il.LdcI8(0); return;
+      case SpecialType.Single: this.il.LdcR4(0); return;
+      case SpecialType.Double: this.il.LdcR8(0); return;
+    }
+    const temp = this.TempLocal(target);
+    this.il.Ldloca(temp.Index); this.il.Token(ILOpCode.Initobj, this.metadata.GetTypeEntity(target), -1); this.il.Ldloc(temp.Index);
+  }
+  private EmitLdobj(type: TypeSymbol): void { this.il.Token(ILOpCode.Ldobj, this.metadata.GetTypeEntity(type), 0); }
+  private EmitAddress(expression: BoundExpression): void {
+    if (expression instanceof BoundLocal) { this.il.Ldloca(this.GetLocal((expression as BoundLocal).Local).Index); return; }
+    if (expression instanceof BoundParameter) { this.il.Ldarga(this.paramIndex[(expression as BoundParameter).Parameter]); return; }
+    if (expression instanceof BoundThis && this.thisIsByRef) { this.il.Ldarg(0); return; }
+    if (expression instanceof BoundFieldAccess && !(expression as BoundFieldAccess).Field.IsConst) {
+      const access = expression as BoundFieldAccess;
+      if (access.Field.IsStatic) this.il.Token(ILOpCode.Ldsflda, this.metadata.GetFieldEntity(access.Field), 1);
+      else {
+        this.EmitFieldReceiver(access.Receiver!); this.il.Token(ILOpCode.Ldflda, this.metadata.GetFieldEntity(access.Field), 0);
+      }
+      return;
+    }
+    if (expression instanceof BoundArrayAccess) {
+      const access = expression as BoundArrayAccess;
+      this.EmitExpression(access.Array, true); this.EmitExpression(access.Index, true);
+      this.il.Token(ILOpCode.Ldelema, this.metadata.GetTypeEntity(access.Type!), -1); return;
+    }
+    this.EmitExpression(expression, true);
+    const temp = this.TempLocal(expression.Type!);
+    this.il.Stloc(temp.Index); this.il.Ldloca(temp.Index);
+  }
+  private EmitFieldReceiver(receiver: BoundExpression): void {
+    const type = receiver.Type!;
+    if (MetadataEmitter.IsValueTypeLike(this.metadata.ClrType(type)) || type instanceof TypeParameterSymbol) this.EmitAddress(receiver);
+    else this.EmitExpression(receiver, true);
+  }
+  private EmitCallReceiver(receiver: BoundExpression, method: MethodSymbol, isBase: bool): TypeSymbol? {
+    if (isBase) { this.EmitExpression(receiver, true); return null; }
+    const type = this.metadata.ClrType(receiver.Type!);
+    if (MetadataEmitter.IsValueTypeLike(type) || type instanceof TypeParameterSymbol) {
+      this.EmitAddress(receiver);
+      const declaring = method.ContainingType;
+      const definition = type instanceof NamedTypeSymbol ? (type as NamedTypeSymbol).OriginalDefinition : null;
+      return type instanceof TypeParameterSymbol || declaring == null || !Object.ReferenceEquals(declaring.OriginalDefinition, definition) ? type : null;
+    }
+    this.EmitExpression(receiver, true); return null;
+  }
+  private EmitFieldLoad(access: BoundFieldAccess, used: bool): void {
+    if (access.Field.IsStatic) {
+      if (used) this.il.Token(ILOpCode.Ldsfld, this.metadata.GetFieldEntity(access.Field), 1);
+      return;
+    }
+    this.EmitFieldReceiver(access.Receiver!);
+    this.il.Token(ILOpCode.Ldfld, this.metadata.GetFieldEntity(access.Field), 0); this.Discard(used);
+  }
+  private EmitArguments(arguments: ImmutableArray<BoundExpression>): void {
+    for (const argument of arguments) this.EmitExpression(argument, true);
+  }
+  private EmitCallCore(method: MethodSymbol, receiver: BoundExpression?, arguments: ImmutableArray<BoundExpression>, isBase: bool, used: bool): void {
+    let constrained: TypeSymbol? = null;
+    const instance = !method.IsStatic;
+    if (instance && receiver != null) constrained = this.EmitCallReceiver(receiver, method, isBase);
+    else if (instance) this.il.Ldarg(0);
+    this.EmitArguments(arguments);
+    let op: ILOpCode;
+    if (!instance || method.MethodKind == MethodKind.Constructor || isBase) op = ILOpCode.Call;
+    else if (constrained != null) op = ILOpCode.Callvirt;
+    else {
+      const receiverType = receiver != null ? this.metadata.ClrType(receiver.Type!) : null;
+      op = receiverType != null && MetadataEmitter.IsValueTypeLike(receiverType) ? ILOpCode.Call : ILOpCode.Callvirt;
+    }
+    if (constrained != null) {
+      this.il.Encoder.OpCode(ILOpCode.Constrained); this.il.Encoder.Token(this.metadata.GetTypeEntity(constrained));
+    }
+    const pops = arguments.Length + (instance ? 1 : 0);
+    const result = method.ReturnType;
+    const pushes = result.ReturnsNothing ? 0 : 1;
+    this.il.Call(op, this.metadata.GetMethodEntity(method), pops, pushes);
+    if (result.IsNeverType) { this.il.Op(ILOpCode.Ldnull, 1); this.il.Op(ILOpCode.Throw, -1); }
+    if (method.ReturnsByRef && pushes == 1) this.il.Token(ILOpCode.Ldobj, this.metadata.GetTypeEntity(result), 0);
+    if (!used && pushes == 1) this.il.Op(ILOpCode.Pop, -1);
+  }
+  private EmitPropertyGet(access: BoundPropertyAccess, used: bool): void {
+    const getter = access.Property.GetMethod;
+    if (getter == null) throw new InvalidOperationException("property without getter: " + access.Property.Name);
+    this.EmitCallCore(getter, access.Receiver, access.Arguments, access.IsBaseAccess, used);
+  }
+  private EmitObjectCreation(creation: BoundObjectCreation, used: bool): void {
+    const type = this.metadata.ClrType(creation.Type!);
+    if (creation.Type instanceof TypeParameterSymbol) {
+      let activator: MethodSymbol? = null;
+      for (const member of this.getWellKnownType("System.Activator")!.GetMembers("CreateInstance")) {
+        if (member instanceof MethodSymbol) {
+          const candidate = member as MethodSymbol;
+          if (candidate.Arity == 1 && candidate.Parameters.Length == 0) { activator = candidate; break; }
+        }
+      }
+      if (activator == null) throw new InvalidOperationException("Sequence contains no matching element");
+      this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(activator.Construct(ImmutableArray.Create<TypeSymbol>(creation.Type!))), 0, 1);
+      this.Discard(used); return;
+    }
+    const isValue = MetadataEmitter.IsValueTypeLike(type);
+    if (creation.Constructor == null) {
+      const temp = this.TempLocal(type);
+      this.il.Ldloca(temp.Index); this.il.Token(ILOpCode.Initobj, this.metadata.GetTypeEntity(type), -1);
+      if (!creation.Initializers.IsDefaultOrEmpty) this.EmitInitializers(creation, temp, true);
+      if (used) this.il.Ldloc(temp.Index);
+      return;
+    }
+    this.EmitArguments(creation.Arguments);
+    this.il.Call(ILOpCode.Newobj, this.metadata.GetMethodEntity(creation.Constructor!), creation.Arguments.Length, 1);
+    if (creation.Initializers.IsDefaultOrEmpty) { this.Discard(used); return; }
+    const temp = this.TempLocal(type);
+    this.il.Stloc(temp.Index); this.EmitInitializers(creation, temp, isValue);
+    if (used) this.il.Ldloc(temp.Index);
+  }
+  private EmitInitializers(creation: BoundObjectCreation, temp: LocalSlot, isValue: bool): void {
+    for (const initializer of creation.Initializers) {
+      if (isValue) this.il.Ldloca(temp.Index); else this.il.Ldloc(temp.Index);
+      if (initializer.Member instanceof PropertySymbol) {
+        const property = initializer.Member as PropertySymbol;
+        this.EmitExpression(initializer.Value, true);
+        this.il.Call(isValue ? ILOpCode.Call : ILOpCode.Callvirt, this.metadata.GetMethodEntity(property.SetMethod!), 2, 0);
+      } else if (initializer.Member instanceof FieldSymbol) {
+        this.EmitExpression(initializer.Value, true);
+        this.il.Token(ILOpCode.Stfld, this.metadata.GetFieldEntity(initializer.Member as FieldSymbol), -2);
+      }
+    }
+  }
+  private EmitArrayCreation(creation: BoundArrayCreation, used: bool): void {
+    const element = creation.Type.ElementType;
+    if (creation.Length != null) this.EmitExpression(creation.Length, true); else this.il.LdcI4(creation.Initializers.Length);
+    this.il.Token(ILOpCode.Newarr, this.metadata.GetTypeEntity(element), 0);
+    if (!creation.Initializers.IsDefaultOrEmpty) {
+      for (let i = 0; i < creation.Initializers.Length; i++) {
+        this.il.Op(ILOpCode.Dup, 1); this.il.LdcI4(i); this.EmitExpression(creation.Initializers[i], true); this.EmitStelem(element);
+      }
+    }
+    this.Discard(used);
+  }
+  private EmitLdelem(element: TypeSymbol): void {
+    const type = this.metadata.ClrType(element);
+    let op = ILOpCode.Nop;
+    switch (type.SpecialType) {
+      case SpecialType.SByte: op = ILOpCode.Ldelem_i1; break;
+      case SpecialType.Byte:
+      case SpecialType.Boolean: op = ILOpCode.Ldelem_u1; break;
+      case SpecialType.Int16: op = ILOpCode.Ldelem_i2; break;
+      case SpecialType.UInt16:
+      case SpecialType.Char: op = ILOpCode.Ldelem_u2; break;
+      case SpecialType.Int32: op = ILOpCode.Ldelem_i4; break;
+      case SpecialType.UInt32: op = ILOpCode.Ldelem_u4; break;
+      case SpecialType.Int64:
+      case SpecialType.UInt64: op = ILOpCode.Ldelem_i8; break;
+      case SpecialType.Single: op = ILOpCode.Ldelem_r4; break;
+      case SpecialType.Double: op = ILOpCode.Ldelem_r8; break;
+      case SpecialType.IntPtr:
+      case SpecialType.UIntPtr: op = ILOpCode.Ldelem_i; break;
+    }
+    if (op != ILOpCode.Nop && type.TypeKind != TypeKind.Enum) { this.il.Op(op, -1); return; }
+    if (!MetadataEmitter.IsValueTypeLike(type) && !(type instanceof TypeParameterSymbol)) { this.il.Op(ILOpCode.Ldelem_ref, -1); return; }
+    this.il.Token(ILOpCode.Ldelem, this.metadata.GetTypeEntity(type), -1);
+  }
+  private EmitStelem(element: TypeSymbol): void {
+    const type = this.metadata.ClrType(element);
+    let op = ILOpCode.Nop;
+    switch (type.SpecialType) {
+      case SpecialType.SByte:
+      case SpecialType.Byte:
+      case SpecialType.Boolean: op = ILOpCode.Stelem_i1; break;
+      case SpecialType.Int16:
+      case SpecialType.UInt16:
+      case SpecialType.Char: op = ILOpCode.Stelem_i2; break;
+      case SpecialType.Int32:
+      case SpecialType.UInt32: op = ILOpCode.Stelem_i4; break;
+      case SpecialType.Int64:
+      case SpecialType.UInt64: op = ILOpCode.Stelem_i8; break;
+      case SpecialType.Single: op = ILOpCode.Stelem_r4; break;
+      case SpecialType.Double: op = ILOpCode.Stelem_r8; break;
+      case SpecialType.IntPtr:
+      case SpecialType.UIntPtr: op = ILOpCode.Stelem_i; break;
+    }
+    if (op != ILOpCode.Nop && type.TypeKind != TypeKind.Enum) { this.il.Op(op, -3); return; }
+    if (!MetadataEmitter.IsValueTypeLike(type) && !(type instanceof TypeParameterSymbol)) { this.il.Op(ILOpCode.Stelem_ref, -3); return; }
+    this.il.Token(ILOpCode.Stelem, this.metadata.GetTypeEntity(type), -3);
+  }
+  private PreserveAssignment(value: BoundExpression, used: bool): LocalSlot? {
+    if (!used) return null;
+    this.il.Op(ILOpCode.Dup, 1);
+    const temp = this.TempLocal(value.Type!);
+    this.il.Stloc(temp.Index); return temp;
+  }
+  private EmitAssignment(assignment: BoundAssignment, used: bool): void {
+    used = used && !assignment.IsDiscarded;
+    const target = assignment.Target;
+    if (target instanceof BoundLocal) {
+      this.EmitExpression(assignment.Value, true); if (used) this.il.Op(ILOpCode.Dup, 1);
+      this.il.Stloc(this.GetLocal((target as BoundLocal).Local).Index); return;
+    }
+    if (target instanceof BoundParameter) {
+      this.EmitExpression(assignment.Value, true); if (used) this.il.Op(ILOpCode.Dup, 1);
+      this.il.Starg(this.paramIndex[(target as BoundParameter).Parameter]); return;
+    }
+    if (target instanceof BoundFieldAccess) {
+      const access = target as BoundFieldAccess;
+      if (access.Field.IsStatic) {
+        this.EmitExpression(assignment.Value, true); if (used) this.il.Op(ILOpCode.Dup, 1);
+        this.il.Token(ILOpCode.Stsfld, this.metadata.GetFieldEntity(access.Field), -1); return;
+      }
+      this.EmitFieldReceiver(access.Receiver!); this.EmitExpression(assignment.Value, true);
+      const temp = this.PreserveAssignment(assignment.Value, used);
+      this.il.Token(ILOpCode.Stfld, this.metadata.GetFieldEntity(access.Field), -2);
+      if (temp != null) this.il.Ldloc(temp.Index);
+      return;
+    }
+    if (target instanceof BoundPropertyAccess) {
+      const access = target as BoundPropertyAccess;
+      const setter = access.Property.SetMethod;
+      if (setter == null) throw new InvalidOperationException("property without setter: " + access.Property.Name);
+      let constrained: TypeSymbol? = null;
+      if (!setter.IsStatic && access.Receiver != null) constrained = this.EmitCallReceiver(access.Receiver, setter, access.IsBaseAccess);
+      this.EmitArguments(access.Arguments); this.EmitExpression(assignment.Value, true);
+      const temp = this.PreserveAssignment(assignment.Value, used);
+      if (constrained != null) { this.il.Encoder.OpCode(ILOpCode.Constrained); this.il.Encoder.Token(this.metadata.GetTypeEntity(constrained)); }
+      const op = setter.IsStatic || access.IsBaseAccess ? ILOpCode.Call
+        : constrained != null ? ILOpCode.Callvirt
+        : access.Receiver != null && MetadataEmitter.IsValueTypeLike(this.metadata.ClrType(access.Receiver.Type!)) ? ILOpCode.Call : ILOpCode.Callvirt;
+      this.il.Call(op, this.metadata.GetMethodEntity(setter), access.Arguments.Length + 1 + (setter.IsStatic ? 0 : 1), 0);
+      if (temp != null) this.il.Ldloc(temp.Index);
+      return;
+    }
+    if (target instanceof BoundArrayAccess) {
+      const access = target as BoundArrayAccess;
+      this.EmitExpression(access.Array, true); this.EmitExpression(access.Index, true); this.EmitExpression(assignment.Value, true);
+      const temp = this.PreserveAssignment(assignment.Value, used);
+      this.EmitStelem(access.Type!);
+      if (temp != null) this.il.Ldloc(temp.Index);
+      return;
+    }
+    throw new InvalidOperationException("Unsupported assignment target " + target.GetType().Name);
+  }
+  private EmitUnary(unary: BoundUnary, used: bool): void {
+    this.EmitExpression(unary.Operand, true);
+    switch (unary.Kind) {
+      case UnaryOperatorKind.Minus: this.il.Op(ILOpCode.Neg, 0); break;
+      case UnaryOperatorKind.BitwiseNot: this.il.Op(ILOpCode.Not, 0); break;
+      case UnaryOperatorKind.Not: this.il.LdcI4(0); this.il.Op(ILOpCode.Ceq, -1); break;
+      case UnaryOperatorKind.Plus: break;
+    }
+    this.Discard(used);
+  }
+  private static IsUnsignedType(type: TypeSymbol): bool {
+    const kind = type.SpecialType;
+    return kind == SpecialType.UInt32 || kind == SpecialType.UInt64 || kind == SpecialType.UIntPtr
+      || kind == SpecialType.Byte || kind == SpecialType.UInt16 || kind == SpecialType.Char;
+  }
+  private static IsFloatType(type: TypeSymbol): bool { return type.SpecialType == SpecialType.Single || type.SpecialType == SpecialType.Double; }
+  private static IsNullLiteral(expression: BoundExpression): bool {
+    return expression instanceof BoundLiteral && (expression as BoundLiteral).Value.IsNull;
+  }
+  private EmitBinary(binary: BoundBinary, used: bool): void {
+    if ((binary.Kind == BinaryOperatorKind.Equal || binary.Kind == BinaryOperatorKind.NotEqual)
+      && (MethodBodyEmitter.IsNullLiteral(binary.Right) || MethodBodyEmitter.IsNullLiteral(binary.Left))) {
+      this.EmitNullCheck(MethodBodyEmitter.IsNullLiteral(binary.Right) ? binary.Left : binary.Right);
+      if (binary.Kind == BinaryOperatorKind.NotEqual) { this.il.LdcI4(0); this.il.Op(ILOpCode.Ceq, -1); }
+      this.Discard(used); return;
+    }
+    this.EmitExpression(binary.Left, true); this.EmitExpression(binary.Right, true);
+    const type = binary.OperandType;
+    const unsigned = MethodBodyEmitter.IsUnsignedType(type);
+    const floating = MethodBodyEmitter.IsFloatType(type);
+    switch (binary.Kind) {
+      case BinaryOperatorKind.Add: this.il.Op(ILOpCode.Add, -1); break;
+      case BinaryOperatorKind.Subtract: this.il.Op(ILOpCode.Sub, -1); break;
+      case BinaryOperatorKind.Multiply: this.il.Op(ILOpCode.Mul, -1); break;
+      case BinaryOperatorKind.Divide: this.il.Op(unsigned ? ILOpCode.Div_un : ILOpCode.Div, -1); break;
+      case BinaryOperatorKind.Remainder: this.il.Op(unsigned ? ILOpCode.Rem_un : ILOpCode.Rem, -1); break;
+      case BinaryOperatorKind.And: this.il.Op(ILOpCode.And, -1); break;
+      case BinaryOperatorKind.Or: this.il.Op(ILOpCode.Or, -1); break;
+      case BinaryOperatorKind.Xor: this.il.Op(ILOpCode.Xor, -1); break;
+      case BinaryOperatorKind.ShiftLeft:
+      case BinaryOperatorKind.ShiftRight:
+      case BinaryOperatorKind.UnsignedShiftRight: {
+        const mask = type.SpecialType == SpecialType.Int64 || type.SpecialType == SpecialType.UInt64 ? 63 : 31;
+        const count = binary.Right.ConstantValue;
+        if (count == null) { this.il.LdcI4(mask); this.il.Op(ILOpCode.And, -1); }
+        else { this.il.Op(ILOpCode.Pop, -1); this.il.LdcI4(Convert.ToInt32(count.Value) & mask); }
+        const op = binary.Kind == BinaryOperatorKind.ShiftLeft ? ILOpCode.Shl
+          : binary.Kind == BinaryOperatorKind.UnsignedShiftRight ? ILOpCode.Shr_un : unsigned ? ILOpCode.Shr_un : ILOpCode.Shr;
+        this.il.Op(op, -1); break;
+      }
+      case BinaryOperatorKind.Equal: this.il.Op(ILOpCode.Ceq, -1); break;
+      case BinaryOperatorKind.NotEqual: this.il.Op(ILOpCode.Ceq, -1); this.il.LdcI4(0); this.il.Op(ILOpCode.Ceq, -1); break;
+      case BinaryOperatorKind.LessThan: this.il.Op(unsigned ? ILOpCode.Clt_un : ILOpCode.Clt, -1); break;
+      case BinaryOperatorKind.GreaterThan: this.il.Op(unsigned ? ILOpCode.Cgt_un : ILOpCode.Cgt, -1); break;
+      case BinaryOperatorKind.LessThanOrEqual: this.il.Op(unsigned || floating ? ILOpCode.Cgt_un : ILOpCode.Cgt, -1); this.il.LdcI4(0); this.il.Op(ILOpCode.Ceq, -1); break;
+      case BinaryOperatorKind.GreaterThanOrEqual: this.il.Op(unsigned || floating ? ILOpCode.Clt_un : ILOpCode.Clt, -1); this.il.LdcI4(0); this.il.Op(ILOpCode.Ceq, -1); break;
+      default: throw new InvalidOperationException("Unhandled binary operator " + binary.Kind);
+    }
+    this.Discard(used);
+  }
+  private EmitNullCheck(subject: BoundExpression): void {
+    const type = subject.Type!;
+    if (MetadataEmitter.IsNullableValue(type)) {
+      this.EmitAddress(subject);
+      this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(this.FindMethod(this.metadata.ClrType(type) as NamedTypeSymbol, "get_HasValue")), 1, 1);
+      this.il.LdcI4(0); this.il.Op(ILOpCode.Ceq, -1); return;
+    }
+    this.EmitExpression(subject, true);
+    if (MetadataEmitter.IsValueTypeLike(this.metadata.ClrType(type)) || type.StripNullable() instanceof TypeParameterSymbol)
+      this.il.Token(ILOpCode.Box, this.metadata.GetTypeEntity(type.StripNullable()), 0);
+    this.il.Op(ILOpCode.Ldnull, 1); this.il.Op(ILOpCode.Ceq, -1);
+  }
+  private EmitLogical(binary: BoundLogicalBinary, used: bool): void {
+    const end = this.il.NewLabel();
+    const shortCircuit = this.il.NewLabel();
+    this.EmitExpression(binary.Left, true);
+    this.il.Branch(binary.IsAnd ? ILOpCode.Brfalse : ILOpCode.Brtrue, shortCircuit);
+    this.EmitExpression(binary.Right, true); this.il.Branch(ILOpCode.Br, end);
+    this.il.Mark(shortCircuit); this.il.LdcI4(binary.IsAnd ? 0 : 1); this.il.Mark(end); this.Discard(used);
+  }
+  private EmitConditional(conditional: BoundConditional, used: bool): void {
+    const alternative = this.il.NewLabel();
+    const end = this.il.NewLabel();
+    this.EmitBranchIf(conditional.Condition, alternative, false);
+    this.EmitExpression(conditional.WhenTrue, used); this.il.Branch(ILOpCode.Br, end);
+    this.il.Mark(alternative); this.EmitExpression(conditional.WhenFalse, used); this.il.Mark(end);
+  }
+  private EmitCoalesce(coalesce: BoundCoalesce, used: bool): void {
+    const type = coalesce.Left.Type!;
+    const end = this.il.NewLabel();
+    if (MetadataEmitter.IsNullableValue(type)) {
+      const nullable = this.metadata.ClrType(type) as NamedTypeSymbol;
+      const temp = this.TempLocal(type);
+      this.EmitExpression(coalesce.Left, true); this.il.Stloc(temp.Index);
+      const useRight = this.il.NewLabel();
+      this.il.Ldloca(temp.Index);
+      this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(this.FindMethod(nullable, "get_HasValue")), 1, 1);
+      this.il.Branch(ILOpCode.Brfalse, useRight);
+      if (MetadataEmitter.IsNullableValue(coalesce.Type!)) this.il.Ldloc(temp.Index);
+      else {
+        this.il.Ldloca(temp.Index);
+        this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(this.FindMethodWithArity(nullable, "GetValueOrDefault", 0)), 1, 1);
+      }
+      this.il.Branch(ILOpCode.Br, end); this.il.Mark(useRight);
+      this.EmitExpression(coalesce.Right, true); this.il.Mark(end);
+    } else {
+      this.EmitExpression(coalesce.Left, true); this.il.Op(ILOpCode.Dup, 1);
+      if (type.StripNullable() instanceof TypeParameterSymbol) this.il.Token(ILOpCode.Box, this.metadata.GetTypeEntity(type.StripNullable()), 0);
+      this.il.Branch(ILOpCode.Brtrue, end); this.il.Op(ILOpCode.Pop, -1);
+      this.EmitExpression(coalesce.Right, true); this.il.Mark(end);
+    }
+    this.Discard(used);
+  }
+  private EmitConditionalAccess(access: BoundConditionalAccess, used: bool): void {
+    const type = access.Receiver.Type!;
+    const nullableValue = MetadataEmitter.IsNullableValue(type);
+    const slot = this.TempLocal(type);
+    this.EmitExpression(access.Receiver, true); this.il.Stloc(slot.Index);
+    this.condReceivers[access.Placeholder] = new MethodBodyConditionalReceiver(slot, type, nullableValue);
+    const isNull = this.il.NewLabel();
+    const end = this.il.NewLabel();
+    if (nullableValue) {
+      this.il.Ldloca(slot.Index);
+      this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(this.FindMethod(this.metadata.ClrType(type) as NamedTypeSymbol, "get_HasValue")), 1, 1);
+      this.il.Branch(ILOpCode.Brfalse, isNull);
+    } else { this.il.Ldloc(slot.Index); this.il.Branch(ILOpCode.Brfalse, isNull); }
+    const result = access.Type;
+    const inner = access.WhenNotNull;
+    if (result == null || result.IsVoid) {
+      this.EmitExpression(inner, false); this.il.Branch(ILOpCode.Br, end);
+      this.il.Mark(isNull); this.il.Mark(end); return;
+    }
+    this.EmitExpression(inner, true);
+    if (MetadataEmitter.IsNullableValue(result) && !MetadataEmitter.IsNullableValue(inner.Type!))
+      this.il.Call(ILOpCode.Newobj, this.metadata.GetMethodEntity(this.FindConstructor(this.metadata.ClrType(result) as NamedTypeSymbol, 1)), 1, 1);
+    this.il.Branch(ILOpCode.Br, end); this.il.Mark(isNull); this.EmitDefault(result); this.il.Mark(end); this.Discard(used);
+  }
+  private EmitConditionalReceiver(receiver: BoundConditionalReceiver, used: bool): void {
+    const info = this.condReceivers[receiver];
+    if (!used) return;
+    if (info.IsNullableValue) {
+      const nullable = this.metadata.ClrType(info.ReceiverType) as NamedTypeSymbol;
+      this.il.Ldloca(info.Slot.Index);
+      this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(this.FindMethodWithArity(nullable, "GetValueOrDefault", 0)), 1, 1);
+    } else this.il.Ldloc(info.Slot.Index);
+  }
+  private EmitTypeTest(test: BoundTypeTest, used: bool): void {
+    if (test.Kind == TypeTestKind.UnionCase) {
+      const union = this.metadata.ClrType(test.Operand.Type!) as NamedTypeSymbol;
+      this.EmitFieldReceiver(test.Operand);
+      this.il.Token(ILOpCode.Ldfld, this.metadata.GetFieldEntity(this.FindField(union, "Tag")), 0);
+      this.il.LdcI4(test.CaseIndex + 1); this.il.Op(ILOpCode.Ceq, -1);
+    } else {
+      this.EmitExpression(test.Operand, true);
+      const type = this.metadata.ClrType(test.Operand.Type!);
+      if (MetadataEmitter.IsValueTypeLike(type) || type instanceof TypeParameterSymbol) this.il.Token(ILOpCode.Box, this.metadata.GetTypeEntity(type), 0);
+      this.il.Token(ILOpCode.Isinst, this.metadata.GetTypeEntity(test.Target), 0);
+      this.il.Op(ILOpCode.Ldnull, 1); this.il.Op(ILOpCode.Cgt_un, -1);
+    }
+    this.Discard(used);
+  }
+  private EmitDelegateCreation(creation: BoundDelegateCreation, used: bool): void {
+    const method = creation.Method;
+    if (creation.Receiver != null && (!method.IsStatic || method.IsExtensionMethod)) {
+      const type = creation.Receiver.Type!;
+      this.EmitExpression(creation.Receiver, true);
+      if (!method.IsStatic && MetadataEmitter.IsValueTypeLike(this.metadata.ClrType(type))) this.il.Token(ILOpCode.Box, this.metadata.GetTypeEntity(type), 0);
+    } else this.il.Op(ILOpCode.Ldnull, 1);
+    const virtualCall = !method.IsStatic && (method.IsVirtual || method.IsAbstract || method.IsOverride) && creation.Receiver != null && !method.IsSealed;
+    if (virtualCall) {
+      this.il.Op(ILOpCode.Dup, 1); this.il.Encoder.OpCode(ILOpCode.Ldvirtftn); this.il.Encoder.Token(this.metadata.GetMethodEntity(method));
+    } else {
+      this.il.Encoder.OpCode(ILOpCode.Ldftn); this.il.Encoder.Token(this.metadata.GetMethodEntity(method));
+      this.il.ResetDepth(this.il.CurrentDepth + 1);
+    }
+    const type = this.metadata.ClrType(creation.Type!) as NamedTypeSymbol;
+    this.il.Call(ILOpCode.Newobj, this.metadata.GetMethodEntity(this.FindConstructor(type, 2)), 2, 1); this.Discard(used);
+  }
+  private EmitBranchIf(condition: BoundExpression, target: LabelHandle, jumpIfTrue: bool): void {
+    const constant = condition.ConstantValue;
+    if (constant != null && constant.Value instanceof bool) {
+      if ((constant.Value as bool) == jumpIfTrue) this.il.Branch(ILOpCode.Br, target);
+      return;
+    }
+    if (condition instanceof BoundUnary && (condition as BoundUnary).Kind == UnaryOperatorKind.Not) {
+      this.EmitBranchIf((condition as BoundUnary).Operand, target, !jumpIfTrue); return;
+    }
+    if (condition instanceof BoundLogicalBinary) {
+      const logical = condition as BoundLogicalBinary;
+      if (logical.IsAnd == jumpIfTrue) {
+        const skip = this.il.NewLabel();
+        this.EmitBranchIf(logical.Left, skip, !jumpIfTrue);
+        this.EmitBranchIf(logical.Right, target, jumpIfTrue); this.il.Mark(skip);
+      } else {
+        this.EmitBranchIf(logical.Left, target, jumpIfTrue); this.EmitBranchIf(logical.Right, target, jumpIfTrue);
+      }
+      return;
+    }
+    if (condition instanceof BoundBinary && MethodBodyEmitter.IsDirectBranchable(condition as BoundBinary)) {
+      const binary = condition as BoundBinary;
+      this.EmitExpression(binary.Left, true); this.EmitExpression(binary.Right, true);
+      const unsigned = MethodBodyEmitter.IsUnsignedType(binary.OperandType);
+      let op: ILOpCode;
+      if (jumpIfTrue) {
+        switch (binary.Kind) {
+          case BinaryOperatorKind.Equal: op = ILOpCode.Beq; break;
+          case BinaryOperatorKind.NotEqual: op = ILOpCode.Bne_un; break;
+          case BinaryOperatorKind.LessThan: op = unsigned ? ILOpCode.Blt_un : ILOpCode.Blt; break;
+          case BinaryOperatorKind.LessThanOrEqual: op = unsigned ? ILOpCode.Ble_un : ILOpCode.Ble; break;
+          case BinaryOperatorKind.GreaterThan: op = unsigned ? ILOpCode.Bgt_un : ILOpCode.Bgt; break;
+          default: op = unsigned ? ILOpCode.Bge_un : ILOpCode.Bge; break;
+        }
+      } else {
+        switch (binary.Kind) {
+          case BinaryOperatorKind.Equal: op = ILOpCode.Bne_un; break;
+          case BinaryOperatorKind.NotEqual: op = ILOpCode.Beq; break;
+          case BinaryOperatorKind.LessThan: op = unsigned ? ILOpCode.Bge_un : ILOpCode.Bge; break;
+          case BinaryOperatorKind.LessThanOrEqual: op = unsigned ? ILOpCode.Bgt_un : ILOpCode.Bgt; break;
+          case BinaryOperatorKind.GreaterThan: op = unsigned ? ILOpCode.Ble_un : ILOpCode.Ble; break;
+          default: op = unsigned ? ILOpCode.Blt_un : ILOpCode.Blt; break;
+        }
+      }
+      this.il.Branch(op, target); return;
+    }
+    this.EmitExpression(condition, true); this.il.Branch(jumpIfTrue ? ILOpCode.Brtrue : ILOpCode.Brfalse, target);
+  }
+  private static IsDirectBranchable(binary: BoundBinary): bool {
+    switch (binary.Kind) {
+      case BinaryOperatorKind.Equal:
+      case BinaryOperatorKind.NotEqual:
+      case BinaryOperatorKind.LessThan:
+      case BinaryOperatorKind.LessThanOrEqual:
+      case BinaryOperatorKind.GreaterThan:
+      case BinaryOperatorKind.GreaterThanOrEqual: break;
+      default: return false;
+    }
+    if (MethodBodyEmitter.IsNullLiteral(binary.Right) || MethodBodyEmitter.IsNullLiteral(binary.Left)) return false;
+    const type = binary.OperandType;
+    if (MethodBodyEmitter.IsFloatType(type)) return false;
+    switch (type.SpecialType) {
+      case SpecialType.Int32:
+      case SpecialType.Int64:
+      case SpecialType.UInt32:
+      case SpecialType.UInt64:
+      case SpecialType.Char:
+      case SpecialType.Boolean:
+      case SpecialType.Int16:
+      case SpecialType.UInt16:
+      case SpecialType.Byte:
+      case SpecialType.SByte: return true;
+      default: return false;
+    }
+  }
+
+  private EmitConversion(conversion: BoundConversion, used: bool): void {
+    const from = conversion.Operand.Type!;
+    const to = conversion.Type!;
+    switch (conversion.Kind) {
+      case ConversionKind.Identity:
+      case ConversionKind.TypeOnly:
+      case ConversionKind.ImplicitReference: this.EmitExpression(conversion.Operand, used); return;
+      case ConversionKind.NullLiteral: if (used) this.EmitDefault(to); return;
+      case ConversionKind.ImplicitNumeric:
+      case ConversionKind.ExplicitNumeric:
+      case ConversionKind.EnumNumeric: this.EmitExpression(conversion.Operand, true); this.EmitNumericConversion(from, to); break;
+      case ConversionKind.ToNullable:
+        this.EmitExpression(conversion.Operand, true);
+        if (MetadataEmitter.IsNullableValue(to))
+          this.il.Call(ILOpCode.Newobj, this.metadata.GetMethodEntity(this.FindConstructor(this.metadata.ClrType(to) as NamedTypeSymbol, 1)), 1, 1);
+        break;
+      case ConversionKind.FromNullable:
+        if (MetadataEmitter.IsNullableValue(from)) {
+          this.EmitAddress(conversion.Operand);
+          this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(this.FindMethod(this.metadata.ClrType(from) as NamedTypeSymbol, "get_Value")), 1, 1);
+        } else this.EmitExpression(conversion.Operand, true);
+        break;
+      case ConversionKind.Boxing:
+        this.EmitExpression(conversion.Operand, true);
+        if (MetadataEmitter.IsValueTypeLike(this.metadata.ClrType(from)) || from.StripNullable() instanceof TypeParameterSymbol || MetadataEmitter.IsNullableValue(from))
+          this.il.Token(ILOpCode.Box, this.metadata.GetTypeEntity(from.StripNullable() instanceof TypeParameterSymbol ? from.StripNullable() : from), 0);
+        break;
+      case ConversionKind.Unboxing:
+        this.EmitExpression(conversion.Operand, true); this.il.Token(ILOpCode.Unbox_any, this.metadata.GetTypeEntity(to), 0); break;
+      case ConversionKind.ExplicitReference:
+        this.EmitExpression(conversion.Operand, true);
+        if (from instanceof TypeParameterSymbol) this.il.Token(ILOpCode.Box, this.metadata.GetTypeEntity(from), 0);
+        this.il.Token(to instanceof TypeParameterSymbol || MetadataEmitter.IsValueTypeLike(this.metadata.ClrType(to)) ? ILOpCode.Unbox_any : ILOpCode.Castclass,
+          this.metadata.GetTypeEntity(to), 0); break;
+      case ConversionKind.TypeParameter: this.EmitExpression(conversion.Operand, true); break;
+      case ConversionKind.UserDefined:
+        this.EmitExpression(conversion.Operand, true); this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(conversion.Method!), 1, 1); break;
+      case ConversionKind.UnionWrap: this.EmitUnionWrap(conversion); break;
+      case ConversionKind.UnionExtract: {
+        const union = this.metadata.ClrType(from.StripNullable()) as NamedTypeSymbol;
+        this.EmitFieldReceiver(conversion.Operand);
+        this.il.Token(ILOpCode.Ldfld, this.metadata.GetFieldEntity(this.FindField(union, "Value")), 0);
+        const target = this.metadata.ClrType(to);
+        this.il.Token(MetadataEmitter.IsValueTypeLike(target) || target instanceof TypeParameterSymbol ? ILOpCode.Unbox_any : ILOpCode.Castclass,
+          this.metadata.GetTypeEntity(target), 0); break;
+      }
+      case ConversionKind.LiftedNumeric: this.EmitLiftedNumeric(conversion); break;
+      default: throw new InvalidOperationException("Unhandled conversion " + conversion.Kind);
+    }
+    this.Discard(used);
+  }
+  private EmitUnionWrap(conversion: BoundConversion): void {
+    const union = this.metadata.ClrType(conversion.Type!.StripNullable()) as NamedTypeSymbol;
+    const from = conversion.Operand.Type!;
+    const stripped = from.StripNullable();
+    if (conversion.CaseIndex == -3 || (stripped instanceof NamedTypeSymbol && (stripped as NamedTypeSymbol).IsUnionType && !stripped.Equals(union))) {
+      this.EmitUnionToUnion(conversion, union); return;
+    }
+    this.EmitExpression(conversion.Operand, true);
+    const cases = union.UnionCases;
+    const validCase = conversion.CaseIndex >= 0 && conversion.CaseIndex < cases.Length;
+    const caseType = validCase ? cases[conversion.CaseIndex] : from;
+    if (validCase && !from.Equals(caseType) && MethodBodyEmitter.IsNumericKind(from) && MethodBodyEmitter.IsNumericKind(caseType))
+      this.EmitNumericConversion(from, caseType);
+    this.il.Call(ILOpCode.Newobj, this.metadata.GetMethodEntity(this.FindCaseConstructor(union, caseType)), 1, 1);
+  }
+  private EmitUnionToUnion(conversion: BoundConversion, target: NamedTypeSymbol): void {
+    const source = this.metadata.ClrType(conversion.Operand.Type!.StripNullable()) as NamedTypeSymbol;
+    const temp = this.TempLocal(source);
+    this.EmitExpression(conversion.Operand, true); this.il.Stloc(temp.Index);
+    const end = this.il.NewLabel();
+    const tag = this.FindField(source, "Tag");
+    const value = this.FindField(source, "Value");
+    const sourceCases = source.UnionCases;
+    const targetCases = target.UnionCases;
+    for (let i = 0; i < sourceCases.Length; i++) {
+      const next = this.il.NewLabel();
+      this.il.Ldloca(temp.Index); this.il.Token(ILOpCode.Ldfld, this.metadata.GetFieldEntity(tag), 0);
+      this.il.LdcI4(i + 1); this.il.Branch(ILOpCode.Bne_un, next);
+      let index = -1;
+      for (let j = 0; j < targetCases.Length; j++) if (targetCases[j].Equals(sourceCases[i])) { index = j; break; }
+      if (index < 0)
+        for (let j = 0; j < targetCases.Length; j++) if (MethodBodyEmitter.ImplicitRef(sourceCases[i], targetCases[j])) { index = j; break; }
+      if (index < 0) index = 0;
+      this.il.Ldloca(temp.Index); this.il.Token(ILOpCode.Ldfld, this.metadata.GetFieldEntity(value), 0);
+      const sourceType = this.metadata.ClrType(sourceCases[i]);
+      this.il.Token(MetadataEmitter.IsValueTypeLike(sourceType) || sourceType instanceof TypeParameterSymbol ? ILOpCode.Unbox_any : ILOpCode.Castclass,
+        this.metadata.GetTypeEntity(sourceType), 0);
+      this.il.Call(ILOpCode.Newobj, this.metadata.GetMethodEntity(this.FindCaseConstructor(target, targetCases[index])), 1, 1);
+      this.il.Branch(ILOpCode.Br, end); this.il.Mark(next);
+    }
+    this.EmitDefault(target); this.il.Mark(end);
+  }
+  private static ImplicitRef(from: TypeSymbol, to: TypeSymbol): bool {
+    let parent = from.BaseType;
+    while (parent != null) { if (parent.Equals(to)) return true; parent = parent.BaseType; }
+    for (const implemented of from.AllInterfaces) if (implemented.Equals(to)) return true;
+    return to.SpecialType == SpecialType.Object;
+  }
+  private static IsNumericKind(type: TypeSymbol): bool {
+    return !(type instanceof NullableTypeSymbol) && (SpecialTypes.IsNumeric(type.SpecialType) || type.SpecialType == SpecialType.Decimal);
+  }
+  private EmitLiftedNumeric(conversion: BoundConversion): void {
+    const from = conversion.Operand.Type! as NullableTypeSymbol;
+    const to = conversion.Type! as NullableTypeSymbol;
+    const nullable = this.metadata.ClrType(from) as NamedTypeSymbol;
+    const temp = this.TempLocal(from);
+    this.EmitExpression(conversion.Operand, true); this.il.Stloc(temp.Index);
+    const isNull = this.il.NewLabel();
+    const end = this.il.NewLabel();
+    this.il.Ldloca(temp.Index);
+    this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(this.FindMethod(nullable, "get_HasValue")), 1, 1);
+    this.il.Branch(ILOpCode.Brfalse, isNull); this.il.Ldloca(temp.Index);
+    this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(this.FindMethodWithArity(nullable, "GetValueOrDefault", 0)), 1, 1);
+    this.EmitNumericConversion(from.Underlying, to.Underlying);
+    this.il.Call(ILOpCode.Newobj, this.metadata.GetMethodEntity(this.FindConstructor(this.metadata.ClrType(to) as NamedTypeSymbol, 1)), 1, 1);
+    this.il.Branch(ILOpCode.Br, end); this.il.Mark(isNull); this.EmitDefault(to); this.il.Mark(end);
+  }
+  private static Underlying(type: TypeSymbol): SpecialType {
+    return type.TypeKind == TypeKind.Enum ? (type as NamedTypeSymbol).EnumUnderlyingType!.SpecialType : type.SpecialType;
+  }
+  private EmitNumericConversion(fromType: TypeSymbol, toType: TypeSymbol): void {
+    const from = MethodBodyEmitter.Underlying(fromType);
+    const to = MethodBodyEmitter.Underlying(toType);
+    if (from == to) return;
+    if (from == SpecialType.Decimal || to == SpecialType.Decimal) {
+      const decimalType = this.getSpecialType(SpecialType.Decimal);
+      this.getSpecialType(from); this.getSpecialType(to);
+      const name = from == SpecialType.Decimal || from == SpecialType.Single || from == SpecialType.Double ? "op_Explicit" : "op_Implicit";
+      let method: MethodSymbol? = null;
+      for (const member of decimalType.GetMembers(name)) {
+        if (member instanceof MethodSymbol) {
+          const candidate = member as MethodSymbol;
+          if (candidate.Parameters.Length == 1 && candidate.Parameters[0].Type.SpecialType == from && candidate.ReturnType.SpecialType == to) {
+            method = candidate; break;
+          }
+        }
+      }
+      if (method == null) {
+        this.EmitNumericConversion(fromType, this.getSpecialType(SpecialType.Int32));
+        this.EmitNumericConversion(this.getSpecialType(SpecialType.Int32), toType); return;
+      }
+      this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(method), 1, 1); return;
+    }
+    const unsignedFrom = from == SpecialType.Byte || from == SpecialType.UInt16 || from == SpecialType.Char
+      || from == SpecialType.UInt32 || from == SpecialType.UInt64 || from == SpecialType.UIntPtr;
+    switch (to) {
+      case SpecialType.SByte: this.il.Op(ILOpCode.Conv_i1, 0); break;
+      case SpecialType.Byte: this.il.Op(ILOpCode.Conv_u1, 0); break;
+      case SpecialType.Int16: this.il.Op(ILOpCode.Conv_i2, 0); break;
+      case SpecialType.UInt16:
+      case SpecialType.Char: this.il.Op(ILOpCode.Conv_u2, 0); break;
+      case SpecialType.Int32:
+        if (from == SpecialType.Int64 || from == SpecialType.UInt64 || from == SpecialType.Single || from == SpecialType.Double
+          || from == SpecialType.UInt32 || from == SpecialType.IntPtr || from == SpecialType.UIntPtr) this.il.Op(ILOpCode.Conv_i4, 0);
+        break;
+      case SpecialType.UInt32:
+        if (from != SpecialType.Byte && from != SpecialType.UInt16 && from != SpecialType.Char) this.il.Op(ILOpCode.Conv_u4, 0);
+        break;
+      case SpecialType.Int64:
+        this.il.Op(from == SpecialType.UInt32 || from == SpecialType.UInt16 || from == SpecialType.Byte || from == SpecialType.Char || from == SpecialType.UIntPtr
+          ? ILOpCode.Conv_u8 : ILOpCode.Conv_i8, 0); break;
+      case SpecialType.UInt64:
+        this.il.Op(unsignedFrom || from == SpecialType.Single || from == SpecialType.Double ? ILOpCode.Conv_u8 : ILOpCode.Conv_i8, 0); break;
+      case SpecialType.Single:
+        if (unsignedFrom) this.il.Op(ILOpCode.Conv_r_un, 0);
+        this.il.Op(ILOpCode.Conv_r4, 0); break;
+      case SpecialType.Double:
+        if (unsignedFrom) this.il.Op(ILOpCode.Conv_r_un, 0);
+        this.il.Op(ILOpCode.Conv_r8, 0); break;
+      case SpecialType.IntPtr: this.il.Op(unsignedFrom ? ILOpCode.Conv_u : ILOpCode.Conv_i, 0); break;
+      case SpecialType.UIntPtr: this.il.Op(ILOpCode.Conv_u, 0); break;
+    }
+  }
+}
