@@ -3,6 +3,7 @@
     <Project Path="src/Caladesi.Build.Tasks/Caladesi.Build.Tasks.csproj" />
     <Project Path="src/Caladesi.Cli/Caladesi.Cli.csproj" />
     <Project Path="src/Caladesi.Compiler/Caladesi.Compiler.csproj" />
+    <Project Path="src/Caladesi.Compiler.SelfHost/Caladesi.Compiler.SelfHost.calaproj" Type="13B669BE-BB05-4DDF-9536-439F39A36129" />
     <Project Path="src/Caladesi.LanguageServer/Caladesi.LanguageServer.csproj" />
     <Project Path="src/Caladesi.Runtime/Caladesi.Runtime.csproj" />
     <Project Path="src/Caladesi.Runtime.Generators/Caladesi.Runtime.Generators.csproj" />

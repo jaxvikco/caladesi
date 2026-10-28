@@ -1,0 +1,35 @@
+export struct type TextSpan = { readonly Start: int; readonly Length: int };
+export struct type LinePosition = { readonly Line: int; readonly Character: int };
+export struct type LinePositionSpan = { readonly Start: LinePosition; readonly End: LinePosition };
+
+// Struct types carry immutable values; operations live on helpers until struct members are supported.
+export sealed class TextSpans {
+  static End(span: TextSpan): int { return span.Start + span.Length; }
+  static IsEmpty(span: TextSpan): bool { return span.Length == 0; }
+
+  static FromBounds(start: int, end: int): TextSpan {
+    return new TextSpan(start, Math.Max(0, end - start));
+  }
+
+  static Contains(span: TextSpan, position: int): bool {
+    return position >= span.Start && position < TextSpans.End(span);
+  }
+
+  static ContainsInclusive(span: TextSpan, position: int): bool {
+    return position >= span.Start && position <= TextSpans.End(span);
+  }
+
+  static OverlapsWith(span: TextSpan, other: TextSpan): bool {
+    return span.Start < TextSpans.End(other) && other.Start < TextSpans.End(span);
+  }
+
+  static Format(span: TextSpan): string {
+    return `[${span.Start}..${TextSpans.End(span)})`;
+  }
+}
+
+export sealed class LinePositions {
+  static Format(position: LinePosition): string {
+    return `${position.Line + 1}:${position.Character + 1}`;
+  }
+}
