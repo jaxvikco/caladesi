@@ -1,0 +1,219 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { InvalidOperationException } from "System";
+import { Conversion, Conversions } from "../Conversion";
+import { ConstantFolding } from "../ConstantFolding";
+import { DiagnosticDescriptor } from "../Diagnostics/Diagnostic";
+import { Descriptors } from "../Diagnostics/Descriptors";
+import { SyntaxNode } from "../Syntax/SyntaxElement";
+import { Symbol } from "../Symbols/Symbol";
+import { TypeSymbol, NullableTypeSymbol } from "../Symbols/TypeSymbols";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { ConstantValue, LocalSymbol, MethodSymbol, FieldSymbol } from "../Symbols/MemberSymbols";
+import { SpecialType } from "../Symbols/SpecialType";
+import { BoundNode, BoundExpression, BoundBadExpression, BoundUnbound, BoundMethodGroup,
+  BoundConversion, ConversionKind, BoundLiteral, BoundObjectCreation, BoundMemberInit,
+  BoundLocal, BoundFieldAccess, BoundSequence, BoundStatement, BoundLocalDeclaration,
+  BoundTypeExpression, BoundNamespaceExpression } from "../Bound/BoundNodes";
+import { ConversionClassifier } from "./ConversionClassifier";
+
+export abstract class ConversionBindingContext {
+  abstract get BoolType(): TypeSymbol;
+  abstract get ContainingSymbol(): Symbol?;
+  abstract ConvertMethodGroup(group: BoundMethodGroup, target: TypeSymbol, syntax: SyntaxNode?, report: bool): BoundExpression;
+  abstract IsLiteralEnum(type: TypeSymbol): bool;
+  IsModuleExpression(expression: BoundExpression): bool { return false; }
+  abstract Report(descriptor: DiagnosticDescriptor, syntax: SyntaxNode?, args: object?[]): void;
+}
+
+export sealed class ConversionBinder {
+  constructor(private readonly classifier: ConversionClassifier, private readonly context: ConversionBindingContext) {}
+
+  ConvertImplicit(expr: BoundExpression, target: TypeSymbol, syntax: SyntaxNode?): BoundExpression {
+    return this.ConvertImplicit(expr, target, syntax, true);
+  }
+
+  ConvertImplicit(expr: BoundExpression, target: TypeSymbol, syntax: SyntaxNode?, report: bool): BoundExpression {
+    if (expr instanceof BoundUnbound) {
+      const bound = (expr as BoundUnbound).BindToType.Invoke(target);
+      return bound instanceof BoundUnbound ? this.Bad(syntax, ImmutableArray<BoundNode>.Empty) :
+        this.ConvertImplicit(bound, target, syntax, report);
+    }
+    if (expr instanceof BoundMethodGroup)
+      return this.context.ConvertMethodGroup(expr as BoundMethodGroup, target, syntax, report);
+    if (expr.Type == null) {
+      if (report) this.ReportNotAValue(expr, syntax);
+      return this.Bad(syntax, ImmutableArray.Create<BoundNode>(expr));
+    }
+    if (expr.Type.IsErrorType || target.IsErrorType) return expr;
+    const source = expr.Type;
+    const conversion = this.classifier.ClassifyImplicit(expr, source, target);
+    if (!conversion.Exists) {
+      if (report) this.ReportNotAssignable(expr, source, target, syntax);
+      const result = new BoundConversion(expr, ConversionKind.Identity, target);
+      result.Syntax = syntax ?? expr.Syntax;
+      return result;
+    }
+    return this.CreateConversion(expr, conversion, target, syntax);
+  }
+
+  ConvertExplicit(expr: BoundExpression, target: TypeSymbol, syntax: SyntaxNode?): BoundExpression {
+    return this.ConvertExplicit(expr, target, syntax, true);
+  }
+
+  ConvertExplicit(expr: BoundExpression, target: TypeSymbol, syntax: SyntaxNode?, report: bool): BoundExpression {
+    if (expr instanceof BoundUnbound || expr instanceof BoundMethodGroup)
+      return this.ConvertImplicit(expr, target, syntax, report);
+    if (expr.Type == null) {
+      if (report) this.ReportNotAValue(expr, syntax);
+      return this.Bad(syntax, ImmutableArray.Create<BoundNode>(expr));
+    }
+    if (expr.Type.IsErrorType || target.IsErrorType) return expr;
+    const source = expr.Type;
+    const conversion = this.classifier.ClassifyExplicit(expr, source, target);
+    if (!conversion.Exists) {
+      if (report) this.context.Report(Descriptors.CannotConvert, syntax,
+        [source.ToDisplayString(), target.ToDisplayString()]);
+      const result = new BoundConversion(expr, ConversionKind.Identity, target);
+      result.Syntax = syntax ?? expr.Syntax;
+      return result;
+    }
+    return this.CreateConversion(expr, conversion, target, syntax);
+  }
+
+  CreateConversion(expr: BoundExpression, conversion: Conversion, target: TypeSymbol, syntax: SyntaxNode?): BoundExpression {
+    syntax = syntax ?? expr.Syntax;
+    if (Conversions.IsIdentity(conversion)) return expr;
+    const innerTarget = conversion.WrapNullable && target instanceof NullableTypeSymbol ?
+      (target as NullableTypeSymbol).Underlying : target;
+    let result: BoundExpression;
+    if (conversion.Constant != null &&
+        (conversion.Kind == ConversionKind.ImplicitNumeric || conversion.Kind == ConversionKind.EnumNumeric)) {
+      result = new BoundLiteral(conversion.Constant, innerTarget);
+      result.Syntax = syntax;
+    } else if (conversion.Kind == ConversionKind.FromNullable && conversion.Method != null) {
+      const unwrapped = new BoundConversion(expr, ConversionKind.FromNullable, expr.Type!.StripNullable());
+      unwrapped.Syntax = syntax;
+      result = new BoundConversion(unwrapped, ConversionKind.UserDefined, innerTarget, conversion.Method);
+      result.Syntax = syntax;
+    } else if (conversion.Kind == ConversionKind.FromNullable &&
+        !innerTarget.Equals(expr.Type!.StripNullable()) && expr.Type instanceof NullableTypeSymbol) {
+      const source = expr.Type as NullableTypeSymbol;
+      const unwrapped = new BoundConversion(expr, ConversionKind.FromNullable, source.Underlying);
+      unwrapped.Syntax = syntax;
+      const second = this.classifier.ClassifyExplicit(null, source.Underlying, innerTarget);
+      result = Conversions.IsIdentity(second) ? unwrapped : this.CreateConversion(unwrapped, second, innerTarget, syntax);
+    } else if (conversion.Kind == ConversionKind.TypeOnly && conversion.CaseIndex == -2) {
+      result = this.ConvertTuple(expr, innerTarget, syntax);
+    } else {
+      const converted = new BoundConversion(expr, conversion.Kind, innerTarget, conversion.Method);
+      converted.Syntax = syntax;
+      converted.CaseIndex = conversion.CaseIndex;
+      converted.ConstantFolded = ConversionBinder.TryFoldConversion(expr, conversion, innerTarget);
+      result = converted;
+    }
+    if (conversion.WrapNullable) {
+      result = new BoundConversion(result, ConversionKind.ToNullable, target);
+      result.Syntax = syntax;
+    }
+    return result;
+  }
+
+  private FindConstructor(type: NamedTypeSymbol, arity: int): MethodSymbol? {
+    for (const constructor of type.InstanceConstructors)
+      if (constructor.Parameters.Length == arity) return constructor;
+    return null;
+  }
+
+  private ConvertTuple(expr: BoundExpression, target: TypeSymbol, syntax: SyntaxNode?): BoundExpression {
+    const ts = target as NamedTypeSymbol;
+    const ss = expr.Type! as NamedTypeSymbol;
+    if (expr instanceof BoundObjectCreation) {
+      const oc = expr as BoundObjectCreation;
+      if (oc.Constructor != null && oc.Initializers.IsDefaultOrEmpty && oc.Arguments.Length == ts.TypeArguments.Length) {
+        const args = ImmutableArray.CreateBuilder<BoundExpression>();
+        for (let i = 0; i < oc.Arguments.Length; i++)
+          args.Add(this.ConvertImplicit(oc.Arguments[i], ts.TypeArguments[i], syntax));
+        const result = new BoundObjectCreation(this.FindConstructor(ts, args.Count), target, args.ToImmutable(),
+          ImmutableArray<BoundMemberInit>.Empty);
+        result.Syntax = syntax;
+        return result;
+      }
+    }
+    const tmp = new LocalSymbol("<tuple>", ss, false, this.context.ContainingSymbol);
+    tmp.IsSynthesized = true;
+    const elems = ImmutableArray.CreateBuilder<BoundExpression>();
+    for (let i = 0; i < ss.TypeArguments.Length; i++) {
+      let field: FieldSymbol? = null;
+      for (const member of ss.GetMembers("Item" + (i + 1))) {
+        if (member instanceof FieldSymbol) { field = member as FieldSymbol; break; }
+      }
+      if (field == null) throw new InvalidOperationException("Sequence contains no elements");
+      const get = new BoundFieldAccess(new BoundLocal(tmp), field);
+      get.Syntax = syntax;
+      elems.Add(this.ConvertImplicit(get, ts.TypeArguments[i], syntax));
+    }
+    const create = new BoundObjectCreation(this.FindConstructor(ts, elems.Count), target, elems.ToImmutable(),
+      ImmutableArray<BoundMemberInit>.Empty);
+    create.Syntax = syntax;
+    const sequence = new BoundSequence(ImmutableArray.Create<LocalSymbol>(tmp),
+      ImmutableArray.Create<BoundStatement>(new BoundLocalDeclaration(tmp, expr)), create);
+    sequence.Syntax = syntax;
+    return sequence;
+  }
+
+  private static TryFoldConversion(expr: BoundExpression, conversion: Conversion, target: TypeSymbol): ConstantValue? {
+    const cv = expr.ConstantValue;
+    if (cv == null || cv.Value == null) return null;
+    if ((conversion.Kind == ConversionKind.ImplicitNumeric || conversion.Kind == ConversionKind.ExplicitNumeric) &&
+        target.SpecialType != SpecialType.None) {
+      const folded = ConstantFolding.ConvertNumeric(cv.Value, target.SpecialType, conversion.Kind == ConversionKind.ExplicitNumeric);
+      if (folded != null) return new ConstantValue(folded);
+    }
+    return null;
+  }
+
+  private Bad(syntax: SyntaxNode?, children: ImmutableArray<BoundNode>): BoundBadExpression {
+    const result = new BoundBadExpression(children);
+    result.Syntax = syntax;
+    return result;
+  }
+
+  private ReportNotAValue(expr: BoundExpression, syntax: SyntaxNode?): void {
+    if (expr instanceof BoundTypeExpression)
+      this.context.Report(Descriptors.TypeUsedAsValue, syntax, [(expr as BoundTypeExpression).TypeSym.ToDisplayString()]);
+    else if (expr instanceof BoundNamespaceExpression)
+      this.context.Report(Descriptors.NamespaceUsedAsValue, syntax, [(expr as BoundNamespaceExpression).Namespace.ToDisplayString()]);
+    else if (this.context.IsModuleExpression(expr))
+      this.context.Report(Descriptors.NamespaceUsedAsValue, syntax, ["module"]);
+    else this.context.Report(Descriptors.ExpressionNotAValue, syntax, []);
+  }
+
+  private ReportNotAssignable(expr: BoundExpression, source: TypeSymbol, target: TypeSymbol, syntax: SyntaxNode?): void {
+    if (source.IsNullType) {
+      this.context.Report(Descriptors.NullNotAssignable, syntax, [target.ToDisplayString()]);
+      return;
+    }
+    if (source instanceof NullableTypeSymbol &&
+        this.classifier.ClassifyImplicit(null, (source as NullableTypeSymbol).Underlying, target).Exists) {
+      this.context.Report(Descriptors.PossiblyNullAssign, syntax, [source.ToDisplayString(), target.ToDisplayString()]);
+      return;
+    }
+    const cv = expr.ConstantValue;
+    if (cv != null && cv.Value instanceof string &&
+        (this.context.IsLiteralEnum(target) || (target instanceof NullableTypeSymbol &&
+          this.context.IsLiteralEnum((target as NullableTypeSymbol).Underlying)))) {
+      this.context.Report(Descriptors.NotAssignable, syntax, ["\"" + (cv.Value as string) + "\"", target.ToDisplayString()]);
+      return;
+    }
+    const explicitConversion = this.classifier.ClassifyExplicit(expr, source, target);
+    if (explicitConversion.Exists)
+      this.context.Report(Descriptors.NotAssignableExplicitExists, syntax,
+        [source.ToDisplayString(), target.ToDisplayString(), target.ToDisplayString()]);
+    else this.context.Report(Descriptors.NotAssignable, syntax, [source.ToDisplayString(), target.ToDisplayString()]);
+  }
+
+  ConvertToBool(expr: BoundExpression, syntax: SyntaxNode?): BoundExpression {
+    return expr.Type != null && expr.Type.SpecialType == SpecialType.Boolean ? expr :
+      this.ConvertImplicit(expr, this.context.BoolType, syntax);
+  }
+}
