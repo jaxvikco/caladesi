@@ -1,0 +1,127 @@
+import { Dictionary, IEnumerable, List } from "System.Collections.Generic";
+import { MemoryStream, Stream } from "System.IO";
+import { Blob, BlobBuilder, BlobContentId, BlobHandle, DocumentHandle, ImportScopeHandle, LocalVariableAttributes, MethodDefinitionHandle, StandaloneSignatureHandle } from "System.Reflection.Metadata";
+import { MetadataBuilder, MetadataRootBuilder, MetadataTokens, PortablePdbBuilder, TableIndex } from "System.Reflection.Metadata.Ecma335";
+import { DebugDirectoryBuilder } from "System.Reflection.PortableExecutable";
+import { SHA256 } from "System.Security.Cryptography";
+import { Encoding } from "System.Text";
+import { LocalSlot, SequencePoint } from "./ILBuilder";
+
+export sealed class SourceDebugDocument<TSourceFile> {
+  constructor(public readonly File: TSourceFile, public readonly FilePath: string, public readonly Text: string) {}
+}
+
+export sealed class MethodDebugInfo<TSourceFile> {
+  constructor(public readonly Locals: List<LocalSlot>, public readonly Sig: StandaloneSignatureHandle,
+    public readonly Length: int, public readonly File: TSourceFile?) {}
+}
+
+export sealed class PortableDebugEmitter<TSourceFile> {
+  constructor(private readonly metadata: MetadataBuilder,
+    private readonly sourceDocuments: IEnumerable<SourceDebugDocument<TSourceFile>>,
+    private readonly methodDebug: Dictionary<MethodDefinitionHandle, MethodDebugInfo<TSourceFile>>,
+    private readonly sequencePoints: Dictionary<MethodDefinitionHandle, List<SequencePoint>>,
+    private readonly entryPoint: MethodDefinitionHandle) {}
+
+  Emit(debugDir: DebugDirectoryBuilder, pdbStream: Stream, pdbFileName: string, metadataRoot: MetadataRootBuilder): void {
+    const pdb = new MetadataBuilder();
+    const documents = new Dictionary<TSourceFile, DocumentHandle>();
+    for (const document of this.sourceDocuments) {
+      const hash = SHA256.HashData(Encoding.UTF8.GetBytes(document.Text));
+      documents[document.File] = pdb.AddDocument(pdb.GetOrAddDocumentName(document.FilePath),
+        pdb.GetOrAddGuid(new Guid("8829d00f-11b8-4213-878b-770e8597ac16")),
+        pdb.GetOrAddBlob(hash), pdb.GetOrAddGuid(new Guid("3f5162f8-07c6-11d3-9053-00c04fa302a1")));
+    }
+    const importScope = pdb.AddImportScope(new ImportScopeHandle(), pdb.GetOrAddBlob(Array.Empty<byte>()));
+    const rowCount = this.metadata.GetRowCount(TableIndex.MethodDef);
+    for (let row = 1; row <= rowCount; row++) {
+      const method = MetadataTokens.MethodDefinitionHandle(row);
+      const [hasDebug, debug] = this.methodDebug.TryGetValue(method);
+      const [hasPoints, points] = this.sequencePoints.TryGetValue(method);
+      if (!hasDebug || debug.File == null || !hasPoints || points.Count == 0) {
+        pdb.AddMethodDebugInformation(new DocumentHandle(), new BlobHandle());
+        continue;
+      }
+      const blob = PortableDebugEmitter<TSourceFile>.EncodeSequencePoints(points, debug.Sig);
+      pdb.AddMethodDebugInformation(documents[debug.File!], pdb.GetOrAddBlob(blob));
+    }
+    let variableIndex = 1;
+    for (let row = 1; row <= rowCount; row++) {
+      const method = MetadataTokens.MethodDefinitionHandle(row);
+      const [hasDebug, debug] = this.methodDebug.TryGetValue(method);
+      if (!hasDebug) continue;
+      const named = new List<LocalSlot>();
+      for (const local of debug.Locals) {
+        if (local.Name != null) named.Add(local);
+      }
+      if (named.Count == 0) continue;
+      pdb.AddLocalScope(method, importScope, MetadataTokens.LocalVariableHandle(variableIndex),
+        MetadataTokens.LocalConstantHandle(0), 0, Math.Max(1, debug.Length));
+      for (const local of named) {
+        pdb.AddLocalVariable(LocalVariableAttributes.None, local.Index, pdb.GetOrAddString(local.Name!));
+        variableIndex++;
+      }
+    }
+    const builder = new PortablePdbBuilder(pdb, metadataRoot.Sizes.RowCounts, this.entryPoint,
+      content => PortableDebugEmitter<TSourceFile>.ContentId(content));
+    const blob = new BlobBuilder();
+    const id = builder.Serialize(blob);
+    blob.WriteContentTo(pdbStream);
+    debugDir.AddCodeViewEntry(pdbFileName, id, builder.FormatVersion);
+  }
+
+  private static ContentId(content: IEnumerable<Blob>): BlobContentId {
+    const hash = SHA256.HashData(PortableDebugEmitter<TSourceFile>.ConcatBlobs(content));
+    const prefix: byte[] = new byte[20];
+    Array.Copy(hash, prefix, 20);
+    return BlobContentId.FromHash(prefix);
+  }
+
+  private static ConcatBlobs(blobs: IEnumerable<Blob>): byte[] {
+    const stream = new MemoryStream();
+    try {
+      for (const blob of blobs) {
+        const segment = blob.GetBytes();
+        stream.Write(segment.Array!, segment.Offset, segment.Count);
+      }
+      return stream.ToArray();
+    } finally { stream.Dispose(); }
+  }
+
+  static EncodeSequencePoints(points: List<SequencePoint>, sig: StandaloneSignatureHandle): byte[] {
+    const builder = new BlobBuilder();
+    builder.WriteCompressedInteger(sig.IsNil ? 0 : MetadataTokens.GetRowNumber(sig));
+    let previousOffset = 0;
+    let firstPoint = true;
+    let previousStartLine = 0;
+    let previousStartColumn = 0;
+    for (const point of points) {
+      const deltaOffset = firstPoint ? point.Offset : point.Offset - previousOffset;
+      // Zero after the first offset is a document-change record, not another point.
+      if (!firstPoint && deltaOffset <= 0) continue;
+      builder.WriteCompressedInteger(deltaOffset);
+      previousOffset = point.Offset;
+      firstPoint = false;
+      if (point.IsHidden) {
+        builder.WriteCompressedInteger(0);
+        builder.WriteCompressedInteger(0);
+        continue;
+      }
+      const deltaLine = point.EndLine - point.StartLine;
+      builder.WriteCompressedInteger(deltaLine);
+      const deltaColumn = point.EndColumn - point.StartColumn;
+      if (deltaLine == 0) builder.WriteCompressedInteger(deltaColumn);
+      else builder.WriteCompressedSignedInteger(deltaColumn);
+      if (previousStartLine == 0) {
+        builder.WriteCompressedInteger(point.StartLine);
+        builder.WriteCompressedInteger(point.StartColumn);
+      } else {
+        builder.WriteCompressedSignedInteger(point.StartLine - previousStartLine);
+        builder.WriteCompressedSignedInteger(point.StartColumn - previousStartColumn);
+      }
+      previousStartLine = point.StartLine;
+      previousStartColumn = point.StartColumn;
+    }
+    return builder.ToArray();
+  }
+}

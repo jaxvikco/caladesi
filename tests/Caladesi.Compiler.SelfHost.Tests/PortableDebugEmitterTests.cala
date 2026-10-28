@@ -1,0 +1,84 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { Dictionary, List } from "System.Collections.Generic";
+import { MemoryStream } from "System.IO";
+import { MethodAttributes, MethodImplAttributes } from "System.Reflection";
+import { MetadataReaderProvider, MethodDefinitionHandle, StandaloneSignatureHandle } from "System.Reflection.Metadata";
+import { MetadataBuilder, MetadataRootBuilder, MetadataTokens } from "System.Reflection.Metadata.Ecma335";
+import { DebugDirectoryBuilder } from "System.Reflection.PortableExecutable";
+import { ILBuilder, SequencePoint, SourceDebugDocument, MethodDebugInfo, PortableDebugEmitter } from "Caladesi.Compiler.Emit";
+import { ErrorTypeSymbol } from "Caladesi.Compiler.Symbols";
+
+@TestClass
+export class PortableDebugEmitterTests {
+  @TestMethod
+  rawPointsPreserveHiddenDeltasAndSkipNonIncreasingOffsets(): void {
+    const points = new List<SequencePoint>();
+    points.Add(new SequencePoint(0, 0xFEEFEE, 0, 0xFEEFEE, 0, true));
+    points.Add(new SequencePoint(2, 10, 3, 10, 5, false));
+    points.Add(new SequencePoint(2, 99, 99, 99, 100, false));
+    points.Add(new SequencePoint(1, 0xFEEFEE, 0, 0xFEEFEE, 0, true));
+    points.Add(new SequencePoint(3, 0xFEEFEE, 0, 0xFEEFEE, 0, true));
+    points.Add(new SequencePoint(5, 9, 1, 11, 0, false));
+    const actual = PortableDebugEmitter<string>.EncodeSequencePoints(points, MetadataTokens.StandaloneSignatureHandle(1));
+    const expected: byte[] = [1, 0, 0, 0, 2, 0, 2, 10, 3, 1, 0, 0, 2, 2, 127, 127, 125];
+    if (actual.Length != expected.Length) throw new Exception("Sequence point length");
+    for (let i = 0; i < expected.Length; i++) {
+      if (actual[i] != expected[i]) throw new Exception("Sequence point byte");
+    }
+    const empty = PortableDebugEmitter<string>.EncodeSequencePoints(new List<SequencePoint>(), new StandaloneSignatureHandle());
+    if (empty.Length != 1 || empty[0] != 0) throw new Exception("Empty sequence point signature");
+  }
+
+  @TestMethod
+  portablePdbDecodesDocumentsAlignedMethodsAndNamedScopes(): void {
+    const metadata = new MetadataBuilder();
+    const methodSignature: byte[] = [0, 0, 1];
+    const signature = metadata.GetOrAddBlob(methodSignature);
+    for (let row = 1; row <= 2; row++) {
+      metadata.AddMethodDefinition(MethodAttributes.Public | MethodAttributes.Static, MethodImplAttributes.IL,
+        metadata.GetOrAddString("M" + row), signature, 0, MetadataTokens.ParameterHandle(1));
+    }
+    const method = MetadataTokens.MethodDefinitionHandle(2);
+    const il = new ILBuilder();
+    il.NewLocal(ErrorTypeSymbol.Instance, "value");
+    il.NewLocal(ErrorTypeSymbol.Instance);
+    il.MarkSequencePoint(1, 0, 1, 2);
+    const debug = new Dictionary<MethodDefinitionHandle, MethodDebugInfo<string>>();
+    debug[method] = new MethodDebugInfo<string>(il.Locals, new StandaloneSignatureHandle(), 0, "source");
+    const points = new Dictionary<MethodDefinitionHandle, List<SequencePoint>>();
+    points[method] = il.SequencePoints;
+    const documents: SourceDebugDocument<string>[] = [new SourceDebugDocument<string>("source", "src/α.cala", "// café ☃")];
+    const emitter = new PortableDebugEmitter<string>(metadata, documents, debug, points, method);
+    const root = new MetadataRootBuilder(metadata);
+    const stream = new MemoryStream();
+    const second = new MemoryStream();
+    try {
+      emitter.Emit(new DebugDirectoryBuilder(), stream, "test.pdb", root);
+      emitter.Emit(new DebugDirectoryBuilder(), second, "test.pdb", root);
+      const bytes = stream.ToArray();
+      const repeated = second.ToArray();
+      if (bytes.Length != repeated.Length) throw new Exception("Deterministic PDB length");
+      for (let i = 0; i < bytes.Length; i++) {
+        if (bytes[i] != repeated[i]) throw new Exception("Deterministic PDB bytes");
+      }
+      stream.Position = 0;
+      const provider = MetadataReaderProvider.FromPortablePdbStream(stream);
+      try {
+        const reader = provider.GetMetadataReader();
+        if (reader.MethodDebugInformation.Count != 2) throw new Exception("Method row alignment");
+        const missing = reader.GetMethodDebugInformation(MetadataTokens.MethodDebugInformationHandle(1));
+        if (!missing.Document.IsNil || !missing.SequencePointsBlob.IsNil) throw new Exception("Missing method row");
+        const info = reader.GetMethodDebugInformation(MetadataTokens.MethodDebugInformationHandle(2));
+        if (info.Document != MetadataTokens.DocumentHandle(1)) throw new Exception("Method document");
+        const document = reader.GetDocument(info.Document);
+        if (reader.GetString(document.Name) != "src/α.cala" || reader.GetBlobBytes(document.Hash).Length != 32)
+          throw new Exception("UTF8 source document");
+        const scope = reader.GetLocalScope(MetadataTokens.LocalScopeHandle(1));
+        if (scope.Method != method || scope.Length != 1) throw new Exception("Local scope");
+        const local = reader.GetLocalVariable(MetadataTokens.LocalVariableHandle(1));
+        if (local.Index != 0 || reader.GetString(local.Name) != "value" ||
+            reader.LocalVariables.Count != 1) throw new Exception("Named locals only");
+      } finally { provider.Dispose(); }
+    } finally { stream.Dispose(); second.Dispose(); }
+  }
+}
