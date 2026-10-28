@@ -20,6 +20,55 @@ namespace Caladesi.Compiler.Tests.SelfHost;
 public sealed class FlowNarrowingParityTests
 {
     [TestMethod]
+    public void DictionaryDispatch_EquivalentPathsAndSubstitutedFieldIdentityMatchOracle()
+    {
+        Fixture f = new();
+        HS.Symbol root = new HS.ParameterSymbol("receiver", (HS.TypeSymbol)f.Object.Actual, 0, null);
+        HS.Symbol property = ((HS.NamedTypeSymbol)f.String.Actual).GetMembers("Length").Single();
+        Pair tuple = f.Type("System.ValueTuple`2");
+        NamedTypeSymbol originalTuple = (NamedTypeSymbol)tuple.Original;
+        HS.NamedTypeSymbol actualTuple = (HS.NamedTypeSymbol)tuple.Actual;
+        FieldSymbol originalDefinition = originalTuple.GetMembers("Item1").OfType<FieldSymbol>().Single();
+        HS.FieldSymbol selfDefinition = actualTuple.GetMembers("Item1").OfType<HS.FieldSymbol>().Single();
+        FieldSymbol originalSubstituted = originalTuple.Construct(ImmutableArray.Create(
+            (TypeSymbol)f.String.Original, (TypeSymbol)f.Int.Original)).GetMembers("Item1").OfType<FieldSymbol>().Single();
+        HS.FieldSymbol actualSubstituted = actualTuple.Construct(ImmutableArray.Create(
+            (HS.TypeSymbol)f.String.Actual, (HS.TypeSymbol)f.Int.Actual)).GetMembers("Item1").OfType<HS.FieldSymbol>().Single();
+        Assert.AreSame(selfDefinition, actualSubstituted.OriginalSymbolDefinition);
+        Assert.AreSame(originalDefinition, originalSubstituted.OriginalDefinition);
+        H.NarrowPath fieldDefinition = new([selfDefinition]);
+        H.NarrowPath fieldSubstituted = new([actualSubstituted]);
+        Assert.AreEqual(f.NewPath(originalDefinition).Equals(f.NewPath(originalSubstituted)),
+            fieldDefinition.Equals(fieldSubstituted));
+        Assert.IsFalse(fieldDefinition.Equals(fieldSubstituted));
+        Assert.AreEqual(unchecked(17 * 31 + RuntimeHelpers.GetHashCode(actualSubstituted)), fieldSubstituted.GetHashCode());
+
+        H.NarrowPath path = new([root, property]);
+        H.NarrowPath equivalent = new([root, property]);
+        H.NarrowPath differentLastMember = new([root, selfDefinition]);
+        H.NarrowPath prefix = new([root]);
+        Assert.AreNotSame(path, equivalent);
+        Assert.IsTrue(path.Equals(equivalent));
+        Assert.AreEqual(path.GetHashCode(), equivalent.GetHashCode());
+        Assert.IsFalse(path.Equals(differentLastMember));
+        Assert.IsFalse(path.StartsWith(differentLastMember));
+        Assert.IsFalse(path.Equals(prefix));
+        Assert.IsTrue(path.StartsWith(prefix));
+        Assert.IsFalse(prefix.StartsWith(path));
+        var state = ImmutableDictionary<H.NarrowPath, HS.TypeSymbol>.Empty.SetItem(path, (HS.TypeSymbol)f.String.Actual);
+        Assert.IsTrue(state.ContainsKey(equivalent));
+        Assert.AreSame(f.String.Actual, state[equivalent]);
+        var replaced = state.SetItem(equivalent, (HS.TypeSymbol)f.Int.Actual);
+        Assert.HasCount(1, replaced);
+        Assert.AreSame(f.String.Actual, state[path]);
+        Assert.AreSame(f.Int.Actual, replaced[path]);
+        Assert.IsFalse(state.ContainsKey(differentLastMember));
+        Assert.IsFalse(state.ContainsKey(prefix));
+        Assert.IsFalse(ImmutableDictionary<H.NarrowPath, HS.TypeSymbol>.Empty
+            .SetItem(fieldDefinition, (HS.TypeSymbol)f.String.Actual).ContainsKey(fieldSubstituted));
+    }
+
+    [TestMethod]
     public void Paths_AllExpressionAndConversionKindsMatchOriginal()
     {
         Fixture f = new();

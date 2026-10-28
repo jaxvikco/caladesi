@@ -46,6 +46,11 @@ export class FlowNarrowingTests {
     const empty = flow.SaveState();
     flow.Apply(new Narrowings(ImmutableArray.Create<NarrowingFact>(new NarrowingFact(path, type))));
     const narrowed = flow.SaveState();
+    const equivalent = FlowNarrowing.PathOf(expression)!;
+    if (Object.ReferenceEquals(path, equivalent) || !narrowed.ContainsKey(equivalent) ||
+        !Object.ReferenceEquals(type, narrowed[equivalent])) {
+      throw new Exception("Dictionary must dispatch path equality and hashing");
+    }
     const conversion = flow.ApplyNarrowing(expression) as BoundConversion;
     if (conversion == null || conversion.Kind != ConversionKind.FromNullable || empty.Count != 0 || narrowed.Count != 1) {
       throw new Exception("Persistent state and nullable conversion");
