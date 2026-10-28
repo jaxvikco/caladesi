@@ -1,0 +1,150 @@
+import { BlobBuilder } from "System.Reflection.Metadata";
+import { BoundAttribute } from "../BoundAttribute";
+import { BoundExpression, BoundConversion, ConversionKind, BoundArrayCreation, BoundTypeOf } from "../Bound/BoundNodes";
+import { Symbol } from "../Symbols/Symbol";
+import { TypeSymbol, ArrayTypeSymbol, TypeKind } from "../Symbols/TypeSymbols";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { MethodSymbol, PropertySymbol, FieldSymbol } from "../Symbols/MemberSymbols";
+import { SpecialType } from "../Symbols/SpecialType";
+import { DecoratorSyntax } from "../Syntax/Nodes.Core";
+
+export sealed class AttributeBinder {
+  constructor(private readonly bindAttribute: Func<DecoratorSyntax, Symbol?, BoundAttribute?>,
+    private readonly assemblyName: Func<NamedTypeSymbol, string?>,
+    private readonly getSpecialType: Func<SpecialType, NamedTypeSymbol>) {}
+
+  Bind(decorator: DecoratorSyntax, context: Symbol?): [Constructor: MethodSymbol, Blob: BlobBuilder]? {
+    const bound = this.bindAttribute(decorator, context);
+    if (bound == null) return null;
+    const bb = new BlobBuilder();
+    bb.WriteUInt16(1);
+    const ps = bound.Constructor.Parameters;
+    for (let i = 0; i < ps.Length; i++) this.WriteFixed(bb, ps[i].Type, bound.Arguments[i]);
+    bb.WriteUInt16(bound.Named.Length as ushort);
+    for (const named of bound.Named) {
+      const member = named.Item1;
+      const value = named.Item2;
+      const type = member instanceof PropertySymbol ? (member as PropertySymbol).Type : (member as FieldSymbol).Type;
+      bb.WriteByte(member instanceof PropertySymbol ? 0x54 as byte : 0x53 as byte);
+      this.WriteTypeTag(bb, type);
+      bb.WriteSerializedString(member.Name);
+      this.WriteFixed(bb, type, value);
+    }
+    return [bound.Constructor, bb];
+  }
+
+  private static ConstantOf(e: BoundExpression): object? {
+    const cv = e.ConstantValue;
+    if (cv != null) return cv.Value;
+    if (e instanceof BoundConversion) {
+      const c = e as BoundConversion;
+      if (c.Kind == ConversionKind.Boxing || c.Kind == ConversionKind.ImplicitReference || c.Kind == ConversionKind.Identity)
+        return AttributeBinder.ConstantOf(c.Operand);
+    }
+    return null;
+  }
+
+  private WriteTypeTag(bb: BlobBuilder, t: TypeSymbol): void {
+    t = t.StripNullable();
+    if (t instanceof ArrayTypeSymbol) {
+      bb.WriteByte(0x1D);
+      this.WriteTypeTag(bb, (t as ArrayTypeSymbol).ElementType);
+      return;
+    }
+    if (t.TypeKind == TypeKind.Enum) {
+      bb.WriteByte(0x55);
+      bb.WriteSerializedString(this.QualifiedName(t));
+      return;
+    }
+    let tag = 0x51;
+    switch (t.SpecialType) {
+      case SpecialType.Boolean: tag = 0x02; break;
+      case SpecialType.Char: tag = 0x03; break;
+      case SpecialType.SByte: tag = 0x04; break;
+      case SpecialType.Byte: tag = 0x05; break;
+      case SpecialType.Int16: tag = 0x06; break;
+      case SpecialType.UInt16: tag = 0x07; break;
+      case SpecialType.Int32: tag = 0x08; break;
+      case SpecialType.UInt32: tag = 0x09; break;
+      case SpecialType.Int64: tag = 0x0A; break;
+      case SpecialType.UInt64: tag = 0x0B; break;
+      case SpecialType.Single: tag = 0x0C; break;
+      case SpecialType.Double: tag = 0x0D; break;
+      case SpecialType.String: tag = 0x0E; break;
+      case SpecialType.Type: tag = 0x50; break;
+    }
+    bb.WriteByte(tag as byte);
+  }
+
+  private QualifiedName(t: TypeSymbol): string {
+    const stripped = t.StripNullable();
+    if (!(stripped instanceof NamedTypeSymbol)) return t.ToDisplayString();
+    const def = stripped as NamedTypeSymbol;
+    const asm = this.assemblyName(def);
+    return def.ToMetadataString() + (asm == null ? "" : ", " + asm);
+  }
+
+  private WriteFixed(bb: BlobBuilder, type: TypeSymbol, arg: BoundExpression): void {
+    type = type.StripNullable();
+    if (type instanceof ArrayTypeSymbol) {
+      const at = type as ArrayTypeSymbol;
+      if (arg instanceof BoundArrayCreation) {
+        const ac = arg as BoundArrayCreation;
+        bb.WriteInt32(ac.Initializers.Length);
+        for (const el of ac.Initializers) this.WriteFixed(bb, at.ElementType, el);
+      } else bb.WriteInt32(-1);
+      return;
+    }
+    if (type.SpecialType == SpecialType.Object) {
+      let inner = arg;
+      if (arg instanceof BoundConversion) {
+        const c = arg as BoundConversion;
+        if (c.Kind == ConversionKind.Boxing || c.Kind == ConversionKind.ImplicitReference) inner = c.Operand;
+      }
+      const itype = inner.Type ?? type;
+      this.WriteTypeTag(bb, itype);
+      this.WriteFixed(bb, itype, inner);
+      return;
+    }
+    if (type.SpecialType == SpecialType.Type) {
+      if (arg instanceof BoundTypeOf) bb.WriteSerializedString(this.QualifiedName((arg as BoundTypeOf).Operand));
+      else bb.WriteByte(0xFF);
+      return;
+    }
+    const v = AttributeBinder.ConstantOf(arg);
+    if (type.TypeKind == TypeKind.Enum) {
+      let under: NamedTypeSymbol? = null;
+      if (type instanceof NamedTypeSymbol) under = (type as NamedTypeSymbol).EnumUnderlyingType;
+      AttributeBinder.WritePrimitive(bb, (under ?? this.getSpecialType(SpecialType.Int32)).SpecialType, v);
+      return;
+    }
+    if (type.SpecialType == SpecialType.String) {
+      if (v instanceof string) bb.WriteSerializedString(v as string);
+      else bb.WriteByte(0xFF);
+      return;
+    }
+    AttributeBinder.WritePrimitive(bb, type.SpecialType, v);
+  }
+
+  private static WritePrimitive(bb: BlobBuilder, t: SpecialType, v: object?): void {
+    switch (t) {
+      case SpecialType.Boolean: bb.WriteBoolean(Convert.ToBoolean(v)); break;
+      case SpecialType.Char:
+        if (v instanceof char) bb.WriteUInt16((v as char) as ushort);
+        else if (v instanceof string && (v as string).Length == 1) bb.WriteUInt16((v as string)[0] as ushort);
+        else bb.WriteUInt16((Convert.ToInt32(v) as char) as ushort);
+        break;
+      case SpecialType.SByte: bb.WriteSByte(Convert.ToSByte(v)); break;
+      case SpecialType.Byte: bb.WriteByte(Convert.ToByte(v)); break;
+      case SpecialType.Int16: bb.WriteInt16(Convert.ToInt16(v)); break;
+      case SpecialType.UInt16: bb.WriteUInt16(Convert.ToUInt16(v)); break;
+      case SpecialType.Int32: bb.WriteInt32(Convert.ToInt32(v)); break;
+      case SpecialType.UInt32: bb.WriteUInt32(Convert.ToUInt32(v)); break;
+      case SpecialType.Int64: bb.WriteInt64(Convert.ToInt64(v)); break;
+      case SpecialType.UInt64: bb.WriteUInt64(Convert.ToUInt64(v)); break;
+      case SpecialType.Single: bb.WriteSingle(Convert.ToSingle(v)); break;
+      case SpecialType.Double: bb.WriteDouble(Convert.ToDouble(v)); break;
+      default: bb.WriteInt32(Convert.ToInt32(v)); break;
+    }
+  }
+}

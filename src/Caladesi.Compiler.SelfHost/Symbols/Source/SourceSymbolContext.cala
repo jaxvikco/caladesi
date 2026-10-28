@@ -1,0 +1,30 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { SyntaxTree } from "../../Syntax/SyntaxTree";
+import { TypeSyntax, ParameterListSyntax, TypeParameterSyntax } from "../../Syntax/Nodes.Core";
+import { DiagnosticBag } from "../../Diagnostics/Diagnostic";
+import { BoundBlock } from "../../Bound/BoundNodes";
+import { Symbol } from "../Symbol";
+import { NamedTypeSymbol } from "../NamedTypeSymbol";
+import { TypeSymbol, TypeParameterSymbol, TypeParameterConstraints } from "../TypeSymbols";
+import { SpecialType } from "../SpecialType";
+import { ParameterSymbol, PropertySymbol } from "../MemberSymbols";
+import { SourceMethodSymbol, SourcePropertySymbol } from "./SourceMembers";
+
+// Binding and source ownership services supplied once the declaration/binder cluster is ported.
+// Declaration services use declaration diagnostics; BindMethodBody uses body diagnostics.
+export abstract class SourceSymbolContext<TSourceFile> {
+  abstract GetTree(file: TSourceFile): SyntaxTree;
+  abstract GetFilePath(file: TSourceFile): string;
+  abstract get DeclarationDiagnostics(): DiagnosticBag;
+  abstract GetSpecialType(type: SpecialType): NamedTypeSymbol;
+  abstract IsSourceNamedType(type: NamedTypeSymbol): bool;
+  abstract BindParameters(file: TSourceFile, method: SourceMethodSymbol<TSourceFile>,
+    syntax: ParameterListSyntax): ImmutableArray<ParameterSymbol>;
+  abstract BindType(file: TSourceFile, owner: Symbol, syntax: TypeSyntax, allowVoid: bool): TypeSymbol;
+  abstract AdjustDeclaredReturnType(file: TSourceFile, method: SourceMethodSymbol<TSourceFile>,
+    type: TypeSymbol, syntax: TypeSyntax): TypeSymbol;
+  abstract BindConstraints(file: TSourceFile, owner: Symbol, syntax: TypeParameterSyntax,
+    parameter: TypeParameterSymbol): TypeParameterConstraints;
+  abstract BindMethodBody(file: TSourceFile, method: SourceMethodSymbol<TSourceFile>): BoundBlock?;
+  abstract FindOverriddenProperty(container: NamedTypeSymbol, property: SourcePropertySymbol<TSourceFile>): PropertySymbol?;
+}

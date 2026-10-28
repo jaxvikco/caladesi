@@ -1,0 +1,53 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { Dictionary } from "System.Collections.Generic";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { BlobBuilder, HandleKind } from "System.Reflection.Metadata";
+import { SignatureTypeEncoder, MetadataTokens } from "System.Reflection.Metadata.Ecma335";
+import { MetadataEmitter } from "Caladesi.Compiler.Emit";
+import { ErrorTypeSymbol, NullTypeSymbol, NamedTypeSymbol, TypeParameterSymbol, ParameterSymbol, VarianceKind, TypeKind, ArrayTypeSymbol, NullableTypeSymbol, Accessibility, MethodKind } from "Caladesi.Compiler.Symbols";
+import { SynthesizedNamedType, SynthesizedMethodSymbol, SynthesizedFieldSymbol } from "Caladesi.Compiler.Symbols.Source";
+
+@TestClass
+export class MetadataEmitterTests {
+  @TestMethod
+  parameterMapsAndMultidimensionalArraysEncodeRealBytes(): void {
+    const emitter = new MetadataEmitter(special => ErrorTypeSymbol.Instance, name => (null as (NamedTypeSymbol | null))!);
+    const owner = new SynthesizedNamedType("Owner", ErrorTypeSymbol.Instance, TypeKind.Class);
+    const method = new SynthesizedMethodSymbol(owner, "M", MethodKind.Ordinary, Accessibility.Public,
+      true, ErrorTypeSymbol.Instance, ImmutableArray<ParameterSymbol>.Empty);
+    const parameter = new TypeParameterSymbol("T", 3, method, VarianceKind.None);
+    const bytes = new BlobBuilder();
+    emitter.EncodeType(new SignatureTypeEncoder(bytes), parameter);
+    const first = bytes.ToArray();
+    if (first.Length != 2 || first[0] != 0x1e || first[1] != 3) throw new Exception("Method parameter signature");
+    const map = new Dictionary<TypeParameterSymbol, int>();
+    map[parameter] = 1;
+    emitter.SetClassTypeParameterMap(map);
+    const mapped = new BlobBuilder();
+    emitter.EncodeType(new SignatureTypeEncoder(mapped), new ArrayTypeSymbol(parameter, ErrorTypeSymbol.Instance, 2));
+    const array = mapped.ToArray();
+    if (array.Length != 6 || array[0] != 0x14 || array[1] != 0x13 || array[2] != 1 ||
+        array[3] != 2 || array[4] != 0 || array[5] != 0) throw new Exception("Array signature");
+    const handle = emitter.GetTypeEntity(parameter);
+    if (handle.Kind != HandleKind.TypeSpecification || handle != emitter.GetTypeEntity(parameter)) throw new Exception("Type cache");
+    emitter.SetClassTypeParameterMap((null as (Dictionary<TypeParameterSymbol, int> | null))!);
+    if (handle == emitter.GetTypeEntity(parameter)) throw new Exception("Map cache partition");
+  }
+
+  @TestMethod
+  registeredDefinitionsAndNullableReferenceErasure(): void {
+    const emitter = new MetadataEmitter(special => ErrorTypeSymbol.Instance, name => (null as (NamedTypeSymbol | null))!);
+    const owner = new SynthesizedNamedType("Owner", ErrorTypeSymbol.Instance, TypeKind.Class);
+    const method = new SynthesizedMethodSymbol(owner, "M", MethodKind.Ordinary, Accessibility.Public,
+      true, ErrorTypeSymbol.Instance, ImmutableArray<ParameterSymbol>.Empty);
+    const field = new SynthesizedFieldSymbol(owner, "F", ErrorTypeSymbol.Instance);
+    emitter.RegisterTypeDefinition(owner, MetadataTokens.TypeDefinitionHandle(1));
+    emitter.RegisterMethod(method, MetadataTokens.MethodDefinitionHandle(2));
+    emitter.RegisterField(field, MetadataTokens.FieldDefinitionHandle(3));
+    if (emitter.GetTypeEntity(owner).Kind != HandleKind.TypeDefinition ||
+        emitter.GetMethodEntity(method).Kind != HandleKind.MethodDefinition ||
+        emitter.GetFieldEntity(field).Kind != HandleKind.FieldDefinition) throw new Exception("Definition registration");
+    if (!Object.ReferenceEquals(emitter.ClrType(new NullableTypeSymbol(owner)), owner)) throw new Exception("Reference erasure");
+    if (MetadataEmitter.IsNullableValue(new NullableTypeSymbol(NullTypeSymbol.Instance))) throw new Exception("Nullable reference");
+  }
+}

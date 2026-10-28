@@ -1,0 +1,58 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { AttributeBinder } from "Caladesi.Compiler.Emit";
+import { BoundAttribute } from "Caladesi.Compiler";
+import { BoundExpression, BoundLiteral } from "Caladesi.Compiler.Bound";
+import { ErrorTypeSymbol, Symbol, ParameterSymbol, ConstantValue, MethodKind, Accessibility, SpecialType } from "Caladesi.Compiler.Symbols";
+import { ReferenceSet } from "Caladesi.Compiler.Symbols.Metadata";
+import { SynthesizedMethodSymbol } from "Caladesi.Compiler.Symbols.Source";
+import { SyntaxTree, DecoratorSyntax } from "Caladesi.Compiler.Syntax";
+
+@TestClass
+export class AttributeBinderTests {
+  private readonly missingAttribute: BoundAttribute? = null;
+  private readonly missingAssembly: string? = null;
+
+  private static Decorator(): DecoratorSyntax {
+    const tree = SyntaxTree.ParseText("@Example export class Decorated {}");
+    for (const node of tree.Root.DescendantNodes()) {
+      if (node instanceof DecoratorSyntax) return node as DecoratorSyntax;
+    }
+    throw new Exception("Decorator syntax missing");
+  }
+
+  @TestMethod
+  unboundDecoratorProducesNoBlob(): void {
+    let calls = 0;
+    const binder = new AttributeBinder((decorator, context) => {
+      calls++;
+      return this.missingAttribute!;
+    }, type => this.missingAssembly!, special => ErrorTypeSymbol.Instance);
+    if (binder.Bind(AttributeBinderTests.Decorator(), ErrorTypeSymbol.Instance) != null || calls != 1)
+      throw new Exception("Unbound attribute callback");
+  }
+
+  @TestMethod
+  fixedArgumentAndEmptyNamedListWriteFullBlob(): void {
+    const references = ReferenceSet.Create([typeof(object).Assembly.Location]);
+    const type = references.GetSpecialType(SpecialType.Int32)!;
+    const container = references.GetSpecialType(SpecialType.Object)!;
+    const method = new SynthesizedMethodSymbol(container, ".ctor", MethodKind.Constructor, Accessibility.Public,
+      false, references.GetSpecialType(SpecialType.Void)!, ImmutableArray<ParameterSymbol>.Empty);
+    const parameters = ImmutableArray.CreateBuilder<ParameterSymbol>();
+    parameters.Add(new ParameterSymbol("value", type, 0, method));
+    method.SetParameters(parameters.ToImmutable());
+    const args = ImmutableArray.CreateBuilder<BoundExpression>();
+    args.Add(new BoundLiteral(new ConstantValue(42), type));
+    const bound = new BoundAttribute(container, method, args.ToImmutable(), ImmutableArray<[Symbol, BoundExpression]>.Empty);
+    const binder = new AttributeBinder((decorator, context) => bound, symbol => this.missingAssembly!, special => references.GetSpecialType(special)!);
+    const result = binder.Bind(AttributeBinderTests.Decorator(), container);
+    if (result == null) throw new Exception("Bound attribute missing");
+    const bytes = result!.Item2.ToArray();
+    if (bytes.Length != 8 || bytes[0] != 1 || bytes[1] != 0 || bytes[2] != 42 ||
+      bytes[3] != 0 || bytes[4] != 0 || bytes[5] != 0 || bytes[6] != 0 || bytes[7] != 0)
+      throw new Exception("Attribute blob encoding");
+    if (!Object.ReferenceEquals(result!.Item1, method) ||
+      !Object.ReferenceEquals(bound.AttributeType, container)) throw new Exception("Attribute DTO identity");
+  }
+}
