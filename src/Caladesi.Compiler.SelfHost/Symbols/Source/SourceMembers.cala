@@ -173,7 +173,7 @@ export sealed class SourceMethodSymbol<TSourceFile> extends MethodSymbol {
     if (this.overriddenDone) return this.overridden;
     this.overriddenDone = true;
     if (!this.IsOverrideFlag || this.ContainerType.BaseType == null) return null;
-    this.overridden = OverrideResolver<TSourceFile>.FindOverriddenMethod(this, this.Context);
+    this.overridden = OverrideResolver<TSourceFile>.FindOverriddenMethod(this);
     return this.overridden;
   }
   override ToString(): string { return this.ContainerType.Name + "." + this.name; }

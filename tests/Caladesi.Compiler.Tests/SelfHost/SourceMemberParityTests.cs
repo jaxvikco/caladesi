@@ -233,8 +233,86 @@ public sealed class SourceMemberParityTests
         Assert.IsNull(miss.OverriddenMethod);
         ArgumentNullException expectedNull = Assert.ThrowsExactly<ArgumentNullException>(() => OverrideResolver.FindOverriddenMethod(null!));
         ArgumentNullException actualNull = Assert.ThrowsExactly<ArgumentNullException>(() =>
-            HS.OverrideResolver<SourceFile>.FindOverriddenMethod(null!, f));
+            HS.OverrideResolver<SourceFile>.FindOverriddenMethod(null!));
         Assert.AreEqual(expectedNull.ParamName, actualNull.ParamName);
+    }
+
+    [TestMethod]
+    [DataRow(2, 0)]
+    [DataRow(2, 1)]
+    [DataRow(2, 2)]
+    [DataRow(2, 3)]
+    [DataRow(4, 0)]
+    [DataRow(4, 1)]
+    [DataRow(4, 2)]
+    [DataRow(4, 3)]
+    [DataRow(8, 0)]
+    [DataRow(8, 1)]
+    [DataRow(8, 2)]
+    [DataRow(8, 3)]
+    public void PropertyOverrides_SearchOwnGraphWithExactCaseFilteringAndBaseTraversal(int eligibility, int scenario)
+    {
+        Fixture f = new("class Source {}");
+        MethodInfo oracle = typeof(Compilation).Assembly.GetType("Caladesi.Compiler.DeclarationChecker")!
+            .GetMethod("FindOverriddenProperty", BindingFlags.Static | BindingFlags.NonPublic)!;
+        {
+            SynthesizedNamedType root = new("Root", null, TypeKind.Class);
+            SynthesizedNamedType middle = new("Middle", null, TypeKind.Class, baseType: root);
+            SynthesizedNamedType derived = new("Derived", null, TypeKind.Class, baseType: middle);
+            HS.SynthesizedNamedType selfRoot = new("Root", null, H.TypeKind.Class);
+            HS.SynthesizedNamedType selfMiddle = new("Middle", null, H.TypeKind.Class, H.Accessibility.Private, selfRoot);
+            HS.SynthesizedNamedType selfDerived = new("Derived", null, H.TypeKind.Class, H.Accessibility.Private, selfMiddle);
+            var ancestor = AddProperty(f, root, selfRoot, "value", scenario == 3 ? 0 : eligibility);
+            middle.AddMember(new SynthesizedFieldSymbol(middle, "value", ErrorTypeSymbol.Instance));
+            selfMiddle.AddMember(new HS.SynthesizedFieldSymbol(selfMiddle, "value", H.ErrorTypeSymbol.Instance));
+            _ = AddProperty(f, middle, selfMiddle, "value", eligibility | 1);
+            _ = AddProperty(f, middle, selfMiddle, "value", 0);
+            var target = AddProperty(f, derived, selfDerived, "value", 8);
+            (SourcePropertySymbol Original, HS.SourcePropertySymbol<SourceFile> Actual)? selected = null;
+            if (scenario <= 1) selected = AddProperty(f, middle, selfMiddle, "Value", eligibility);
+            // Exact spelling wins even though its declaration follows the flipped spelling.
+            if (scenario == 0) selected = AddProperty(f, middle, selfMiddle, "value", eligibility);
+            if (scenario == 2) selected = ancestor;
+            PropertySymbol? expected = (PropertySymbol?)oracle.Invoke(null, [derived, target.Original]);
+            H.PropertySymbol? actual = HS.OverrideResolver<SourceFile>.FindOverriddenProperty(selfDerived, target.Actual);
+            Assert.IsTrue(ReferenceEquals(selected?.Original, expected), $"original {eligibility}/{scenario}");
+            Assert.IsTrue(ReferenceEquals(selected?.Actual, actual), $"selfhost {eligibility}/{scenario}");
+            Assert.AreSame(expected?.GetMethod, target.Original.Getter!.OverriddenMethod);
+            Assert.AreSame(actual?.GetMethod, target.Actual.Getter!.OverriddenMethod);
+            Assert.AreSame(expected?.SetMethod, target.Original.Setter!.OverriddenMethod);
+            Assert.AreSame(actual?.SetMethod, target.Actual.Setter!.OverriddenMethod);
+            Assert.AreSame(target.Actual.Getter.OverriddenMethod, target.Actual.Getter.OverriddenMethod);
+            Assert.AreSame(target.Actual.Setter.OverriddenMethod, target.Actual.Setter.OverriddenMethod);
+        }
+
+        static (SourcePropertySymbol Original, HS.SourcePropertySymbol<SourceFile> Actual) AddProperty(
+            Fixture f, SynthesizedNamedType owner, HS.SynthesizedNamedType selfOwner, string name, int flags)
+        {
+            bool isStatic = (flags & 1) != 0;
+            SourcePropertySymbol original = new(f.File, owner, name, Accessibility.Public, isStatic, null, null,
+                f.Compilation.GetSpecialType(SpecialType.Int32))
+            {
+                IsVirtualFlag = (flags & 2) != 0, IsAbstractFlag = (flags & 4) != 0, IsOverrideFlag = (flags & 8) != 0
+            };
+            HS.SourcePropertySymbol<SourceFile> actual = new(f, f.File, selfOwner, name, H.Accessibility.Public,
+                isStatic, null, null, f.GetSpecialType(H.SpecialType.Int32));
+            actual.IsVirtualFlag = original.IsVirtualFlag;
+            actual.IsAbstractFlag = original.IsAbstractFlag;
+            actual.IsOverrideFlag = original.IsOverrideFlag;
+            original.Getter = new(f.Compilation, f.File, owner, "get_" + name, MethodKind.PropertyGet, default, null, Accessibility.Public)
+            { AssociatedProperty = original, IsOverrideFlag = true };
+            original.Setter = new(f.Compilation, f.File, owner, "set_" + name, MethodKind.PropertySet, default, null, Accessibility.Public)
+            { AssociatedProperty = original, IsOverrideFlag = true };
+            actual.Getter = new(f, f.File, selfOwner, "get_" + name, H.MethodKind.PropertyGet, default, null, H.Accessibility.Public);
+            actual.Getter.AssociatedProperty = actual;
+            actual.Getter.IsOverrideFlag = true;
+            actual.Setter = new(f, f.File, selfOwner, "set_" + name, H.MethodKind.PropertySet, default, null, H.Accessibility.Public);
+            actual.Setter.AssociatedProperty = actual;
+            actual.Setter.IsOverrideFlag = true;
+            owner.AddMember(original);
+            selfOwner.AddMember(actual);
+            return (original, actual);
+        }
     }
 
     [TestMethod]
@@ -295,6 +373,12 @@ public sealed class SourceMemberParityTests
         }
         Assert.IsTrue(parameters == actual.TypeParameters);
         Assert.AreEqual(2, f.ConstraintsBound);
+        Assert.HasCount(2, f.ConstraintBindings);
+        for (int i = 0; i < parameters.Length; i++)
+        {
+            Assert.AreSame(parameters[i], f.ConstraintBindings[i].Parameter);
+            Assert.AreSame(f.Node(expected.TypeParameterList!.Parameters[i]), f.ConstraintBindings[i].Syntax);
+        }
     }
 
     [TestMethod]
@@ -495,6 +579,7 @@ public sealed class SourceMemberParityTests
         public int TypesBound { get; private set; }
         public int ReturnsAdjusted { get; private set; }
         public int ConstraintsBound { get; private set; }
+        public List<(H.TypeParameterSymbol Parameter, HX.TypeParameterSyntax Syntax)> ConstraintBindings { get; } = [];
         public int BodiesBound { get; private set; }
         public Func<HS.SourceMethodSymbol<SourceFile>, HB.BoundBlock?>? Body { get; set; }
         public override HD.DiagnosticBag DeclarationDiagnostics { get; } = new();
@@ -653,9 +738,15 @@ public sealed class SourceMemberParityTests
         {
             ConstraintsBound++;
             SourceMethodSymbol method = (SourceMethodSymbol)originals[owner];
+            TypeParameterSyntax originalSyntax = file.Tree.Root.DescendantNodesAndSelf().OfType<TypeParameterSyntax>()
+                .Single(node => node.Span.Start == syntax.Span.Start && node.Span.Length == syntax.Span.Length);
+            Assert.AreSame(Node(originalSyntax), syntax);
+            Assert.AreEqual(parameter.Name, originalSyntax.Identifier.Text);
+            TypeParameterSymbol originalParameter = method.TypeParameters.Single(p => p.Name == parameter.Name && p.Ordinal == parameter.Ordinal);
+            ConstraintBindings.Add((parameter, syntax));
             TypeParameterConstraints constraints = (TypeParameterConstraints)typeof(Binder).GetMethod("BindConstraints",
                 BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(Binder(file, method),
-                [method.TypeParameterList!.Parameters[parameter.Ordinal], method.TypeParameters[parameter.Ordinal]])!;
+                [originalSyntax, originalParameter])!;
             return new(constraints.HasClass, constraints.HasStruct, constraints.HasNew, constraints.HasNotNull, [.. constraints.Types.Select(Type)]);
         }
 
@@ -672,13 +763,5 @@ public sealed class SourceMemberParityTests
             return bound is null ? null : new HB.BoundBlock([], []);
         }
 
-        public override H.PropertySymbol? FindOverriddenProperty(H.NamedTypeSymbol container, HS.SourcePropertySymbol<SourceFile> property)
-        {
-            SourcePropertySymbol original = (SourcePropertySymbol)originals[property];
-            PropertySymbol? overridden = (PropertySymbol?)typeof(Compilation).Assembly.GetType("Caladesi.Compiler.DeclarationChecker")!
-                .GetMethod("FindOverriddenProperty", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, [original.ContainingType, original]);
-            if (overridden is SourcePropertySymbol source) return Property(source);
-            return overridden is null ? null : ((H.NamedTypeSymbol)Type(overridden.ContainingType!)).GetMembers(overridden.Name).OfType<H.PropertySymbol>().Single();
-        }
     }
 }

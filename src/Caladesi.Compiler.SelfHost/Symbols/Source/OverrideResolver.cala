@@ -1,19 +1,19 @@
 import { IEnumerable } from "System.Collections.Generic";
 import { Symbol } from "../Symbol";
 import { TypeSymbol, TypeParameterSymbol } from "../TypeSymbols";
-import { MethodSymbol, MethodKind } from "../MemberSymbols";
+import { NamedTypeSymbol } from "../NamedTypeSymbol";
+import { MethodSymbol, MethodKind, PropertySymbol } from "../MemberSymbols";
 import { NameUtilities } from "../../NameUtilities";
 import { SourcePropertySymbol } from "./SourceMembers";
-import { SourceSymbolContext } from "./SourceSymbolContext";
 
 export sealed class OverrideResolver<TSourceFile> {
-  static FindOverriddenMethod(method: MethodSymbol, context: SourceSymbolContext<TSourceFile>): MethodSymbol? {
+  static FindOverriddenMethod(method: MethodSymbol): MethodSymbol? {
     ArgumentNullException.ThrowIfNull(method, "m");
     const container = method.ContainingType;
     if (container == null) return null;
     if (method.AssociatedSymbol instanceof SourcePropertySymbol<TSourceFile> &&
       (method.MethodKind == MethodKind.PropertyGet || method.MethodKind == MethodKind.PropertySet)) {
-      const property = context.FindOverriddenProperty(container, method.AssociatedSymbol as SourcePropertySymbol<TSourceFile>);
+      const property = OverrideResolver<TSourceFile>.FindOverriddenProperty(container, method.AssociatedSymbol as SourcePropertySymbol<TSourceFile>);
       if (property == null) return null;
       return method.MethodKind == MethodKind.PropertyGet ? property.GetMethod : property.SetMethod;
     }
@@ -25,6 +25,20 @@ export sealed class OverrideResolver<TSourceFile> {
           if (baseMethod.MethodKind == method.MethodKind && baseMethod.Arity == method.Arity && !baseMethod.IsStatic &&
             (baseMethod.IsVirtual || baseMethod.IsAbstract || baseMethod.IsOverride) &&
             OverrideResolver<TSourceFile>.SignaturesMatch(baseMethod, method)) return baseMethod;
+        }
+      }
+      baseType = baseType.BaseType;
+    }
+    return null;
+  }
+  static FindOverriddenProperty(container: NamedTypeSymbol, property: PropertySymbol): PropertySymbol? {
+    let baseType = container.BaseType;
+    while (baseType != null) {
+      for (const candidate of OverrideResolver<TSourceFile>.LookupNames(baseType, property.Name)) {
+        if (candidate instanceof PropertySymbol) {
+          const baseProperty = candidate as PropertySymbol;
+          if (!baseProperty.IsStatic && (baseProperty.IsVirtual || baseProperty.IsAbstract || baseProperty.IsOverride))
+            return baseProperty;
         }
       }
       baseType = baseType.BaseType;
