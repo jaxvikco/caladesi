@@ -1,0 +1,256 @@
+import { Dictionary, List, IEnumerable, IReadOnlyList } from "System.Collections.Generic";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { Symbol, SymbolKind, Accessibility } from "./Symbols/Symbol";
+import { NamedTypeSymbol } from "./Symbols/NamedTypeSymbol";
+import { NamespaceSymbol } from "./Symbols/NamespaceSymbol";
+import { MethodSymbol, MethodKind, FieldSymbol } from "./Symbols/MemberSymbols";
+import { ImportDeclarationSyntax, ImportSpecifierSyntax, NamespaceImportSyntax, NamedImportsSyntax } from "./Syntax/Nodes.Core";
+import { Diagnostic, DiagnosticDescriptor } from "./Diagnostics/Diagnostic";
+import { Descriptors } from "./Diagnostics/Descriptors";
+import { TextSpan } from "./Text/TextSpan";
+import { CompilationOptions } from "./CompilationOptions";
+
+// Only declaration ownership and recording cross the not-yet-ported compilation boundary.
+export abstract class FileScopeContext<TFile> {
+  abstract get Options(): CompilationOptions;
+  abstract get GlobalNamespace(): NamespaceSymbol;
+  abstract GetFilePath(file: TFile): string;
+  abstract GetModuleClassBaseName(file: TFile): string;
+  abstract GetTypes(file: TFile): ImmutableArray<NamedTypeSymbol>;
+  abstract GetAliases(file: TFile): ImmutableArray<Symbol>;
+  abstract GetModuleClass(file: TFile): NamedTypeSymbol?;
+  abstract GetImports(file: TFile): ImmutableArray<ImportDeclarationSyntax>;
+  abstract IsExportedAlias(symbol: Symbol): bool?;
+  abstract IsModuleVariable(field: FieldSymbol): bool;
+  abstract FindSourceFile(from: TFile, spec: string): TFile?;
+  abstract GetScope(file: TFile): FileScope<TFile>;
+  abstract RecordImport(specifier: ImportSpecifierSyntax, symbol: Symbol): void;
+}
+
+export sealed class FileModuleSymbol<TFile> extends Symbol {
+  constructor(public readonly File: TFile, private readonly alias: string) { super(); }
+  override get Kind(): SymbolKind { return SymbolKind.Alias; }
+  override get Name(): string { return this.alias; }
+}
+
+class ImportDiagnostic {
+  constructor(public readonly Descriptor: DiagnosticDescriptor, public readonly Span: TextSpan,
+    public readonly Args: object?[]) {}
+}
+
+export sealed class FileScope<TFile> {
+  private declared: Dictionary<string, List<Symbol>>? = null;
+  private named: Dictionary<string, List<Symbol>>? = null;
+  private aliases: Dictionary<string, Symbol>? = null;
+  private wildcards: List<Symbol>? = null;
+  private importDiagnostics: List<ImportDiagnostic>? = null;
+  private importsResolved = false;
+
+  constructor(private readonly context: FileScopeContext<TFile>, private readonly file: TFile) {}
+
+  private static Add(target: Dictionary<string, List<Symbol>>, name: string, symbol: Symbol): void {
+    if (!target.ContainsKey(name)) target[name] = new List<Symbol>();
+    target[name].Add(symbol);
+  }
+
+  get Declared(): Dictionary<string, List<Symbol>> {
+    if (this.declared != null) return this.declared;
+    const result = new Dictionary<string, List<Symbol>>(StringComparer.Ordinal);
+    for (const type of this.context.GetTypes(this.file)) FileScope<TFile>.Add(result, type.Name, type);
+    for (const alias of this.context.GetAliases(this.file)) FileScope<TFile>.Add(result, alias.Name, alias);
+    const module = this.context.GetModuleClass(this.file);
+    if (module != null) {
+      for (const member of module.GetMembers()) {
+        if (member instanceof MethodSymbol) {
+          const method = member as MethodSymbol;
+          if (method.MethodKind == MethodKind.Ordinary) FileScope<TFile>.Add(result, method.Name, method);
+        } else if (member instanceof FieldSymbol) {
+          const field = member as FieldSymbol;
+          if (this.context.IsModuleVariable(field)) FileScope<TFile>.Add(result, field.Name, field);
+        }
+      }
+    }
+    this.declared = result;
+    return result;
+  }
+
+  *GetExports(name: string): IEnumerable<Symbol> {
+    const declared = this.Declared;
+    if (!declared.ContainsKey(name)) return;
+    for (const symbol of declared[name]) {
+      const exported = this.context.IsExportedAlias(symbol);
+      const accessibility = exported == null ? symbol.DeclaredAccessibility :
+        (exported ? Accessibility.Public : Accessibility.Internal);
+      if (accessibility == Accessibility.Public) yield symbol;
+    }
+  }
+
+  *AllExports(): IEnumerable<Symbol> {
+    for (const pair of this.Declared) {
+      for (const symbol of this.GetExports(pair.Key)) yield symbol;
+    }
+  }
+
+  private ResolveImports(): void {
+    if (this.importsResolved) return;
+    this.importsResolved = true;
+    this.named = new Dictionary<string, List<Symbol>>(StringComparer.Ordinal);
+    this.aliases = new Dictionary<string, Symbol>(StringComparer.Ordinal);
+    this.wildcards = new List<Symbol>();
+    this.importDiagnostics = new List<ImportDiagnostic>();
+    for (const global of this.context.Options.GlobalImports) {
+      const ns = this.context.GlobalNamespace.FindNamespace(global);
+      if (ns != null) this.wildcards!.Add(ns);
+    }
+    for (const imp of this.context.GetImports(this.file)) {
+      const spec = imp.ModuleName;
+      const span = imp.ModuleSpecifier.Span;
+      if (imp.ModuleSpecifier.IsMissing) continue;
+      const target = this.ResolveModule(spec);
+      if (target == null) {
+        this.importDiagnostics!.Add(new ImportDiagnostic(Descriptors.ModuleNotFound, span, [spec]));
+        continue;
+      }
+      const clause = imp.Clause;
+      if (clause == null) {
+        this.wildcards!.Add(target);
+      } else if (clause instanceof NamespaceImportSyntax) {
+        const ns = clause as NamespaceImportSyntax;
+        if (!ns.AliasToken.IsMissing) {
+          let alias: Symbol = target;
+          if (target instanceof FileModuleSymbol<TFile>) {
+            const module = target as FileModuleSymbol<TFile>;
+            alias = new FileModuleSymbol<TFile>(module.File, ns.AliasToken.Text);
+          }
+          this.aliases![ns.AliasToken.Text] = alias;
+        }
+      } else if (clause instanceof NamedImportsSyntax) {
+        const named = clause as NamedImportsSyntax;
+        for (const specifier of named.Specifiers) {
+          if (specifier.NameToken.IsMissing) continue;
+          let members = new List<Symbol>(this.LookupMemberOfModule(target, specifier.NameToken.Text));
+          if (members.Count == 0 && target instanceof NamespaceSymbol)
+            members = new List<Symbol>(this.LookupMemberOfModule(target, specifier.NameToken.Text + "Attribute"));
+          if (members.Count == 0) {
+            this.importDiagnostics!.Add(new ImportDiagnostic(Descriptors.ModuleHasNoExport,
+              specifier.NameToken.Span, [spec, specifier.NameToken.Text]));
+            continue;
+          }
+          if (this.context.Options.RecordSemanticInfo) this.context.RecordImport(specifier, members[0]);
+          const local = specifier.LocalName;
+          if (!this.named!.ContainsKey(local)) this.named![local] = new List<Symbol>();
+          this.named![local].AddRange(members);
+        }
+      }
+    }
+  }
+
+  private ResolveModule(spec: string): Symbol? {
+    if (spec.StartsWith("./", StringComparison.Ordinal) || spec.StartsWith("../", StringComparison.Ordinal)) {
+      const file = this.context.FindSourceFile(this.file, spec);
+      if (file == null) return null;
+      return new FileModuleSymbol<TFile>(file!, this.context.GetModuleClassBaseName(file!));
+    }
+    const ns = this.context.GlobalNamespace.FindNamespace(spec);
+    if (ns != null) return ns;
+    return this.FindTypeByFullName(spec);
+  }
+
+  private FindTypeByFullName(fullName: string): NamedTypeSymbol? {
+    const dot = fullName.LastIndexOf('.');
+    if (dot < 0) return null;
+    const ns = this.context.GlobalNamespace.FindNamespace(fullName.Substring(0, dot));
+    if (ns == null) return null;
+    for (const type of ns.GetTypeMembersByName(fullName.Substring(dot + 1))) return type;
+    return null;
+  }
+
+  private *LookupMemberOfModule(module: Symbol, name: string): IEnumerable<Symbol> {
+    if (module instanceof NamespaceSymbol) {
+      const ns = module as NamespaceSymbol;
+      for (const type of ns.GetTypeMembersByName(name)) yield type;
+      const child = ns.GetNamespaceMember(name);
+      if (child != null) yield child;
+    } else if (module instanceof NamedTypeSymbol) {
+      const type = module as NamedTypeSymbol;
+      for (const member of type.GetMembers(name)) {
+        if (member.IsStatic || member instanceof NamedTypeSymbol) yield member;
+      }
+    } else if (module instanceof FileModuleSymbol<TFile>) {
+      const file = module as FileModuleSymbol<TFile>;
+      for (const symbol of this.context.GetScope(file.File).GetExports(name)) yield symbol;
+    }
+  }
+
+  GetImportDiagnostics(): ImmutableArray<Diagnostic> {
+    this.ResolveImports();
+    const result = ImmutableArray.CreateBuilder<Diagnostic>();
+    for (const diagnostic of this.importDiagnostics!)
+      result.Add(Diagnostic.Create(diagnostic.Descriptor, this.context.GetFilePath(this.file), diagnostic.Span, diagnostic.Args));
+    return result.ToImmutable();
+  }
+
+  Lookup(name: string): ImmutableArray<Symbol> {
+    const declared = this.Declared;
+    if (declared.ContainsKey(name) && declared[name].Count > 0) return ImmutableArray.CreateRange<Symbol>(declared[name]);
+    this.ResolveImports();
+    if (this.named!.ContainsKey(name) && this.named![name].Count > 0)
+      return ImmutableArray.CreateRange<Symbol>(this.named![name]);
+    if (this.aliases!.ContainsKey(name)) return ImmutableArray.Create<Symbol>(this.aliases![name]);
+    const result = new List<Symbol>();
+    for (const wildcard of this.wildcards!) {
+      for (const member of this.LookupMemberOfModule(wildcard, name)) {
+        if (!result.Contains(member)) result.Add(member);
+      }
+    }
+    if (result.Count > 0) return ImmutableArray.CreateRange<Symbol>(result);
+    const global = this.context.GlobalNamespace;
+    const child = global.GetNamespaceMember(name);
+    if (child != null) result.Add(child);
+    for (const type of global.GetTypeMembersByName(name)) result.Add(type);
+    return ImmutableArray.CreateRange<Symbol>(result);
+  }
+
+  *VisibleNames(): IEnumerable<[Name: string, Symbol: Symbol]> {
+    for (const pair of this.Declared) {
+      for (const symbol of pair.Value) yield [pair.Key, symbol];
+    }
+    this.ResolveImports();
+    for (const pair of this.named!) {
+      for (const symbol of pair.Value) yield [pair.Key, symbol];
+    }
+    for (const pair of this.aliases!) yield [pair.Key, pair.Value];
+    for (const wildcard of this.wildcards!) {
+      if (wildcard instanceof NamespaceSymbol) {
+        const ns = wildcard as NamespaceSymbol;
+        for (const type of ns.GetTypeMembers()) {
+          if (type.DeclaredAccessibility == Accessibility.Public) yield [type.Name, type];
+        }
+      } else if (wildcard instanceof NamedTypeSymbol) {
+        const type = wildcard as NamedTypeSymbol;
+        for (const member of type.GetMembers()) {
+          if (member.IsStatic && member.DeclaredAccessibility == Accessibility.Public) yield [member.Name, member];
+        }
+      }
+    }
+    const global = this.context.GlobalNamespace;
+    for (const child of global.GetNamespaceMembers()) yield [child.Name, child];
+    for (const type of global.GetTypeMembers()) yield [type.Name, type];
+  }
+
+  get WildcardImports(): IReadOnlyList<Symbol> {
+    this.ResolveImports();
+    return this.wildcards!;
+  }
+
+  get NamedImportSymbols(): IEnumerable<Symbol> {
+    this.ResolveImports();
+    return this.EnumerateNamedImports();
+  }
+
+  private *EnumerateNamedImports(): IEnumerable<Symbol> {
+    for (const members of this.named!.Values) {
+      for (const symbol of members) yield symbol;
+    }
+  }
+}

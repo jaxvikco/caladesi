@@ -1,0 +1,267 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { IDisposable, Action } from "System";
+import { IEnumerable } from "System.Collections.Generic";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { OverloadResolver, OverloadResolutionContext, ConversionClassifier, ConversionBinder } from "Caladesi.Compiler.Binding";
+import { Symbol, NamedTypeSymbol, TypeSymbol, TypeKind, SpecialType, MethodSymbol, MethodKind,
+  ParameterSymbol, LocalSymbol, RefKind, Accessibility, ConstantValue, ArrayTypeSymbol, NullableTypeSymbol,
+  TypeParameterSymbol, TypeParameterConstraints, VarianceKind, TypeMap, ErrorTypeSymbol } from "Caladesi.Compiler.Symbols";
+import { BoundExpression, BoundDefaultValue, BoundLiteral, BoundArrayCreation, BoundConversion,
+  BoundAddressOf, BoundLocal, BoundUnbound, BoundMethodGroup, BoundLambda, BoundBlock,
+  LambdaSymbol, LambdaInfo, ConversionKind } from "Caladesi.Compiler.Bound";
+import { DiagnosticDescriptor, Descriptors } from "Caladesi.Compiler.Diagnostics";
+import { SyntaxNode, SyntaxTree } from "Caladesi.Compiler.Syntax";
+import { ConversionClassifierNativeType } from "./ConversionClassifierTests";
+import { ConversionBinderTestContext } from "./ConversionBinderTests";
+
+@TestClass
+export class OverloadResolverTests {
+  private static readonly NoExpression: BoundExpression = (null as (BoundExpression | null))!;
+  private static readonly NoType: TypeSymbol = (null as (TypeSymbol | null))!;
+  private static readonly NoInfo: LambdaInfo = (null as (LambdaInfo | null))!;
+
+  @TestMethod
+  normalAndExpandedFormsBuildRealConversionsAndArrays(): void {
+    const f = new OverloadNativeFixture();
+    const integer = f.Context.GetSpecialType(SpecialType.Int32);
+    const wide = f.Context.GetSpecialType(SpecialType.Int64);
+    const normal = new OverloadNativeMethod(wide, ImmutableArray<ParameterSymbol>.Empty);
+    normal.Ps = ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("x", wide, 0, normal));
+    const result = f.Call(ImmutableArray.Create<MethodSymbol>(normal), ImmutableArray.Create<BoundExpression>(new BoundDefaultValue(integer)));
+    if (result == null || !Object.ReferenceEquals(result.Method, normal) || result.Expanded ||
+        !(result.Arguments[0] instanceof BoundConversion) || result.Arguments[0].Type != wide)
+      throw new Exception("Normal overload and conversion");
+    const array = new ArrayTypeSymbol(integer, integer, 1);
+    const variadic = new OverloadNativeMethod(integer, ImmutableArray<ParameterSymbol>.Empty);
+    variadic.Ps = ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("xs", array, 0, variadic, RefKind.None, true));
+    const expanded = f.Call(ImmutableArray.Create<MethodSymbol>(variadic),
+      ImmutableArray.Create<BoundExpression>(new BoundLiteral(new ConstantValue(1), integer), new BoundLiteral(new ConstantValue(2), integer)));
+    if (expanded == null || !expanded.Expanded || !(expanded.Arguments[0] instanceof BoundArrayCreation))
+      throw new Exception("Expanded params overload");
+    const built = expanded.Arguments[0] as BoundArrayCreation;
+    if (built.Initializers.Length != 2 || built.Length == null || built.Length.ConstantValue == null ||
+        Convert.ToInt32(built.Length.ConstantValue.Value) != 2) throw new Exception("Expanded argument array");
+    const direct = new BoundDefaultValue(array);
+    const unexpanded = f.Call(ImmutableArray.Create<MethodSymbol>(variadic), ImmutableArray.Create<BoundExpression>(direct));
+    if (unexpanded == null || unexpanded.Expanded || !Object.ReferenceEquals(unexpanded.Arguments[0], direct))
+      throw new Exception("Normal params array identity");
+    const empty = f.Call(ImmutableArray.Create<MethodSymbol>(variadic), ImmutableArray<BoundExpression>.Empty);
+    if (empty == null || !empty.Expanded || (empty.Arguments[0] as BoundArrayCreation).Initializers.Length != 0)
+      throw new Exception("Empty expanded params");
+  }
+
+  @TestMethod
+  optionalDefaultsOutLocalsAndIndexerEffectiveParameters(): void {
+    const f = new OverloadNativeFixture();
+    const integer = f.Context.GetSpecialType(SpecialType.Int32);
+    const method = new OverloadNativeMethod(integer, ImmutableArray<ParameterSymbol>.Empty);
+    method.Ps = ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("defaulted", integer, 0, method,
+      RefKind.None, false, new ConstantValue(17), true, false), new ParameterSymbol("answer", integer, 1, method, RefKind.Out, false));
+    const result = f.Call(ImmutableArray.Create<MethodSymbol>(method), ImmutableArray<BoundExpression>.Empty);
+    if (result == null || result.OutLocals.Length != 1 || result.Arguments.Length != 2 ||
+        result.Arguments[0].ConstantValue == null || Convert.ToInt32(result.Arguments[0].ConstantValue.Value) != 17)
+      throw new Exception("Optional plus omitted trailing out");
+    const local = result.OutLocals[0];
+    if (!local.IsSynthesized || local.Name != "<out>answer" ||
+        !Object.ReferenceEquals(((result.Arguments[1] as BoundAddressOf).Operand as BoundLocal).Local, local))
+      throw new Exception("Out local/address identity");
+    const nullable = new NullableTypeSymbol(integer);
+    const p = new ParameterSymbol("nullable", nullable, 0, method, RefKind.None, false, new ConstantValue(3), true, false);
+    const defaulted = f.Engine.DefaultArgument(p, f.Syntax);
+    if (!(defaulted instanceof BoundConversion) || (defaulted as BoundConversion).Kind != ConversionKind.ToNullable ||
+        !Object.ReferenceEquals(defaulted.Syntax, f.Syntax)) throw new Exception("Nullable default");
+    method.KindValue = MethodKind.PropertySet;
+    const indexer = f.Engine.ResolveOverloads(ImmutableArray.Create<MethodSymbol>(method), ImmutableArray<BoundExpression>.Empty,
+      ImmutableArray<TypeSymbol>.Empty, f.Syntax, "Call", true, true, 1,
+      OverloadResolverTests.NoExpression, OverloadResolverTests.NoType);
+    if (indexer == null || indexer.Arguments.Length != 1 || indexer.OutLocals.Length != 0)
+      throw new Exception("Indexer setter excludes value");
+  }
+
+  @TestMethod
+  rankingAmbiguityAndDiagnosticDecisionsArePreserved(): void {
+    const f = new OverloadNativeFixture();
+    const integer = f.Context.GetSpecialType(SpecialType.Int32);
+    const wide = f.Context.GetSpecialType(SpecialType.Int64);
+    const first = f.Unary(integer, integer);
+    const second = f.Unary(wide, integer);
+    const third = f.Unary(integer, integer);
+    const value = new BoundDefaultValue(integer);
+    const ambiguous = f.Call(ImmutableArray.Create<MethodSymbol>(first, first, second, third), ImmutableArray.Create<BoundExpression>(value));
+    if (ambiguous == null || ambiguous.Ambiguity == null ||
+        !Object.ReferenceEquals(ambiguous.Ambiguity.First, first) ||
+        !Object.ReferenceEquals(ambiguous.Ambiguity.Second, second) ||
+        !Object.ReferenceEquals(ambiguous.Method, first) || f.Context.LastId != Descriptors.AmbiguousCall.Id)
+      throw new Exception("Distinct first-two ambiguity and fallback selection");
+    const best = f.Call(ImmutableArray.Create<MethodSymbol>(f.Unary(integer, wide), first), ImmutableArray.Create<BoundExpression>(value));
+    if (best == null || !Object.ReferenceEquals(best.Method, first)) throw new Exception("Exact type beats widening");
+    if (f.Engine.CompareConversions(value, integer, wide) <= 0 ||
+        f.Engine.CompareConversions(value, wide, integer) >= 0) throw new Exception("Conversion ranking signs");
+    f.Call(ImmutableArray<MethodSymbol>.Empty, ImmutableArray<BoundExpression>.Empty);
+    if (f.Context.LastId != Descriptors.NotCallable.Id) throw new Exception("Empty candidate diagnostic");
+    f.Call(ImmutableArray.Create<MethodSymbol>(first), ImmutableArray<BoundExpression>.Empty);
+    if (f.Context.LastId != Descriptors.WrongArgumentCount.Id) throw new Exception("Arity diagnostic");
+    const text = f.Context.GetSpecialType(SpecialType.String);
+    f.Call(ImmutableArray.Create<MethodSymbol>(first), ImmutableArray.Create<BoundExpression>(new BoundDefaultValue(text)));
+    if (f.Context.LastId != Descriptors.ArgumentNotAssignable.Id) throw new Exception("Assignability diagnostic");
+  }
+
+  @TestMethod
+  genericInferenceAndConstraintsRunTheRealEngine(): void {
+    const f = new OverloadNativeFixture();
+    const integer = f.Context.GetSpecialType(SpecialType.Int32);
+    const method = new OverloadNativeMethod(integer, ImmutableArray<ParameterSymbol>.Empty);
+    const tp = new TypeParameterSymbol("T", 0, method, VarianceKind.None,
+      self => new TypeParameterConstraints(false, true, false, false, ImmutableArray<TypeSymbol>.Empty));
+    method.Tps = ImmutableArray.Create<TypeParameterSymbol>(tp);
+    method.Result = tp;
+    method.Ps = ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("x", tp, 0, method));
+    const result = f.Call(ImmutableArray.Create<MethodSymbol>(method), ImmutableArray.Create<BoundExpression>(new BoundDefaultValue(integer)));
+    if (result == null || !Object.ReferenceEquals(result.Method.ConstructedFrom, method) ||
+        !Object.ReferenceEquals(result.Method.TypeArguments[0], integer)) throw new Exception("Integrated generic inference");
+    const nullable = new NullableTypeSymbol(integer);
+    const map = new TypeMap(ImmutableArray.Create<TypeParameterSymbol>(tp), ImmutableArray.Create<TypeSymbol>(nullable));
+    if (f.Engine.SatisfiesConstraint(tp, nullable, map)) throw new Exception("Struct rejects nullable");
+    if (!f.Engine.SatisfiesConstraint(tp, ErrorTypeSymbol.Instance, map)) throw new Exception("Error constraint recovery");
+    const text = f.Context.GetSpecialType(SpecialType.String);
+    const rejected = f.Call(ImmutableArray.Create<MethodSymbol>(method), ImmutableArray.Create<BoundExpression>(new BoundDefaultValue(text)));
+    if (rejected != null) throw new Exception("Struct rejects reference");
+  }
+
+  @TestMethod
+  lambdaCacheUsesInfoIdentityAndDisplayNameAndRestoresOwnerGuard(): void {
+    const f = new OverloadNativeFixture();
+    const integer = f.Context.GetSpecialType(SpecialType.Int32);
+    const target = new OverloadNativeDelegate("D", f.Unary(integer, integer));
+    let binds = 0;
+    const info = new LambdaInfo(1, ImmutableArray.Create<TypeSymbol>(OverloadResolverTests.NoType),
+      (types, result, speculative) => {
+        if (!speculative || f.Context.Depth != 1) throw new Exception("Lambda owner speculation");
+        binds++;
+        const symbol = new LambdaSymbol(target, "<lambda>", false, false);
+        return new BoundLambda(symbol, new BoundBlock(ImmutableArray<LocalSymbol>.Empty,
+          ImmutableArray<Caladesi.Compiler.Bound.BoundStatement>.Empty), target);
+      }, types => integer);
+    if (!f.Engine.LambdaConvertible(info, target) || !f.Engine.LambdaConvertible(info, target) || binds != 1 ||
+        f.Context.Depth != 0 || f.Context.Disposals != 1) throw new Exception("Lambda cache and guard");
+    const sameName = new OverloadNativeDelegate("D", f.Unary(f.Context.GetSpecialType(SpecialType.Int64), integer));
+    if (!f.Engine.LambdaConvertible(info, sameName) || binds != 1) throw new Exception("Delegate display cache key");
+    const mismatch = new LambdaInfo(1, ImmutableArray.Create<TypeSymbol>(f.Context.GetSpecialType(SpecialType.String)),
+      (types, result, speculative) => { throw new Exception("Must not bind mismatched explicit parameter"); }, types => integer);
+    if (f.Engine.LambdaConvertible(mismatch, target)) throw new Exception("Explicit lambda parameter exactness");
+    const failure = new BoundUnbound(f.Syntax, type => { throw new InvalidOperationException("speculative"); });
+    let caught = false;
+    try { f.Engine.ArgumentConvertible(failure, integer, RefKind.None); }
+    catch (error: InvalidOperationException) { caught = true; }
+    if (!caught || f.Context.Depth != 0 || f.Context.Disposals != 2) throw new Exception("Exceptional guard restoration");
+  }
+
+  @TestMethod
+  methodGroupsUseOverloadsReturnCompatibilityAndExtensionFallback(): void {
+    const f = new OverloadNativeFixture();
+    const integer = f.Context.GetSpecialType(SpecialType.Int32);
+    const voidType = f.Context.GetSpecialType(SpecialType.Void);
+    const method = f.Unary(integer, integer);
+    const group = new BoundMethodGroup(OverloadResolverTests.NoExpression, "Call",
+      ImmutableArray.Create<MethodSymbol>(method), ImmutableArray<TypeSymbol>.Empty, false);
+    group.Syntax = f.Syntax;
+    const func = new OverloadNativeDelegate("Func", f.Unary(integer, integer));
+    const action = new OverloadNativeDelegate("Action", f.Unary(voidType, integer));
+    if (!Object.ReferenceEquals(f.Engine.ResolveMethodGroupForDelegate(group, func), method) ||
+        f.Engine.ResolveMethodGroupForDelegate(group, action) != null)
+      throw new Exception("Methodgroup may not discard result");
+    const extension = new OverloadNativeMethod(integer, ImmutableArray<ParameterSymbol>.Empty);
+    extension.Extension = true;
+    extension.Ps = ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("this", integer, 0, extension),
+      new ParameterSymbol("arg", integer, 1, extension));
+    f.Context.Extensions = ImmutableArray.Create<MethodSymbol>(extension);
+    const receiver = new BoundDefaultValue(integer);
+    const extensionGroup = new BoundMethodGroup(receiver, "Call", ImmutableArray<MethodSymbol>.Empty, ImmutableArray<TypeSymbol>.Empty, false);
+    extensionGroup.Syntax = f.Syntax;
+    if (!Object.ReferenceEquals(f.Engine.ResolveMethodGroupForDelegate(extensionGroup, func), extension))
+      throw new Exception("Extension receiver fallback");
+    if (f.Engine.ResolveMethodGroupByTypes(extensionGroup, ImmutableArray.Create<TypeSymbol>(integer)) != null)
+      throw new Exception("Inference methodgroup callback deliberately excludes extension fallback");
+    if (f.Context.Depth != 0) throw new Exception("Nested methodgroup speculation restored");
+  }
+}
+
+class OverloadNativeFixture {
+  readonly Context: OverloadNativeContext = new OverloadNativeContext();
+  readonly Engine: OverloadResolver;
+  readonly Syntax: SyntaxNode = SyntaxTree.ParseText("const call = 1;").Root;
+  constructor() {
+    const classifier = new ConversionClassifier();
+    this.Engine = new OverloadResolver(classifier, new ConversionBinder(classifier, new ConversionBinderTestContext()), this.Context);
+  }
+  Unary(result: TypeSymbol, parameter: TypeSymbol): OverloadNativeMethod {
+    const method = new OverloadNativeMethod(result, ImmutableArray<ParameterSymbol>.Empty);
+    method.Ps = ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("x", parameter, 0, method));
+    return method;
+  }
+  Call(methods: ImmutableArray<MethodSymbol>, args: ImmutableArray<BoundExpression>): Caladesi.Compiler.Binding.ResolvedCall? {
+    return this.Engine.ResolveOverloads(methods, args, ImmutableArray<TypeSymbol>.Empty, this.Syntax, "Call", true,
+      false, 0, (null as (BoundExpression | null))!, (null as (TypeSymbol | null))!);
+  }
+}
+
+export class OverloadNativeMethod extends MethodSymbol {
+  Ps: ImmutableArray<ParameterSymbol>;
+  Tps: ImmutableArray<TypeParameterSymbol> = ImmutableArray<TypeParameterSymbol>.Empty;
+  Result: TypeSymbol;
+  KindValue: MethodKind = MethodKind.Ordinary;
+  Extension: bool = false;
+  constructor(result: TypeSymbol, parameters: ImmutableArray<ParameterSymbol>) {
+    super(); this.Result = result; this.Ps = parameters;
+  }
+  override get Name(): string { return "Call"; }
+  override get ReturnType(): TypeSymbol { return this.Result; }
+  override get Parameters(): ImmutableArray<ParameterSymbol> { return this.Ps; }
+  override get TypeParameters(): ImmutableArray<TypeParameterSymbol> { return this.Tps; }
+  override get MethodKind(): MethodKind { return this.KindValue; }
+  override get DeclaredAccessibility(): Accessibility { return Accessibility.Public; }
+  override get IsExtensionMethod(): bool { return this.Extension; }
+}
+
+export class OverloadNativeDelegate extends NamedTypeSymbol {
+  constructor(private readonly name: string, private readonly invoke: MethodSymbol) { super(); }
+  override get Name(): string { return this.name; }
+  override get TypeKind(): TypeKind { return TypeKind.Delegate; }
+  override get TypeParameters(): ImmutableArray<TypeParameterSymbol> { return ImmutableArray<TypeParameterSymbol>.Empty; }
+  override get TypeArguments(): ImmutableArray<TypeSymbol> { return ImmutableArray<TypeSymbol>.Empty; }
+  override get DelegateInvokeMethod(): MethodSymbol { return this.invoke; }
+  override GetMembers(): ImmutableArray<Symbol> { return ImmutableArray<Symbol>.Empty; }
+}
+
+export class OverloadNativeContext extends OverloadResolutionContext {
+  Depth: int = 0;
+  Disposals: int = 0;
+  LastId: string = "";
+  Extensions: ImmutableArray<MethodSymbol> = ImmutableArray<MethodSymbol>.Empty;
+  private readonly integer: NamedTypeSymbol = new ConversionClassifierNativeType("int", TypeKind.Struct, SpecialType.Int32);
+  private readonly wide: NamedTypeSymbol = new ConversionClassifierNativeType("long", TypeKind.Struct, SpecialType.Int64);
+  private readonly text: NamedTypeSymbol = new ConversionClassifierNativeType("string", TypeKind.Class, SpecialType.String);
+  private readonly voidType: NamedTypeSymbol = new ConversionClassifierNativeType("void", TypeKind.Struct, SpecialType.Void);
+  override IsAccessible(symbol: Symbol): bool { return true; }
+  override LookupExtensionMethods(name: string): IEnumerable<MethodSymbol> { return this.Extensions; }
+  override GetSpecialType(type: SpecialType): NamedTypeSymbol {
+    if (type == SpecialType.Int32) return this.integer;
+    if (type == SpecialType.Int64) return this.wide;
+    if (type == SpecialType.String) return this.text;
+    if (type == SpecialType.Void) return this.voidType;
+    return new ConversionClassifierNativeType(type.ToString(), TypeKind.Class, type);
+  }
+  override get LocalOwner(): Symbol? { return null; }
+  override Report(descriptor: DiagnosticDescriptor, syntax: SyntaxNode?, args: object[]): void {
+    if (this.Depth == 0) this.LastId = descriptor.Id;
+  }
+  override BeginSpeculation(): IDisposable {
+    this.Depth++;
+    return new OverloadNativeGuard(() => { this.Depth--; this.Disposals++; });
+  }
+}
+
+class OverloadNativeGuard implements IDisposable {
+  constructor(private readonly dispose: Action) {}
+  Dispose(): void { this.dispose.Invoke(); }
+}

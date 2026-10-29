@@ -1,0 +1,550 @@
+import { IDisposable, DateTime } from "System";
+import { IEnumerable, List, Dictionary } from "System.Collections.Generic";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { StringBuilder } from "System.Text";
+import { Symbol, Accessibility, RefKind } from "../Symbols/Symbol";
+import { TypeSymbol, TypeKind, ArrayTypeSymbol, NullableTypeSymbol, TypeParameterSymbol, NullTypeSymbol } from "../Symbols/TypeSymbols";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { MethodSymbol, MethodKind, ParameterSymbol, LocalSymbol, ConstantValue } from "../Symbols/MemberSymbols";
+import { SpecialType, SpecialTypes } from "../Symbols/SpecialType";
+import { TypeMap } from "../Symbols/TypeMap";
+import { SyntaxNode } from "../Syntax/SyntaxElement";
+import { DiagnosticDescriptor } from "../Diagnostics/Diagnostic";
+import { Descriptors } from "../Diagnostics/Descriptors";
+import { BoundExpression, BoundUnbound, BoundMethodGroup, BoundTypeExpression, BoundDefaultValue,
+  BoundLiteral, BoundConversion, ConversionKind, BoundObjectCreation, BoundMemberInit,
+  BoundAddressOf, BoundLocal, BoundArrayCreation } from "../Bound/BoundNodes";
+import { LambdaInfo } from "../Bound/UnboundInfo";
+import { ConversionClassifier } from "./ConversionClassifier";
+import { ConversionBinder } from "./ConversionBinder";
+import { TypeInference } from "./TypeInference";
+
+export abstract class OverloadResolutionContext {
+  abstract IsAccessible(symbol: Symbol): bool;
+  abstract LookupExtensionMethods(name: string): IEnumerable<MethodSymbol>;
+  abstract GetSpecialType(type: SpecialType): NamedTypeSymbol;
+  abstract get LocalOwner(): Symbol?;
+  abstract Report(descriptor: DiagnosticDescriptor, syntax: SyntaxNode?, args: object?[]): void;
+  abstract BeginSpeculation(): IDisposable;
+}
+
+export sealed class OverloadAmbiguity {
+  constructor(public readonly First: MethodSymbol, public readonly Second: MethodSymbol) {}
+}
+
+export sealed class ResolvedCall {
+  constructor(public readonly Method: MethodSymbol, public readonly Arguments: ImmutableArray<BoundExpression>,
+    public readonly Expanded: bool, public readonly OutLocals: ImmutableArray<LocalSymbol>,
+    public readonly Ambiguity: OverloadAmbiguity?) {}
+}
+
+class OverloadCandidate {
+  constructor(public readonly Method: MethodSymbol, public readonly Parameters: ImmutableArray<ParameterSymbol>,
+    public readonly Expanded: bool, public readonly DefaultsUsed: int, public readonly OmittedOuts: int,
+    public readonly Original: MethodSymbol) {}
+}
+
+export sealed class OverloadResolver {
+  private readonly inference: TypeInference;
+  private readonly lambdaCache: Dictionary<LambdaInfo, Dictionary<string, bool>> = new Dictionary<LambdaInfo, Dictionary<string, bool>>();
+  constructor(private readonly classifier: ConversionClassifier, private readonly conversions: ConversionBinder,
+    private readonly context: OverloadResolutionContext) {
+    this.inference = new TypeInference(classifier, (group, types) => this.ResolveMethodGroupByTypes(group, types));
+  }
+
+  private static EffectiveParameters(method: MethodSymbol, isIndexer: bool, count: int): ImmutableArray<ParameterSymbol> {
+    const ps = method.Parameters;
+    if (!isIndexer || ps.Length <= count || method.MethodKind != MethodKind.PropertySet) return ps;
+    const result = ImmutableArray.CreateBuilder<ParameterSymbol>();
+    for (let i = 0; i < count; i++) result.Add(ps[i]);
+    return result.ToImmutable();
+  }
+
+  ResolveOverloads(methods: IEnumerable<MethodSymbol>, args: ImmutableArray<BoundExpression>,
+    typeArgs: ImmutableArray<TypeSymbol>, at: SyntaxNode, name: string, report: bool,
+    isIndexer: bool, indexerParamCount: int, extensionReceiver: BoundExpression?,
+    expectedType: TypeSymbol?): ResolvedCall? {
+    const all = new List<MethodSymbol>();
+    for (const method of methods) if (!all.Contains(method)) all.Add(method);
+    const applicable = new List<OverloadCandidate>();
+    const fullArgs = extensionReceiver != null ? args.Insert(0, extensionReceiver) : args;
+    for (const method of all) {
+      if (extensionReceiver != null && !method.IsExtensionMethod) continue;
+      const candidate = this.Evaluate(method, fullArgs, typeArgs, isIndexer, indexerParamCount, expectedType);
+      if (candidate != null) applicable.Add(candidate);
+    }
+    if (applicable.Count == 0) {
+      if (report) this.ReportNoApplicable(all, fullArgs, typeArgs, at, name, isIndexer, indexerParamCount);
+      return null;
+    }
+    let best = applicable[0];
+    let ambiguity: OverloadAmbiguity? = null;
+    if (applicable.Count > 1) {
+      const winners = new List<OverloadCandidate>();
+      for (const candidate of applicable) {
+        let isBest = true;
+        for (const other of applicable) {
+          if (Object.ReferenceEquals(candidate, other)) continue;
+          if (!this.IsBetter(candidate, other, fullArgs)) { isBest = false; break; }
+        }
+        if (isBest) winners.Add(candidate);
+      }
+      if (winners.Count == 1) best = winners[0];
+      else {
+        const first = applicable[0].Method;
+        const second = applicable[1].Method;
+        if (report) this.context.Report(Descriptors.AmbiguousCall, at,
+          [name, OverloadResolver.Signature(first), OverloadResolver.Signature(second)]);
+        ambiguity = new OverloadAmbiguity(first, second);
+        best = winners.Count > 0 ? winners[0] : applicable[0];
+      }
+    }
+    return this.BuildArguments(best, fullArgs, at, report, ambiguity);
+  }
+
+  ResolveOverloads(methods: IEnumerable<MethodSymbol>, args: ImmutableArray<BoundExpression>,
+    typeArgs: ImmutableArray<TypeSymbol>, at: SyntaxNode, name: string, report: bool): ResolvedCall? {
+    return this.ResolveOverloads(methods, args, typeArgs, at, name, report, false, 0, null, null);
+  }
+
+  ResolveOverloads(methods: IEnumerable<MethodSymbol>, args: ImmutableArray<BoundExpression>,
+    typeArgs: ImmutableArray<TypeSymbol>, at: SyntaxNode, name: string, report: bool,
+    isIndexer: bool, indexerParamCount: int): ResolvedCall? {
+    return this.ResolveOverloads(methods, args, typeArgs, at, name, report, isIndexer, indexerParamCount, null, null);
+  }
+
+  private static Signature(method: MethodSymbol): string {
+    const sb = new StringBuilder();
+    sb.Append(method.ContainingType?.Name).Append('.').Append(
+      method.MethodKind == MethodKind.Constructor ? method.ContainingType?.Name : method.Name).Append('(');
+    for (let i = 0; i < method.Parameters.Length; i++) {
+      if (i > 0) sb.Append(", ");
+      sb.Append(method.Parameters[i].Type.ToDisplayString());
+    }
+    return sb.Append(')').ToString();
+  }
+
+  private Evaluate(method: MethodSymbol, args: ImmutableArray<BoundExpression>, types: ImmutableArray<TypeSymbol>,
+    isIndexer: bool, indexerCount: int, expected: TypeSymbol?): OverloadCandidate? {
+    const original = method;
+    if (!this.context.IsAccessible(method)) return null;
+    if (method.IsGenericMethod) {
+      if (!types.IsDefaultOrEmpty) {
+        if (types.Length != method.Arity) return null;
+        method = method.Construct(types);
+      } else {
+        const inferred = this.inference.InferTypeArguments(method, args, isIndexer, indexerCount, expected);
+        if (inferred.IsDefault) return null;
+        method = method.Construct(inferred);
+      }
+      if (!this.SatisfiesConstraints(method)) return null;
+    } else if (!types.IsDefaultOrEmpty) return null;
+    const ps = OverloadResolver.EffectiveParameters(method, isIndexer, indexerCount);
+    let defaults = this.ApplicableDefaults(ps, args, false);
+    if (defaults >= 0) return new OverloadCandidate(method, ps, false, defaults, 0, original);
+    if (ps.Length > 0 && ps[ps.Length - 1].IsParams && ps[ps.Length - 1].Type instanceof ArrayTypeSymbol) {
+      defaults = this.ApplicableDefaults(ps, args, true);
+      if (defaults >= 0) return new OverloadCandidate(method, ps, true, defaults, 0, original);
+    }
+    let outs = 0;
+    while (outs < ps.Length && ps[ps.Length - 1 - outs].RefKind == RefKind.Out) outs++;
+    if (outs > 0 && !isIndexer) {
+      const visible = ImmutableArray.CreateBuilder<ParameterSymbol>();
+      for (let i = 0; i < ps.Length - outs; i++) visible.Add(ps[i]);
+      defaults = this.ApplicableDefaults(visible.ToImmutable(), args, false);
+      if (defaults >= 0) return new OverloadCandidate(method, ps, false, defaults + outs, outs, original);
+    }
+    return null;
+  }
+
+  private ApplicableDefaults(ps: ImmutableArray<ParameterSymbol>, args: ImmutableArray<BoundExpression>, expanded: bool): int {
+    let defaults = 0;
+    const n = ps.Length;
+    if (!expanded && args.Length > n) return -1;
+    const fixedCount = expanded ? n - 1 : n;
+    for (let i = 0; i < fixedCount; i++) {
+      if (i < args.Length) {
+        if (!this.ArgumentConvertible(args[i], ps[i].Type, ps[i].RefKind)) return -1;
+      } else {
+        if (!ps[i].IsOptional) return -1;
+        defaults++;
+      }
+    }
+    if (expanded) {
+      const elem = (ps[n - 1].Type as ArrayTypeSymbol).ElementType;
+      for (let i = n - 1; i < args.Length; i++)
+        if (!this.ArgumentConvertible(args[i], elem, RefKind.None)) return -1;
+    }
+    return defaults;
+  }
+
+  ArgumentConvertible(arg: BoundExpression, paramType: TypeSymbol, refKind: RefKind): bool {
+    if (paramType.IsErrorType) return true;
+    if (arg instanceof BoundUnbound) {
+      const unbound = arg as BoundUnbound;
+      if (unbound.IsLambda) return this.LambdaConvertible(unbound.Lambda!, paramType);
+      if (unbound.Type != null && this.classifier.ClassifyImplicit(null, unbound.Type, paramType).Exists) return true;
+      const guard = this.context.BeginSpeculation();
+      try {
+        const bound = unbound.BindToType.Invoke(paramType);
+        return !(bound instanceof BoundUnbound) && !bound.HasErrors;
+      } finally { guard.Dispose(); }
+    }
+    if (arg instanceof BoundMethodGroup) return this.MethodGroupConvertible(arg as BoundMethodGroup, paramType);
+    return arg.Type != null && (arg.HasErrors || (refKind != RefKind.None ?
+      arg.Type.Equals(paramType) : this.classifier.ClassifyImplicit(arg, arg.Type, paramType).Exists));
+  }
+
+  LambdaConvertible(info: LambdaInfo, target: TypeSymbol): bool {
+    const stripped = target.StripNullable();
+    if (!(stripped instanceof NamedTypeSymbol) || stripped.TypeKind != TypeKind.Delegate) return false;
+    const delegateType = stripped as NamedTypeSymbol;
+    const invoke = delegateType.DelegateInvokeMethod;
+    if (invoke == null || invoke.Parameters.Length != info.ParameterCount) return false;
+    const key = delegateType.ToDisplayString();
+    if (!this.lambdaCache.ContainsKey(info)) this.lambdaCache[info] = new Dictionary<string, bool>();
+    const cache = this.lambdaCache[info];
+    if (cache.ContainsKey(key)) return cache[key];
+    const types = ImmutableArray.CreateBuilder<TypeSymbol>();
+    for (let i = 0; i < invoke.Parameters.Length; i++) {
+      const type = invoke.Parameters[i].Type;
+      types.Add(type);
+      const explicitType = info.ExplicitParameterTypes[i];
+      if (explicitType != null && !explicitType.Equals(type) && !type.IsErrorType) {
+        cache[key] = false;
+        return false;
+      }
+    }
+    const guard = this.context.BeginSpeculation();
+    let ok = false;
+    try {
+      const bound = info.Bind.Invoke(types.ToImmutable(), invoke.ReturnType, true);
+      ok = bound != null && !bound.HasErrors;
+    } finally { guard.Dispose(); }
+    cache[key] = ok;
+    return ok;
+  }
+
+  MethodGroupConvertible(group: BoundMethodGroup, target: TypeSymbol): bool {
+    const stripped = target.StripNullable();
+    return stripped instanceof NamedTypeSymbol && stripped.TypeKind == TypeKind.Delegate &&
+      this.ResolveMethodGroupForDelegate(group, stripped as NamedTypeSymbol) != null;
+  }
+
+  ResolveMethodGroupByTypes(group: BoundMethodGroup, types: ImmutableArray<TypeSymbol>): MethodSymbol? {
+    const args = ImmutableArray.CreateBuilder<BoundExpression>();
+    for (const type of types) args.Add(new BoundDefaultValue(type));
+    const guard = this.context.BeginSpeculation();
+    try {
+      const result = this.ResolveOverloads(group.Candidates, args.ToImmutable(), group.TypeArguments,
+        group.Syntax!, group.Name, false);
+      return result?.Method;
+    } finally { guard.Dispose(); }
+  }
+
+  private ResolveMethodGroup(group: BoundMethodGroup, args: ImmutableArray<BoundExpression>): ResolvedCall? {
+    let result: ResolvedCall? = null;
+    if (group.Candidates.Length > 0) {
+      const guard = this.context.BeginSpeculation();
+      try {
+        result = this.ResolveOverloads(group.Candidates, args, group.TypeArguments, group.Syntax!, group.Name, false);
+      } finally { guard.Dispose(); }
+    }
+    if (result == null && group.Receiver != null && group.Receiver.Type != null &&
+        !(group.Receiver instanceof BoundTypeExpression)) {
+      const extensions = this.context.LookupExtensionMethods(group.Name);
+      const guard = this.context.BeginSpeculation();
+      try {
+        result = this.ResolveOverloads(extensions, args, group.TypeArguments, group.Syntax!, group.Name, false,
+          false, 0, group.Receiver, null);
+      } finally { guard.Dispose(); }
+    }
+    return result;
+  }
+
+  ResolveMethodGroupForDelegate(group: BoundMethodGroup, delegateType: NamedTypeSymbol): MethodSymbol? {
+    const invoke = delegateType.DelegateInvokeMethod;
+    if (invoke == null) return null;
+    const args = ImmutableArray.CreateBuilder<BoundExpression>();
+    for (const parameter of invoke.Parameters) args.Add(new BoundDefaultValue(parameter.Type));
+    const result = this.ResolveMethodGroup(group, args.ToImmutable());
+    if (result == null) return null;
+    const rt = result.Method.ReturnType;
+    if (invoke.ReturnType.IsVoid) return rt.IsVoid || rt.IsNeverType ? result.Method : null;
+    return rt.IsVoid || !this.classifier.ClassifyImplicit(null, rt, invoke.ReturnType).Exists ? null : result.Method;
+  }
+
+  private SatisfiesConstraints(constructed: MethodSymbol): bool {
+    const tps = constructed.ConstructedFrom.TypeParameters;
+    const args = constructed.TypeArguments;
+    if (tps.Length != args.Length) return true;
+    const map = new TypeMap(tps, args);
+    for (let i = 0; i < tps.Length; i++) if (!this.SatisfiesConstraint(tps[i], args[i], map)) return false;
+    return true;
+  }
+
+  SatisfiesConstraint(tp: TypeParameterSymbol, arg: TypeSymbol, map: TypeMap): bool {
+    if (arg.IsErrorType) return true;
+    if (tp.HasValueTypeConstraint && !(arg.IsValueType ||
+        (arg instanceof TypeParameterSymbol && (arg as TypeParameterSymbol).HasValueTypeConstraint))) return false;
+    if (tp.HasValueTypeConstraint && arg instanceof NullableTypeSymbol) return false;
+    if (tp.HasReferenceTypeConstraint && !(arg.IsReferenceType ||
+        (arg instanceof TypeParameterSymbol && (arg as TypeParameterSymbol).HasReferenceTypeConstraint))) return false;
+    if (tp.HasConstructorConstraint && !tp.HasValueTypeConstraint) {
+      if (arg instanceof NamedTypeSymbol) {
+        const nt = arg as NamedTypeSymbol;
+        if (nt.IsAbstract && nt.TypeKind == TypeKind.Class) return false;
+        if (nt.TypeKind == TypeKind.Class) {
+          let found = false;
+          for (const ctor of nt.InstanceConstructors)
+            if (ctor.Parameters.Length == 0 && ctor.DeclaredAccessibility == Accessibility.Public) found = true;
+          if (!found) return false;
+        }
+      } else if (arg instanceof TypeParameterSymbol && !(arg as TypeParameterSymbol).HasConstructorConstraint) return false;
+    }
+    for (const constraint of tp.ConstraintTypes) {
+      const substituted = map.Substitute(constraint);
+      if (!(arg instanceof TypeParameterSymbol) &&
+          !this.classifier.ClassifyImplicit(null, arg.StripNullable(), substituted).Exists) return false;
+      if (arg instanceof TypeParameterSymbol &&
+          !this.classifier.ClassifyImplicit(null, arg, substituted).Exists) return false;
+    }
+    return true;
+  }
+
+  private IsBetter(first: OverloadCandidate, second: OverloadCandidate, args: ImmutableArray<BoundExpression>): bool {
+    let anyBetter = false;
+    for (let i = 0; i < args.Length; i++) {
+      const t1 = OverloadResolver.ParamTypeAt(first, i);
+      const t2 = OverloadResolver.ParamTypeAt(second, i);
+      if (t1 == null || t2 == null) continue;
+      const comparison = this.CompareConversions(args[i], t1, t2);
+      if (comparison < 0) return false;
+      if (comparison > 0) anyBetter = true;
+    }
+    if (anyBetter) return true;
+    if (first.Original.IsGenericMethod != second.Original.IsGenericMethod) return !first.Original.IsGenericMethod;
+    if (first.Expanded != second.Expanded) return !first.Expanded;
+    if (first.OmittedOuts != second.OmittedOuts) return first.OmittedOuts < second.OmittedOuts;
+    if (first.DefaultsUsed != second.DefaultsUsed) return first.DefaultsUsed < second.DefaultsUsed;
+    if (first.Original.Parameters.Length == second.Original.Parameters.Length) {
+      let allAtLeast = true;
+      anyBetter = false;
+      for (let i = 0; i < first.Original.Parameters.Length; i++) {
+        const p1 = first.Original.Parameters[i].Type;
+        const p2 = second.Original.Parameters[i].Type;
+        if (p1.Equals(p2)) continue;
+        const a = this.classifier.ClassifyImplicit(null, p1, p2).Exists;
+        const b = this.classifier.ClassifyImplicit(null, p2, p1).Exists;
+        if (a && !b) anyBetter = true;
+        else if (!a) allAtLeast = false;
+      }
+      if (allAtLeast && anyBetter) return true;
+      if (allAtLeast && !anyBetter && !second.Method.Equals(first.Method))
+        return !this.AnyStrictlyMoreSpecific(second, first);
+    }
+    return false;
+  }
+
+  private AnyStrictlyMoreSpecific(a: OverloadCandidate, b: OverloadCandidate): bool {
+    for (let i = 0; i < a.Original.Parameters.Length && i < b.Original.Parameters.Length; i++) {
+      const p1 = a.Original.Parameters[i].Type;
+      const p2 = b.Original.Parameters[i].Type;
+      if (!p1.Equals(p2) && this.classifier.ClassifyImplicit(null, p1, p2).Exists &&
+          !this.classifier.ClassifyImplicit(null, p2, p1).Exists) return true;
+    }
+    return false;
+  }
+
+  private static ParamTypeAt(candidate: OverloadCandidate, i: int): TypeSymbol? {
+    const ps = candidate.Parameters;
+    if (i < ps.Length - 1 || (!candidate.Expanded && i < ps.Length)) return ps[i].Type;
+    return candidate.Expanded && ps.Length > 0 ? (ps[ps.Length - 1].Type as ArrayTypeSymbol).ElementType : null;
+  }
+
+  private static StripReferenceNullability(type: TypeSymbol): TypeSymbol {
+    if (type instanceof NullableTypeSymbol) {
+      const inner = (type as NullableTypeSymbol).Underlying;
+      if (!inner.IsValueType && !(inner instanceof TypeParameterSymbol)) return inner;
+    }
+    return type;
+  }
+
+  CompareConversions(arg: BoundExpression, t1: TypeSymbol, t2: TypeSymbol): int {
+    t1 = OverloadResolver.StripReferenceNullability(t1);
+    t2 = OverloadResolver.StripReferenceNullability(t2);
+    if (t1.Equals(t2)) return 0;
+    if ((arg instanceof BoundUnbound && (arg as BoundUnbound).IsLambda) || arg instanceof BoundMethodGroup) {
+      const d1 = t1.StripNullable();
+      const d2 = t2.StripNullable();
+      if (d1 instanceof NamedTypeSymbol && d1.TypeKind == TypeKind.Delegate &&
+          d2 instanceof NamedTypeSymbol && d2.TypeKind == TypeKind.Delegate) {
+        const r1 = (d1 as NamedTypeSymbol).DelegateInvokeMethod?.ReturnType;
+        const r2 = (d2 as NamedTypeSymbol).DelegateInvokeMethod?.ReturnType;
+        if (r1 != null && r2 != null && !r1.Equals(r2)) {
+          if (r1.IsVoid) return -1;
+          if (r2.IsVoid) return 1;
+          const a = this.classifier.ClassifyImplicit(null, r1, r2).Exists;
+          const b = this.classifier.ClassifyImplicit(null, r2, r1).Exists;
+          if (a && !b) return 1;
+          if (b && !a) return -1;
+        }
+      }
+      return 0;
+    }
+    if (arg.Type != null) {
+      const source = OverloadResolver.StripReferenceNullability(arg.Type);
+      if (source.Equals(t1)) return 1;
+      if (source.Equals(t2)) return -1;
+    }
+    const c1 = this.classifier.ClassifyImplicit(null, t1, t2).Exists;
+    const c2 = this.classifier.ClassifyImplicit(null, t2, t1).Exists;
+    if (c1 && !c2) return 1;
+    if (c2 && !c1) return -1;
+    if (SpecialTypes.IsSignedIntegral(t1.SpecialType) && SpecialTypes.IsUnsignedIntegral(t2.SpecialType)) return 1;
+    if (SpecialTypes.IsSignedIntegral(t2.SpecialType) && SpecialTypes.IsUnsignedIntegral(t1.SpecialType)) return -1;
+    return 0;
+  }
+
+  private BuildArguments(candidate: OverloadCandidate, args: ImmutableArray<BoundExpression>, at: SyntaxNode,
+    report: bool, ambiguity: OverloadAmbiguity?): ResolvedCall {
+    const ps = candidate.Parameters;
+    const result = ImmutableArray.CreateBuilder<BoundExpression>(ps.Length);
+    const outLocals = ImmutableArray.CreateBuilder<LocalSymbol>();
+    for (let i = 0; i < ps.Length; i++) {
+      const p = ps[i];
+      if (candidate.OmittedOuts > 0 && i >= ps.Length - candidate.OmittedOuts) {
+        const local = new LocalSymbol("<out>" + p.Name, p.Type, false, this.context.LocalOwner);
+        local.IsSynthesized = true;
+        outLocals.Add(local);
+        result.Add(new BoundAddressOf(new BoundLocal(local)));
+      } else if (candidate.Expanded && i == ps.Length - 1) {
+        const array = p.Type as ArrayTypeSymbol;
+        const elements = ImmutableArray.CreateBuilder<BoundExpression>();
+        for (let j = i; j < args.Length; j++) elements.Add(this.ConvertArg(args[j], array.ElementType, report));
+        const created = new BoundArrayCreation(array,
+          new BoundLiteral(new ConstantValue(elements.Count), this.context.GetSpecialType(SpecialType.Int32)), elements.ToImmutable());
+        created.Syntax = at;
+        result.Add(created);
+      } else if (i < args.Length) result.Add(this.ConvertArg(args[i], p.Type, report));
+      else if (p.IsParams && p.Type instanceof ArrayTypeSymbol) {
+        const created = new BoundArrayCreation(p.Type as ArrayTypeSymbol,
+          new BoundLiteral(new ConstantValue(0), this.context.GetSpecialType(SpecialType.Int32)), ImmutableArray<BoundExpression>.Empty);
+        created.Syntax = at;
+        result.Add(created);
+      } else result.Add(this.DefaultArgument(p, at));
+    }
+    return new ResolvedCall(candidate.Method, result.MoveToImmutable(), candidate.Expanded, outLocals.ToImmutable(), ambiguity);
+  }
+
+  private ConvertArg(arg: BoundExpression, target: TypeSymbol, report: bool): BoundExpression {
+    if (arg instanceof BoundUnbound && (arg as BoundUnbound).IsLambda)
+      return this.conversions.ConvertImplicit((arg as BoundUnbound).BindToType.Invoke(target.StripNullable()), target, arg.Syntax, report);
+    return this.conversions.ConvertImplicit(arg, target, arg.Syntax, report);
+  }
+
+  DefaultArgument(parameter: ParameterSymbol, at: SyntaxNode): BoundExpression {
+    const dv = parameter.DefaultValue;
+    const type = parameter.Type;
+    if (dv == null || dv.IsNull) {
+      let result: BoundExpression;
+      if (type instanceof NullableTypeSymbol || !type.IsValueType)
+        result = new BoundConversion(new BoundLiteral(ConstantValue.Null, NullTypeSymbol.Instance), ConversionKind.NullLiteral, type);
+      else result = new BoundDefaultValue(type);
+      result.Syntax = at;
+      return result;
+    }
+    const inner = type.StripNullable();
+    if (dv.Value instanceof DateTime && inner instanceof NamedTypeSymbol) {
+      for (const ctor of (inner as NamedTypeSymbol).InstanceConstructors) {
+        if (ctor.Parameters.Length != 1 || ctor.Parameters[0].Type.SpecialType != SpecialType.Int64) continue;
+        const ticks = new BoundLiteral(new ConstantValue((dv.Value as DateTime).Ticks), this.context.GetSpecialType(SpecialType.Int64));
+        ticks.Syntax = at;
+        let created: BoundExpression = new BoundObjectCreation(ctor, inner, ImmutableArray.Create<BoundExpression>(ticks), ImmutableArray<BoundMemberInit>.Empty);
+        created.Syntax = at;
+        if (type instanceof NullableTypeSymbol) {
+          created = new BoundConversion(created, ConversionKind.ToNullable, type);
+          created.Syntax = at;
+        }
+        return created;
+      }
+    }
+    const literalType = inner.TypeKind == TypeKind.Enum ? inner :
+      inner.SpecialType != SpecialType.None ? inner : this.TypeOfConstant(dv.Value);
+    let literal: BoundExpression = new BoundLiteral(dv, literalType);
+    literal.Syntax = at;
+    if (type instanceof NullableTypeSymbol) {
+      literal = new BoundConversion(literal, ConversionKind.ToNullable, type);
+      literal.Syntax = at;
+    }
+    return literal;
+  }
+
+  private TypeOfConstant(value: object?): TypeSymbol {
+    let special = SpecialType.Object;
+    if (value instanceof int) special = SpecialType.Int32;
+    else if (value instanceof long) special = SpecialType.Int64;
+    else if (value instanceof double) special = SpecialType.Double;
+    else if (value instanceof float) special = SpecialType.Single;
+    else if (value instanceof decimal) special = SpecialType.Decimal;
+    else if (value instanceof bool) special = SpecialType.Boolean;
+    else if (value instanceof string) special = SpecialType.String;
+    else if (value instanceof char) special = SpecialType.Char;
+    return this.context.GetSpecialType(special);
+  }
+
+  private ReportNoApplicable(all: List<MethodSymbol>, args: ImmutableArray<BoundExpression>,
+    types: ImmutableArray<TypeSymbol>, at: SyntaxNode, name: string, isIndexer: bool, count: int): void {
+    if (all.Count > 0) for (const arg of args) if (arg.HasErrors) return;
+    if (all.Count == 0) { this.context.Report(Descriptors.NotCallable, at, []); return; }
+    const descriptions = new List<string>();
+    for (const arg of args) descriptions.Add(OverloadResolver.DescribeArgType(arg));
+    const description = String.Join(", ", descriptions);
+    if (all.Count == 1) {
+      const method = all[0];
+      const ps = OverloadResolver.EffectiveParameters(method, isIndexer, count);
+      if (method.IsGenericMethod && types.IsDefaultOrEmpty &&
+          this.inference.InferTypeArguments(method, args, isIndexer, count, null).IsDefault) {
+        this.context.Report(Descriptors.CannotInferTypeArguments, at, [name]); return;
+      }
+      let required = 0;
+      for (const p of ps) if (!p.IsOptional && !p.IsParams) required++;
+      const hasParams = ps.Length > 0 && ps[ps.Length - 1].IsParams;
+      if (args.Length < required || (!hasParams && args.Length > ps.Length)) {
+        const expected = hasParams ? "at least " + required : required == ps.Length ? ps.Length.ToString() : required + "-" + ps.Length;
+        this.context.Report(Descriptors.WrongArgumentCount, at, [name, expected, args.Length]); return;
+      }
+      for (let i = 0; i < args.Length && i < ps.Length; i++) {
+        const arg = args[i];
+        const pt = ps[i].Type;
+        if (this.ArgumentConvertible(arg, pt, ps[i].RefKind)) continue;
+        if (arg instanceof BoundUnbound && (arg as BoundUnbound).IsLambda) {
+          this.context.Report(Descriptors.LambdaNotConvertible, arg.Syntax ?? at, [pt.ToDisplayString()]); return;
+        }
+        if (arg.Type != null) { this.ReportNotAssignableArg(arg, pt, arg.Syntax ?? at); return; }
+        this.context.Report(Descriptors.ArgumentNotAssignable, arg.Syntax ?? at,
+          [OverloadResolver.DescribeArgType(arg), pt.ToDisplayString(), ps[i].Name]); return;
+      }
+    }
+    this.context.Report(Descriptors.NoMatchingOverload, at, [name, description]);
+  }
+
+  private ReportNotAssignableArg(arg: BoundExpression, target: TypeSymbol, at: SyntaxNode): void {
+    const source = arg.Type!;
+    if (source.IsNullType) { this.context.Report(Descriptors.NullNotAssignable, at, [target.ToDisplayString()]); return; }
+    if (source instanceof NullableTypeSymbol &&
+        this.classifier.ClassifyImplicit(null, (source as NullableTypeSymbol).Underlying, target).Exists) {
+      this.context.Report(Descriptors.PossiblyNullAssign, at, [source.ToDisplayString(), target.ToDisplayString()]); return;
+    }
+    this.context.Report(Descriptors.ArgumentNotAssignable, at, [source.ToDisplayString(), target.ToDisplayString(), ""]);
+  }
+
+  private static DescribeArgType(arg: BoundExpression): string {
+    if (arg instanceof BoundUnbound) {
+      const unbound = arg as BoundUnbound;
+      return unbound.IsLambda ? "lambda" : unbound.IsObjectLiteral ? "object literal" : "collection";
+    }
+    if (arg instanceof BoundMethodGroup) return (arg as BoundMethodGroup).Name;
+    return arg.Type?.ToDisplayString() ?? "?";
+  }
+}
