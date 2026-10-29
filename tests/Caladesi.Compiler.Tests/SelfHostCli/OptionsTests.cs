@@ -1,5 +1,7 @@
 extern alias SelfHostCli;
-using Caladesi.Compiler;
+extern alias SelfHost;
+using CompilationOptions = SelfHost::Caladesi.Compiler.CompilationOptions;
+using OutputKind = SelfHost::Caladesi.Compiler.OutputKind;
 using PortOptions = SelfHostCli::Caladesi.Cli.CliOptions;
 
 namespace Caladesi.Compiler.Tests.SelfHostCli;
@@ -18,7 +20,22 @@ public sealed class OptionsTests
         Assert.IsFalse(options.ShowVersion);
         Assert.IsEmpty(options.Errors);
         Assert.IsEmpty(options.Sources);
-        Assert.AreEqual(new CompilationOptions(), compilation);
+        Caladesi.Compiler.CompilationOptions defaults = new();
+        Assert.AreEqual(defaults.OutputKind.ToString(), compilation.OutputKind.ToString());
+        Assert.AreEqual(defaults.AssemblyName, compilation.AssemblyName);
+        Assert.AreEqual(defaults.RootNamespace, compilation.RootNamespace);
+        Assert.AreEqual(defaults.ProjectDirectory, compilation.ProjectDirectory);
+        Assert.AreEqual(defaults.NullableEnabled, compilation.NullableEnabled);
+        Assert.AreEqual(defaults.WarningsAsErrors, compilation.WarningsAsErrors);
+        CollectionAssert.AreEqual(defaults.NoWarn.ToArray(), compilation.NoWarn.ToArray());
+        CollectionAssert.AreEqual(defaults.Defines.ToArray(), compilation.Defines.ToArray());
+        CollectionAssert.AreEqual(defaults.GlobalImports.ToArray(), compilation.GlobalImports.ToArray());
+        Assert.AreEqual(defaults.AssemblyVersion, compilation.AssemblyVersion);
+        Assert.AreEqual(defaults.TargetFramework, compilation.TargetFramework);
+        Assert.AreEqual(defaults.TargetFrameworkDisplayName, compilation.TargetFrameworkDisplayName);
+        Assert.AreEqual(defaults.GenerateTestEntryPoint, compilation.GenerateTestEntryPoint);
+        Assert.AreEqual(defaults.Optimize, compilation.Optimize);
+        Assert.AreEqual(defaults.RecordSemanticInfo, compilation.RecordSemanticInfo);
     }
 
     [TestMethod]

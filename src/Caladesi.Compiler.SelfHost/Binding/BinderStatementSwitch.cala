@@ -1,0 +1,258 @@
+import { Convert, String, Object } from "System";
+import { List, HashSet } from "System.Collections.Generic";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { Binder } from "./Binder";
+import { BinderScopeKind } from "./BinderScope";
+import { BinderStatements } from "./BinderStatements";
+import { FlowNarrowing, NarrowPath, Narrowings, NarrowingFact } from "./FlowNarrowing";
+import { Symbol } from "../Symbols/Symbol";
+import { TypeSymbol, TypeKind, NullableTypeSymbol, NullTypeSymbol, TypeParameterSymbol } from "../Symbols/TypeSymbols";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { SourceLiteralEnumSymbol } from "../Symbols/Source/SourceTypeAliasTypes";
+import { SourceFieldSymbol } from "../Symbols/Source/SourceMembers";
+import { LocalSymbol, LabelSymbol, MethodSymbol, FieldSymbol } from "../Symbols/MemberSymbols";
+import { SpecialType, SpecialTypes } from "../Symbols/SpecialType";
+import { SyntaxNode } from "../Syntax/SyntaxElement";
+import { SwitchStatementSyntax } from "../Syntax/Nodes.Core";
+import { Descriptors } from "../Diagnostics/Descriptors";
+import { ConstantFolding } from "../ConstantFolding";
+import { BoundStatement, BoundBlock, BoundExpression, BoundTypeExpression, BoundTypeTest, TypeTestKind,
+  BoundLocal, BoundLocalDeclaration, BoundConditionalGoto, BoundGoto, BoundLabel, BoundLiteral,
+  BoundConversion, ConversionKind, BoundLogicalBinary, BoundBinary, BinaryOperatorKind, BoundCall } from "../Bound/BoundNodes";
+
+class BinderStatementSection {
+  readonly Label: LabelSymbol = new LabelSymbol("case");
+  TypeCount: int = 0;
+  ValueCount: int = 0;
+  Default: bool = false;
+  NarrowType: TypeSymbol? = null;
+}
+
+export sealed class BinderStatementSwitch<TFile> {
+  constructor(private readonly binder: Binder<TFile>, private readonly statements: BinderStatements<TFile>) {}
+  private Promote(type: SpecialType): SpecialType {
+    return type == SpecialType.SByte || type == SpecialType.Byte || type == SpecialType.Int16 ||
+      type == SpecialType.UInt16 || type == SpecialType.Char ? SpecialType.Int32 : type;
+  }
+  private NumericType(left: BoundExpression, right: BoundExpression, useConstants: bool): TypeSymbol? {
+    let a = left.Type!.StripNullable().SpecialType;
+    let b = right.Type!.StripNullable().SpecialType;
+    if (!SpecialTypes.IsNumeric(a) || !SpecialTypes.IsNumeric(b)) return null;
+    let result: SpecialType;
+    if (a == SpecialType.Decimal || b == SpecialType.Decimal) {
+      if (SpecialTypes.IsFloating(a == SpecialType.Decimal ? b : a)) return null;
+      result = SpecialType.Decimal;
+    } else if (a == SpecialType.Double || b == SpecialType.Double) result = SpecialType.Double;
+    else if (a == SpecialType.Single || b == SpecialType.Single) result = SpecialType.Single;
+    else if (a == SpecialType.IntPtr || b == SpecialType.IntPtr) result = SpecialType.IntPtr;
+    else if (a == SpecialType.UIntPtr || b == SpecialType.UIntPtr) result = SpecialType.UIntPtr;
+    else {
+      a = this.Promote(a); b = this.Promote(b);
+      if (a == SpecialType.UInt64 || b == SpecialType.UInt64) {
+        const other = a == SpecialType.UInt64 ? b : a;
+        const value = useConstants ? (a == SpecialType.UInt64 ? right : left).ConstantValue?.Value : null;
+        if (SpecialTypes.IsSignedIntegral(other) &&
+          (value == null || ConstantFolding.ConvertNumeric(value, SpecialType.UInt64) == null)) return null;
+        result = SpecialType.UInt64;
+      } else if (a == SpecialType.Int64 || b == SpecialType.Int64) result = SpecialType.Int64;
+      else if (a == SpecialType.UInt32 || b == SpecialType.UInt32) {
+        const other = a == SpecialType.UInt32 ? b : a;
+        const value = useConstants ? (a == SpecialType.UInt32 ? right : left).ConstantValue?.Value : null;
+        result = other == SpecialType.Int32 && !(value instanceof int && (value as int) >= 0) ? SpecialType.Int64 : SpecialType.UInt32;
+      } else result = SpecialType.Int32;
+    }
+    return this.binder.Special(result);
+  }
+  private Equality(left: BoundExpression, right: BoundExpression, at: SyntaxNode): BoundExpression {
+    const lt = left.Type!;
+    const rt = right.Type;
+    if (rt == null || lt.IsErrorType || rt.IsErrorType) return this.binder.Expressions.Bad(at, left, right);
+    if (rt.IsNullType) return this.statements.At(new BoundBinary(BinaryOperatorKind.Equal, left, right, this.binder.BoolType, lt), at);
+    const lu = lt.StripNullable();
+    const ru = rt.StripNullable();
+    const candidates = new List<MethodSymbol>();
+    for (const type of ImmutableArray.Create<TypeSymbol>(lu, ru))
+      for (const member of this.binder.LookupMembers(type, "op_Equality"))
+        if (member instanceof MethodSymbol && member.IsStatic && (member as MethodSymbol).Parameters.Length == 2 &&
+          !candidates.Contains(member as MethodSymbol)) candidates.Add(member as MethodSymbol);
+    if (candidates.Count > 0) {
+      const call = this.binder.Overloads.ResolveOverloads(candidates, ImmutableArray.Create<BoundExpression>(left, right),
+        ImmutableArray<TypeSymbol>.Empty, at, "op_Equality", false);
+      if (call != null) return this.statements.At(new BoundCall(null, call.Method, call.Arguments), at);
+    }
+    if (lu.TypeKind == TypeKind.Enum && right.ConstantValue?.Value instanceof string)
+      right = this.binder.Conversions.ConvertImplicit(right, lu, at);
+    else if (lu.SpecialType == SpecialType.Char && right.ConstantValue?.Value instanceof string)
+      right = this.binder.Conversions.ConvertImplicit(right, lu, at);
+    if (!(lt instanceof NullableTypeSymbol) && !(right.Type instanceof NullableTypeSymbol) &&
+      ((SpecialTypes.IsNumeric(lu.SpecialType) && SpecialTypes.IsNumeric(right.Type!.SpecialType)) ||
+        lu.TypeKind == TypeKind.Enum && lu.Equals(right.Type) ||
+        lu.SpecialType == SpecialType.Boolean && right.Type!.SpecialType == SpecialType.Boolean)) {
+      const common = this.NumericType(left, right, true) ??
+        this.binder.Expressions.BestCommonType(ImmutableArray.Create<BoundExpression>(left, right));
+      if (common != null) return this.statements.At(new BoundBinary(BinaryOperatorKind.Equal,
+        this.binder.Conversions.ConvertImplicit(left, common, at), this.binder.Conversions.ConvertImplicit(right, common, at),
+        this.binder.BoolType, common instanceof NamedTypeSymbol && common.TypeKind == TypeKind.Enum ?
+          (common as NamedTypeSymbol).EnumUnderlyingType! : common), at);
+    }
+    const compatible = this.binder.Classifier.ClassifyImplicit(null, lu, ru).Exists ||
+      this.binder.Classifier.ClassifyImplicit(null, ru, lu).Exists;
+    if (!(lt instanceof NullableTypeSymbol && lu.IsValueType) && !(rt instanceof NullableTypeSymbol && ru.IsValueType) &&
+      (lu.IsReferenceType || lu instanceof TypeParameterSymbol) && (ru.IsReferenceType || ru instanceof TypeParameterSymbol) &&
+      (compatible || this.binder.Classifier.ClassifyExplicit(null, lu, ru).Exists))
+      return this.statements.At(new BoundBinary(BinaryOperatorKind.Equal, left, right, this.binder.BoolType, this.binder.ObjectType), at);
+    if (compatible) {
+      if ((lt instanceof NullableTypeSymbol || rt instanceof NullableTypeSymbol) && lu.IsValueType && ru.IsValueType &&
+        SpecialTypes.IsNumeric(lu.SpecialType) && SpecialTypes.IsNumeric(ru.SpecialType) && !lu.Equals(ru)) {
+        const promoted = this.NumericType(left, right, false);
+        if (promoted != null) {
+          const lifted = new NullableTypeSymbol(promoted);
+          left = this.binder.Conversions.ConvertImplicit(left, lifted, at);
+          right = this.binder.Conversions.ConvertImplicit(right, lifted, at);
+        }
+      }
+      // Object.Equals gives lifted nullable and value-type equality their value semantics.
+      for (const member of this.binder.ObjectType.GetMembers("Equals"))
+        if (member instanceof MethodSymbol && member.IsStatic && (member as MethodSymbol).Parameters.Length == 2)
+          return this.statements.At(new BoundCall(null, member as MethodSymbol, ImmutableArray.Create<BoundExpression>(
+            this.binder.Conversions.ConvertImplicit(left, this.binder.ObjectType, at),
+            this.binder.Conversions.ConvertImplicit(right, this.binder.ObjectType, at))), at);
+    }
+    this.binder.Report(Descriptors.NoOverlap, at, [lt.ToDisplayString(), rt.ToDisplayString()]);
+    return this.binder.Expressions.Bad(at, left, right);
+  }
+  Bind(syntax: SwitchStatementSyntax): BoundBlock {
+    const subject = this.statements.Natural(this.binder.BindValue(syntax.Expression));
+    const subjectType = subject.Type ?? this.binder.ErrorType;
+    const temporary = new LocalSymbol("<switch>", subjectType, true, this.statements.LocalOwner);
+    temporary.IsSynthesized = true;
+    const scope = this.binder.PushScope(BinderScopeKind.Switch);
+    const breakLabel = new LabelSymbol("break");
+    scope.BreakLabel = breakLabel;
+    scope.LabelName = this.statements.PendingLabel;
+    this.statements.PendingLabel = null;
+    const saved = this.binder.Flow.SaveState();
+    const subjectPath = FlowNarrowing.PathOf(subject);
+    try {
+      const stripped = subjectType.StripNullable();
+      const union = stripped instanceof NamedTypeSymbol && (stripped as NamedTypeSymbol).IsUnionType ? stripped as NamedTypeSymbol : null;
+      const enumeration = stripped instanceof NamedTypeSymbol && stripped.TypeKind == TypeKind.Enum ? stripped as NamedTypeSymbol : null;
+      const coveredCases = new HashSet<int>();
+      const coveredEnum = new HashSet<long>();
+      let coveredNull = false;
+      const dispatch = ImmutableArray.CreateBuilder<BoundStatement>();
+      const sections = new List<BinderStatementSection>();
+      let defaultLabel: LabelSymbol? = null;
+      for (const section of syntax.Sections) {
+        const info = new BinderStatementSection();
+        sections.Add(info);
+        for (const label of section.Labels) {
+          if (label.IsDefault) {
+            if (defaultLabel != null) this.binder.Report(Descriptors.DuplicateDefault, label, []);
+            defaultLabel = info.Label;
+            info.Default = true;
+            continue;
+          }
+          if (label.Value == null) continue;
+          let value = this.binder.BindExpression(label.Value);
+          if (value.HasErrors) continue;
+          let test: BoundExpression;
+          const local = this.statements.At(new BoundLocal(temporary), syntax.Expression);
+          if (value instanceof BoundTypeExpression) {
+            const caseType = (value as BoundTypeExpression).TypeSym;
+            info.TypeCount++;
+            info.NarrowType = caseType;
+            let caseIndex = -1;
+            if (union != null) for (let i = 0; i < union.UnionCases.Length; i++)
+              if (union.UnionCases[i].Equals(caseType)) { caseIndex = i; break; }
+            if (caseIndex >= 0) {
+              coveredCases.Add(caseIndex);
+              let operand: BoundExpression = local;
+              if (subjectType instanceof NullableTypeSymbol) operand = this.statements.At(
+                new BoundConversion(local, ConversionKind.FromNullable, stripped), label);
+              test = this.statements.At(new BoundTypeTest(operand, caseType, this.binder.BoolType, TypeTestKind.UnionCase, caseIndex), label);
+              if (subjectType instanceof NullableTypeSymbol) test = this.statements.At(new BoundLogicalBinary(true,
+                new BoundBinary(BinaryOperatorKind.NotEqual, local, this.binder.Literal(null, NullTypeSymbol.Instance, label),
+                  this.binder.BoolType, this.binder.ObjectType), test, this.binder.BoolType), label);
+            } else {
+              if (!subjectType.IsErrorType && !this.binder.Classifier.ClassifyExplicit(null, stripped, caseType).Exists) {
+                this.binder.Report(Descriptors.InstanceOfImpossible, label.Value, [subjectType.ToDisplayString(), caseType.ToDisplayString()]);
+                continue;
+              }
+              test = this.statements.At(new BoundTypeTest(local, caseType, this.binder.BoolType), label);
+            }
+          } else {
+            info.ValueCount++;
+            value = this.statements.Natural(value);
+            if (value.Type == null) value = this.binder.Conversions.ConvertImplicit(value, subjectType, label.Value);
+            if (value.Type == null || value.HasErrors) continue;
+            if (value.ConstantValue != null && value.ConstantValue.IsNull) coveredNull = true;
+            if (enumeration != null && value.ConstantValue != null && value.ConstantValue.Value != null) {
+              const constant = value.ConstantValue.Value;
+              if (enumeration instanceof SourceLiteralEnumSymbol<TFile> && constant instanceof string) {
+                const member = (enumeration as SourceLiteralEnumSymbol<TFile>).FindMember(constant as string);
+                if (member?.ConstantValue?.Value != null) coveredEnum.Add(Convert.ToInt64(member!.ConstantValue!.Value));
+              } else if (!(constant instanceof string)) coveredEnum.Add(Convert.ToInt64(constant));
+            }
+            test = this.Equality(local, value, label.Value!);
+            if (test.HasErrors) continue;
+          }
+          dispatch.Add(this.statements.At(new BoundConditionalGoto(test, info.Label, true), label));
+        }
+      }
+      let exhaustive = defaultLabel != null;
+      if (union != null && defaultLabel == null) {
+        const missing = new List<string>();
+        for (let i = 0; i < union.UnionCases.Length; i++) if (!coveredCases.Contains(i)) missing.Add(union.UnionCases[i].ToDisplayString());
+        if (subjectType instanceof NullableTypeSymbol && !coveredNull) missing.Add("null");
+        exhaustive = missing.Count == 0;
+        if (!exhaustive) this.binder.Report(Descriptors.NonExhaustiveSwitch, syntax.Expression, [String.Join(", ", missing)]);
+      }
+      if (enumeration != null && defaultLabel == null) {
+        const missing = new List<string>();
+        let members = 0;
+        for (const member of enumeration.GetMembers()) {
+          if (!(member instanceof FieldSymbol)) continue;
+          const field = member as FieldSymbol;
+          if (!field.IsConst || field.ConstantValue?.Value == null) continue;
+          members++;
+          if (!coveredEnum.Contains(Convert.ToInt64(field.ConstantValue!.Value))) {
+            const text = field instanceof SourceFieldSymbol<TFile> ? (field as SourceFieldSymbol<TFile>).LiteralText ?? field.Name : field.Name;
+            missing.Add("\"" + text + "\"");
+          }
+        }
+        exhaustive = members > 0 && missing.Count == 0 && (!(subjectType instanceof NullableTypeSymbol) || coveredNull);
+        if (enumeration instanceof SourceLiteralEnumSymbol<TFile> && missing.Count > 0)
+          this.binder.Report(Descriptors.NonExhaustiveSwitch, syntax.Expression, [String.Join(", ", missing)]);
+      }
+      const bodies = ImmutableArray.CreateBuilder<BoundStatement>();
+      let lastCompletes = true;
+      for (let i = 0; i < syntax.Sections.Count; i++) {
+        const section = syntax.Sections.Get(i);
+        const info = sections[i];
+        this.binder.Flow.RestoreState(saved);
+        if ((i == 0 || !lastCompletes) && info.TypeCount == 1 && info.ValueCount == 0 && !info.Default &&
+          info.NarrowType != null && subjectPath != null)
+          this.binder.Flow.Apply(new Narrowings(ImmutableArray.Create<NarrowingFact>(new NarrowingFact(subjectPath, info.NarrowType))));
+        bodies.Add(this.statements.At(new BoundLabel(info.Label), section));
+        const block = this.statements.At(new BoundBlock(ImmutableArray<LocalSymbol>.Empty,
+          this.statements.BindStatementList(section.Statements, 0, true)), section);
+        bodies.Add(block);
+        lastCompletes = this.statements.CanCompleteNormally(block);
+      }
+      const all = ImmutableArray.CreateBuilder<BoundStatement>();
+      all.Add(this.statements.At(new BoundLocalDeclaration(temporary, subject.Type == null ? null : subject), syntax));
+      all.AddRange(dispatch);
+      all.Add(this.statements.At(new BoundGoto(defaultLabel ?? breakLabel), syntax));
+      all.AddRange(bodies);
+      all.Add(this.statements.At(new BoundLabel(breakLabel), syntax));
+      const result = this.statements.At(new BoundBlock(ImmutableArray.CreateRange<LocalSymbol>(scope.Locals).Add(temporary), all.ToImmutable()), syntax);
+      this.statements.SetCompletion(result, scope.BreakUsed || !exhaustive || lastCompletes || sections.Count == 0);
+      return result;
+    } finally {
+      this.binder.Flow.RestoreState(saved);
+      this.binder.Flow.InvalidateAssignedIn(syntax);
+      this.binder.PopScope();
+    }
+  }
+}

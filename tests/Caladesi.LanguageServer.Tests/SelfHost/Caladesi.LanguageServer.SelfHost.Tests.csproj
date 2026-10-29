@@ -7,8 +7,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../*.cs" Link="%(Filename)%(Extension)" />
-    <ProjectReference Include="../../../src/Caladesi.Compiler/Caladesi.Compiler.csproj" />
+    <ProjectReference Include="../../../src/Caladesi.Compiler.SelfHost/Caladesi.Compiler.SelfHost.calaproj" />
     <ProjectReference Include="../../../src/Caladesi.LanguageServer.SelfHost/Caladesi.LanguageServer.SelfHost.calaproj" />
-    <ProjectReference Include="../../../src/Caladesi.Runtime/Caladesi.Runtime.csproj" />
+    <ProjectReference Include="../../../src/Caladesi.Runtime.SelfHost/Caladesi.Runtime.SelfHost.calaproj" />
   </ItemGroup>
 </Project>

@@ -40,13 +40,16 @@ public sealed class CliParityTests
     }
 
     private static Result Run(bool selfHost, IEnumerable<string> arguments)
+        => RunCompiler(FindCli(selfHost), arguments);
+
+    private static Result RunCompiler(string cli, IEnumerable<string> arguments)
     {
         ProcessStartInfo start = new("dotnet")
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
-        start.ArgumentList.Add(FindCli(selfHost));
+        start.ArgumentList.Add(cli);
         foreach (string argument in arguments)
         {
             start.ArgumentList.Add(argument);
@@ -101,6 +104,79 @@ public sealed class CliParityTests
             .. options,
             path,
         ];
+    }
+
+    [TestMethod]
+    public void NativeTooling_DoesNotReferenceBootstrapCompilerOrRuntime()
+    {
+        string cli = FindCli(selfHost: true);
+        string directory = Path.GetDirectoryName(cli)!;
+        foreach (string assembly in new[] { cli, Path.Join(directory, "Caladesi.Compiler.SelfHost.dll"), Path.Join(directory, "Caladesi.Runtime.SelfHost.dll") })
+        {
+            using FileStream stream = File.OpenRead(assembly);
+            using PEReader reader = new(stream);
+            MetadataReader metadata = reader.GetMetadataReader();
+            string[] references = metadata.AssemblyReferences
+                .Select(handle => metadata.GetString(metadata.GetAssemblyReference(handle).Name)).ToArray();
+            CollectionAssert.DoesNotContain(references, "Caladesi.Compiler", assembly);
+            CollectionAssert.DoesNotContain(references, "Caladesi.Runtime", assembly);
+            if (assembly == cli)
+            {
+                CollectionAssert.Contains(references, "Caladesi.Compiler.SelfHost");
+                Assert.IsTrue(metadata.TypeReferences.Any(handle =>
+                {
+                    TypeReference type = metadata.GetTypeReference(handle);
+                    return metadata.GetString(type.Namespace) == "Caladesi.Compiler" &&
+                        metadata.GetString(type.Name) == "Compilation" &&
+                        type.ResolutionScope.Kind == HandleKind.AssemblyReference &&
+                        metadata.GetString(metadata.GetAssemblyReference((AssemblyReferenceHandle)type.ResolutionScope).Name) == "Caladesi.Compiler.SelfHost";
+                }), "The native CLI must invoke the native Compilation implementation.");
+            }
+        }
+    }
+
+    [TestMethod]
+    public void NativeCli_CompilesAndRunsWithoutBootstrapAssemblies()
+    {
+        InWorkspace(directory =>
+        {
+            string sourceDirectory = Path.GetDirectoryName(FindCli(selfHost: true))!;
+            string tools = Path.Join(directory, "native-tools");
+            Directory.CreateDirectory(tools);
+            foreach (string file in new[] { "calac-selfhost.dll", "calac-selfhost.deps.json", "calac-selfhost.runtimeconfig.json",
+                "Caladesi.Compiler.SelfHost.dll", "Caladesi.Runtime.SelfHost.dll" })
+            {
+                File.Copy(Path.Join(sourceDirectory, file), Path.Join(tools, file));
+            }
+
+            string source = Path.Join(directory, "input.cala");
+            string output = Path.Join(directory, "native-app.dll");
+            File.WriteAllText(source, "function main(): int { const value: int | string = 42; Console.WriteLine(value); return 42; }");
+            Result result = RunCompiler(Path.Join(tools, "calac-selfhost.dll"),
+                ["-out:" + output, "-projectdir:" + directory,
+                    .. TestReferences.Paths.Select(path => "-ref:" + path),
+                    "-ref:" + Path.Join(tools, "Caladesi.Runtime.SelfHost.dll"), source]);
+            Assert.AreEqual(0, result.ExitCode, result.Stderr);
+            Assert.AreEqual("", result.Stdout);
+            Assert.AreEqual("", result.Stderr);
+            Assert.IsTrue(File.Exists(output));
+            using (FileStream stream = File.OpenRead(output))
+            using (PEReader reader = new(stream))
+            {
+                MetadataReader metadata = reader.GetMetadataReader();
+                string[] references = metadata.AssemblyReferences
+                    .Select(handle => metadata.GetString(metadata.GetAssemblyReference(handle).Name)).ToArray();
+                CollectionAssert.Contains(references, "Caladesi.Runtime.SelfHost");
+                CollectionAssert.DoesNotContain(references, "Caladesi.Runtime");
+            }
+
+            File.Copy(Path.Join(tools, "calac-selfhost.runtimeconfig.json"), Path.Join(directory, "native-app.runtimeconfig.json"));
+            File.Copy(Path.Join(tools, "Caladesi.Runtime.SelfHost.dll"), Path.Join(directory, "Caladesi.Runtime.SelfHost.dll"));
+            Result program = RunCompiler(output, []);
+            Assert.AreEqual(42, program.ExitCode, program.Stderr);
+            Assert.AreEqual("42" + Environment.NewLine, program.Stdout);
+            Assert.AreEqual("", program.Stderr);
+        });
     }
 
     [TestMethod]

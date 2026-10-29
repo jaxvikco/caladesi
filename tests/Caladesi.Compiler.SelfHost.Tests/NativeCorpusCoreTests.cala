@@ -1,0 +1,251 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { NativeCorpusHarness } from "./NativeCorpusHarness";
+import { NativeCorpusILVerifier } from "./NativeCorpusILVerifier";
+import { List } from "System.Collections.Generic";
+import { Directory, File, Path, SearchOption, MemoryStream } from "System.IO";
+import { OutputKind } from "Caladesi.Compiler";
+import { DiagnosticSeverity } from "Caladesi.Compiler.Diagnostics";
+import { SyntaxTree } from "Caladesi.Compiler.Syntax";
+import { MetadataReaderProvider, PEReaderExtensions } from "System.Reflection.Metadata";
+import { MetadataTokens } from "System.Reflection.Metadata.Ecma335";
+import { PEReader, DebugDirectoryEntryType } from "System.Reflection.PortableExecutable";
+
+@TestClass
+export class NativeCorpusCoreTests {
+  @TestMethod
+  HelloWorld(): void {
+    NativeCorpusHarness.Check("Console.WriteLine('hello');", "hello\n");
+  }
+  @TestMethod
+  ArithmeticAndFunctions(): void {
+    NativeCorpusHarness.Check(
+      "function add(a: int, b: int): int { return a + b; }\n" +
+      "const x = add(2, 3) * 4;\nConsole.WriteLine(x);\nConsole.WriteLine(7 / 2);\n" +
+      "Console.WriteLine(7.0 / 2);\nConsole.WriteLine(2 ** 10);", "20\n3\n3.5\n1024\n");
+  }
+  @TestMethod
+  ControlFlow(): void {
+    NativeCorpusHarness.Check(
+      "let sum = 0;\nfor (let i = 0; i < 5; i++) { if (i == 3) continue; sum += i; }\n" +
+      "Console.WriteLine(sum);\nlet n = 0;\nwhile (n < 3) n++;\ndo { n--; } while (n > 0);\n" +
+      "Console.WriteLine(n);\nfor (const s of [\"a\", \"b\"]) Console.WriteLine(s);", "7\n0\na\nb\n");
+  }
+  @TestMethod
+  StringsAndTemplates(): void {
+    NativeCorpusHarness.Check("const name = \"world\";\nConsole.WriteLine(`hello ${name} ${1 + 2}`);\nConsole.WriteLine(\"abc\".Length);", "hello world 3\n3\n");
+  }
+  @TestMethod
+  TryCatchFinally(): void {
+    NativeCorpusHarness.Check("try { throw new Exception(\"boom\"); }\ncatch (e: Exception) { Console.WriteLine(e.Message); }\nfinally { Console.WriteLine(\"done\"); }", "boom\ndone\n");
+  }
+  @TestMethod
+  Switch(): void {
+    NativeCorpusHarness.Check(
+      "function f(n: int): string {\n switch (n) { case 1: return \"one\"; case 2: return \"two\"; default: return \"many\"; }\n}\n" +
+      "Console.WriteLine(f(1)); Console.WriteLine(f(2)); Console.WriteLine(f(9));", "one\ntwo\nmany\n");
+  }
+  @TestMethod
+  Arrays(): void {
+    NativeCorpusHarness.Check("const a = [1, 2, 3];\na[1] = 10;\nlet t = 0;\nfor (const v of a) t += v;\nConsole.WriteLine(t);\nConsole.WriteLine(a.Length);", "14\n3\n");
+  }
+  @TestMethod
+  NullableOps(): void {
+    NativeCorpusHarness.Check("function f(s: string | null): int { return s?.Length ?? -1; }\nConsole.WriteLine(f(null));\nConsole.WriteLine(f(\"abcd\"));", "-1\n4\n");
+  }
+  @TestMethod
+  GenericBoxingRegressions(): void {
+    NativeCorpusHarness.Check("function eqs<T>(a: T, b: T): bool { return a.Equals(b); }\nConsole.WriteLine(eqs(1, 1));", "True\n");
+    NativeCorpusHarness.Check("function w<T>(a: T): void { Console.WriteLine(a); }\nw(1); w(\"s\");", "1\ns\n");
+    NativeCorpusHarness.Check("function toObj<T>(a: T): object { const o: object = a!; return o; }\nConsole.WriteLine(toObj(1));\nConsole.WriteLine(toObj(\"s\"));", "1\ns\n");
+    NativeCorpusHarness.Check("function f<T>(x: T | null): object | null { return x; }\nConsole.WriteLine(f(5));", "5\n");
+  }
+  @TestMethod
+  NumericConversionRegressions(): void {
+    NativeCorpusHarness.Check("function toDec(x: double): decimal { return x as decimal; }\nConsole.WriteLine(toDec(3.75));", "3.75\n");
+    NativeCorpusHarness.Check("function f(x: double): ulong { return x as ulong; }\nConsole.WriteLine(f(1e19));", "10000000000000000000\n");
+    NativeCorpusHarness.Check("type Num = double | string;\nfunction f(x: int): Num { return x; }\nConsole.WriteLine(f(3));", "3\n");
+  }
+  @TestMethod
+  NullableEqualityWithWiderNumeric(): void {
+    NativeCorpusHarness.Check(
+      "function isOne(x: long | null): bool { return x == 1; }\n" +
+      "function isOne2(x: int | null, y: long): bool { return x == y; }\n" +
+      "function isNone(x: int | null, y: long): bool { return x != y; }\n" +
+      "Console.WriteLine(isOne(1L));\nConsole.WriteLine(isOne2(1, 1L));\n" +
+      "Console.WriteLine(isOne2(null, 1L));\nConsole.WriteLine(isNone(1, 2L));", "True\nTrue\nFalse\nTrue\n");
+  }
+  @TestMethod
+  NeverReturningFunctionsAndLambdasCompileAndThrow(): void {
+    NativeCorpusHarness.Check("function thrower(): never { throw new Exception(\"t\"); }\nConsole.WriteLine(1);\ntry { thrower(); } catch (e) { Console.WriteLine(\"caught\"); }", "1\ncaught\n");
+    NativeCorpusHarness.Check("const f = (): never => throw new Exception(\"x\");\nfunction useNever(x: int | null): int { return x ?? throw new Exception(\"t\"); }\nConsole.WriteLine(useNever(3));\ntry { f(); } catch (e) { Console.WriteLine(\"caught\"); }", "3\ncaught\n");
+  }
+  @TestMethod
+  CollectionLiteralsAndImmediatelyInvokedLambda(): void {
+    NativeCorpusHarness.Check("Console.WriteLine([1, 2][0]);", "1\n");
+    NativeCorpusHarness.Check("Console.WriteLine([1, 2].Length);", "2\n");
+    NativeCorpusHarness.Check("Console.WriteLine(((y: int) => y * 2)(4));", "8\n");
+    NativeCorpusHarness.Check("const s = \"\\u{D800}\";\nConsole.WriteLine(s.Length);", "1\n");
+  }
+  @TestMethod
+  UsingDeclarationsPreserveModuleVariablesAndLocalFunctions(): void {
+    NativeCorpusHarness.Check("class Res implements IDisposable { Dispose(): void { Console.WriteLine(\"disp\"); } }\nusing scope = new Res();\nlet counter = 1;\nfunction bump(): void { counter++; }\nbump();\nConsole.WriteLine(counter);", "2\ndisp\n");
+    NativeCorpusHarness.Check("function run(): void { using f = new System.IO.StringReader(\"x\"); function helper(): int { return 1; } Console.WriteLine(helper()); }\nrun();", "1\n");
+  }
+  @TestMethod
+  CallsThatAssignResetNarrowedFieldsAndModuleVariables(): void {
+    NativeCorpusHarness.Check(
+      "class K {\n v: object = 1;\n reset(): void { this.v = \"s\"; }\n test(): string {\n" +
+      " if (this.v instanceof int) { this.reset(); if (this.v instanceof string) return \"now string\"; }\n return \"int\";\n }\n}\n" +
+      "Console.WriteLine(new K().test());\nlet o: object = 1;\nfunction mut(): void { o = \"str\"; }\n" +
+      "if (o instanceof int) { mut(); Console.WriteLine(o instanceof string ? \"now string\" : \"still int\"); }", "now string\nnow string\n");
+  }
+  @TestMethod
+  NullableInitializersAssignmentsCoalesceAndConcatenation(): void {
+    NativeCorpusHarness.Check("let s1: string | null = \"x\";\nConsole.WriteLine(s1.Length);\nlet s2: string | null = null;\ns2 = \"yy\";\nConsole.WriteLine(s2.Length);", "1\n2\n");
+    NativeCorpusHarness.Check("function f(x: int | null, y: long): long { return x ?? y; }\nConsole.WriteLine(f(null, 5L));\nConsole.WriteLine(f(3, 5L));", "5\n3\n");
+    NativeCorpusHarness.Check("function j(a: string | null, b: string | null): string { return a + b; }\nConsole.WriteLine(j(null, \"b\"));\nConsole.WriteLine(j(\"a\", null) + \"|\");", "b\na|\n");
+  }
+  @TestMethod
+  BinaryLiteralComparisonConditionalAndTypeof(): void {
+    NativeCorpusHarness.Check("const x = 0b101;\nconst a = 1, b = 2, c = 0;\nconst flag = a < b == true;\nconst k = true;\nconst f: Func<int, int> = y => y;\nconst v = k ? (f) : y => y * 2;\nConsole.WriteLine(x);\nConsole.WriteLine(flag);\nConsole.WriteLine(v(3));\nConsole.WriteLine(typeof(int).Name);", "5\nTrue\n3\nInt32\n");
+  }
+  @TestMethod
+  OmittedOutsPreserveReferenceAndValueTypeResults(): void {
+    NativeCorpusHarness.Check(
+      "const [parsed, version] = Version.TryParse(\"2.3.4.5\");\nConsole.WriteLine(parsed);\nConsole.WriteLine(version?.ToString() ?? \"<null>\");\n" +
+      "const [invalid, missing] = Version.TryParse(\"invalid\");\nConsole.WriteLine(invalid);\nConsole.WriteLine(missing == null);\n" +
+      "const [numberParsed, number] = int.TryParse(\"42\");\nConsole.WriteLine(numberParsed);\nConsole.WriteLine(number);\n" +
+      "const [numberInvalid, zero] = int.TryParse(\"invalid\");\nConsole.WriteLine(numberInvalid);\nConsole.WriteLine(zero);",
+      "True\n2.3.4.5\nFalse\nTrue\nTrue\n42\nFalse\n0\n");
+  }
+  private static SamplesRoot(): string {
+    let root = AppContext.BaseDirectory;
+    while (!File.Exists(Path.Combine(root, "Caladesi.slnx"))) {
+      const parent = Directory.GetParent(root);
+      if (parent == null) throw new Exception("Cannot find repository samples");
+      root = parent.FullName;
+    }
+    return Path.Combine(root, "samples");
+  }
+  private static Sample(directory: string): SyntaxTree[] {
+    const trees = new List<SyntaxTree>();
+    trees.Add(SyntaxTree.ParseText(File.ReadAllText(Path.Combine(directory, "Program.cala")), "/proj/main.cala"));
+    for (const path of Directory.GetFiles(directory, "*.cala", SearchOption.AllDirectories)) {
+      if (Path.GetFileName(path) == "Program.cala" && Path.GetDirectoryName(path) == directory) continue;
+      trees.Add(SyntaxTree.ParseText(File.ReadAllText(path), "/proj/" + Path.GetRelativePath(directory, path).Replace("\\", "/")));
+    }
+    return trees.ToArray();
+  }
+  @TestMethod
+  AllRunnableSamplesProduceTheirExpectedOutput(): void {
+    let failures = "";
+    let count = 0;
+    for (const directory of Directory.GetDirectories(NativeCorpusCoreTests.SamplesRoot())) {
+      if (!File.Exists(Path.Combine(directory, "Program.cala")) || !File.Exists(Path.Combine(directory, "expected.stdout")) ||
+        File.Exists(Path.Combine(directory, "expected.test")) || File.Exists(Path.Combine(directory, "needs-nuget-org.txt")) ||
+        File.Exists(Path.Combine(directory, "args.txt"))) continue;
+      count++;
+      try {
+        const expected = File.ReadAllText(Path.Combine(directory, "expected.stdout")).Replace("\r\n", "\n");
+        const compilation = NativeCorpusHarness.CreateFiles(NativeCorpusCoreTests.Sample(directory), OutputKind.ConsoleApplication, false);
+        NativeCorpusHarness.Execute(compilation, expected, 0, true, false);
+      } catch (error: Exception) { failures += "\n" + Path.GetFileName(directory) + ": " + error.ToString(); }
+    }
+    if (count == 0) throw new Exception("Missing runnable sample corpus");
+    if (failures.Length != 0) throw new Exception(failures);
+  }
+  @TestMethod
+  ErrorSamplesReportTheirExpectedDiagnostics(): void {
+    let count = 0;
+    for (const directory of Directory.GetDirectories(NativeCorpusCoreTests.SamplesRoot())) {
+      if (!File.Exists(Path.Combine(directory, "Program.cala")) || !File.Exists(Path.Combine(directory, "expected.diagnostics"))) continue;
+      count++;
+      const compilation = NativeCorpusHarness.CreateFiles(NativeCorpusCoreTests.Sample(directory), OutputKind.ConsoleApplication, false);
+      const diagnostics = compilation.GetDiagnostics();
+      for (const line of File.ReadAllLines(Path.Combine(directory, "expected.diagnostics"))) {
+        for (const id of line.Split([" "[0]], StringSplitOptions.RemoveEmptyEntries)) {
+          let found = false;
+          for (const diagnostic of diagnostics)
+            if (diagnostic.EffectiveSeverity == DiagnosticSeverity.Error && diagnostic.Id == id) found = true;
+          if (!found) throw new Exception(Path.GetFileName(directory) + ": expected " + id);
+        }
+      }
+    }
+    if (count == 0) throw new Exception("Missing error sample corpus");
+  }
+  @TestMethod
+  PortablePdbHasDocumentsSequencePointsAndLocals(): void {
+    const compilation = NativeCorpusHarness.Create("function f(a: int): int {\n  const b = a * 2;\n  return b + 1;\n}\nConsole.WriteLine(f(2));");
+    const pe = new MemoryStream();
+    const pdb = new MemoryStream();
+    try {
+      if (!compilation.Emit(pe, pdb, "Test.pdb").Success) throw new Exception("PDB corpus emission");
+      NativeCorpusILVerifier.Verify("Test", pe.ToArray());
+      pe.Position = 0;
+      const image = new PEReader(pe);
+      try {
+        let codeViews = 0;
+        for (const entry of image.ReadDebugDirectory()) {
+          if (entry.Type != DebugDirectoryEntryType.CodeView) continue;
+          if (image.ReadCodeViewDebugDirectoryData(entry).Path != "Test.pdb") throw new Exception("CodeView path");
+          codeViews++;
+        }
+        if (codeViews != 1) throw new Exception("Expected exactly one CodeView");
+        pdb.Position = 0;
+        const provider = MetadataReaderProvider.FromPortablePdbStream(pdb);
+        try {
+          const reader = provider.GetMetadataReader();
+          if (reader.Documents.Count != 1) throw new Exception("Expected one PDB document");
+          let methods = 0;
+          const lines = new List<int>();
+          for (const handle of reader.MethodDebugInformation) {
+            const info = reader.GetMethodDebugInformation(handle);
+            if (!info.SequencePointsBlob.IsNil) methods++;
+            for (const point of info.GetSequencePoints()) if (!point.IsHidden) lines.Add(point.StartLine);
+          }
+          if (methods < 2) throw new Exception("Expected at least two methods with sequence points");
+          for (const line of [2, 3, 5]) if (!lines.Contains(line)) throw new Exception("Missing sequence point line " + line);
+        } finally { provider.Dispose(); }
+      } finally { image.Dispose(); }
+    } finally { pe.Dispose(); pdb.Dispose(); }
+  }
+  @TestMethod
+  SequencePointsHaveValidDocumentsAndStrictlyIncreasingOffsets(): void {
+    for (const source of [
+      "let first: string;\nlet second: string;\nfirst = \"one\";\nsecond = \"two\";\nConsole.WriteLine(first + second);",
+      "function read(): void {\ntry {\nwhile (true) {\nlet text: string;\ntry { text = \"input\"; }\ncatch (ex: Exception) { continue; }\nConsole.WriteLine(text);\nbreak;\n}\n} finally { Console.WriteLine(\"done\"); }\n}\nread();",
+      "function empty(): void {\nlet unused: string;\n}\nempty();"
+    ]) {
+      const compilation = NativeCorpusHarness.Create(source);
+      const pe = new MemoryStream();
+      const pdb = new MemoryStream();
+      try {
+        if (!compilation.Emit(pe, pdb, "Test.pdb").Success) throw new Exception("Sequence-point corpus emission");
+        NativeCorpusILVerifier.Verify("Test", pe.ToArray());
+        pe.Position = 0;
+        pdb.Position = 0;
+        const image = new PEReader(pe);
+        const provider = MetadataReaderProvider.FromPortablePdbStream(pdb);
+        try {
+          const metadata = PEReaderExtensions.GetMetadataReader(image);
+          const debug = provider.GetMetadataReader();
+          let points = 0;
+          for (const handle of debug.MethodDebugInformation) {
+            const info = debug.GetMethodDebugInformation(handle);
+            if (info.SequencePointsBlob.IsNil) continue;
+            const definition = metadata.GetMethodDefinition(MetadataTokens.MethodDefinitionHandle(MetadataTokens.GetRowNumber(handle)));
+            const bodyLength = image.GetMethodBody(definition.RelativeVirtualAddress).GetILContent().Length;
+            let previous = -1;
+            for (const point of info.GetSequencePoints()) {
+              if (point.Offset <= previous || point.Offset >= bodyLength || point.Document.IsNil) throw new Exception("Invalid sequence point offset/document");
+              if (debug.GetString(debug.GetDocument(point.Document).Name).Length == 0) throw new Exception("Empty sequence point document");
+              previous = point.Offset;
+              points++;
+            }
+          }
+          if (points == 0) throw new Exception("Missing sequence points");
+        } finally { provider.Dispose(); image.Dispose(); }
+      } finally { pe.Dispose(); pdb.Dispose(); }
+    }
+  }
+}

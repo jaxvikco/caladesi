@@ -1,0 +1,161 @@
+import { ImmutableArray, ImmutableDictionary } from "System.Collections.Immutable";
+import { Binder } from "./Binder";
+import { BinderScope } from "./BinderScope";
+import { BinderExpressions } from "./BinderExpressions";
+import { NarrowPath } from "./FlowNarrowing";
+import { SyntaxNode } from "../Syntax/SyntaxElement";
+import { ArrowFunctionSyntax, FunctionExpressionSyntax, ParameterListSyntax, BlockSyntax } from "../Syntax/Nodes.Core";
+import { TypeSymbol, TypeKind, NullableTypeSymbol } from "../Symbols/TypeSymbols";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { SpecialType } from "../Symbols/SpecialType";
+import { BoundExpression, BoundUnbound, BoundLambda, BoundConversion, ConversionKind } from "../Bound/BoundNodes";
+import { LambdaInfo } from "../Bound/UnboundInfo";
+import { Descriptors } from "../Diagnostics/Descriptors";
+
+class BinderLambdaBinding<TFile> {
+  Info: LambdaInfo? = null;
+  constructor(private readonly binder: Binder<TFile>, private readonly expressions: BinderExpressions<TFile>,
+    private readonly owner: BinderExpressionLambdas<TFile>, private readonly scope: BinderScope,
+    private readonly flow: ImmutableDictionary<NarrowPath, TypeSymbol>, private readonly syntax: SyntaxNode,
+    private readonly names: ImmutableArray<string>, private readonly parameters: ParameterListSyntax?,
+    private readonly explicitTypes: ImmutableArray<TypeSymbol?>, private readonly explicitReturn: TypeSymbol?,
+    private readonly isAsync: bool, private readonly generator: bool, private readonly body: SyntaxNode) {}
+  Bind(types: ImmutableArray<TypeSymbol>, returns: TypeSymbol?, speculative: bool): BoundLambda? {
+    return this.owner.Body(this.scope, this.flow, this.syntax, this.names, this.parameters, types,
+      this.explicitReturn ?? returns, null, this.isAsync, this.generator, this.body, speculative, false);
+  }
+  Infer(types: ImmutableArray<TypeSymbol>): TypeSymbol? {
+    const lambda = this.owner.Body(this.scope, this.flow, this.syntax, this.names, this.parameters, types,
+      this.explicitReturn, null, this.isAsync, this.generator, this.body, true, true);
+    return lambda?.Symbol.ReturnTypeValue;
+  }
+  BindToType(target: TypeSymbol?): BoundExpression {
+    const syntax = this.syntax;
+    const names = this.names;
+    const explicitTypes = this.explicitTypes;
+    const actualTarget = target ?? this.owner.NaturalDelegate(this.Info!);
+    if (actualTarget == null) {
+      this.binder.Report(Descriptors.CannotInferType, syntax, []);
+      return this.expressions.Bad(syntax);
+    }
+    const stripped = actualTarget.StripNullable();
+    if (!(stripped instanceof NamedTypeSymbol) || stripped.TypeKind != TypeKind.Delegate) {
+      if (!actualTarget.IsErrorType) this.binder.Report(Descriptors.LambdaNeedsDelegate, syntax, [actualTarget.ToDisplayString()]);
+      return this.expressions.Bad(syntax);
+    }
+    const delegateType = stripped as NamedTypeSymbol;
+    const invoke = delegateType.DelegateInvokeMethod;
+    if (invoke == null) return this.expressions.Bad(syntax);
+    if (invoke.Parameters.Length != names.Length) {
+      this.binder.Report(Descriptors.LambdaParameterCount, syntax, [names.Length, invoke.Parameters.Length]);
+      return this.expressions.Bad(syntax);
+    }
+    const types = ImmutableArray.CreateBuilder<TypeSymbol>();
+    for (let i = 0; i < names.Length; i++) {
+      const actual = invoke.Parameters[i].Type;
+      const annotation = explicitTypes[i];
+      if (annotation != null && !annotation.IsErrorType && !actual.IsErrorType &&
+        !this.binder.Classifier.ClassifyImplicit(null, actual, annotation).Exists) {
+        this.binder.Report(Descriptors.LambdaParameterType, syntax, [names[i], annotation.ToDisplayString(), actual.ToDisplayString()]);
+        return this.expressions.Bad(syntax);
+      }
+      types.Add(actual);
+    }
+    const lambda = this.owner.Body(this.scope, this.flow, syntax, names, this.parameters, types.ToImmutable(),
+      this.explicitReturn ?? invoke.ReturnType, delegateType, this.isAsync, this.generator, this.body, false, false);
+    if (lambda == null) return this.expressions.Bad(syntax);
+    return actualTarget instanceof NullableTypeSymbol ?
+      this.expressions.At(new BoundConversion(lambda, ConversionKind.ToNullable, actualTarget), syntax) : lambda;
+  }
+}
+
+export sealed class BinderExpressionLambdas<TFile> {
+  constructor(private readonly binder: Binder<TFile>, private readonly expressions: BinderExpressions<TFile>) {}
+
+  Arrow(syntax: ArrowFunctionSyntax): BoundExpression {
+    const names = ImmutableArray.CreateBuilder<string>();
+    const types = ImmutableArray.CreateBuilder<TypeSymbol?>();
+    if (syntax.Parameters != null) {
+      for (const parameter of syntax.Parameters.Parameters) {
+        names.Add(parameter.Identifier?.Text ?? "_");
+        types.Add(parameter.TypeAnnotation == null ? null : this.binder.BindType(parameter.TypeAnnotation.Type));
+      }
+    } else {
+      names.Add(syntax.SingleParameter!.Text);
+      types.Add(null);
+    }
+    return this.Make(syntax, names.ToImmutable(), syntax.Parameters, types.ToImmutable(),
+      syntax.ReturnType == null ? null : this.binder.BindType(syntax.ReturnType.Type, true),
+      syntax.AsyncKeyword != null, false, syntax.Body);
+  }
+  Function(syntax: FunctionExpressionSyntax): BoundExpression {
+    const names = ImmutableArray.CreateBuilder<string>();
+    const types = ImmutableArray.CreateBuilder<TypeSymbol?>();
+    for (const parameter of syntax.Parameters.Parameters) {
+      names.Add(parameter.Identifier?.Text ?? "_");
+      types.Add(parameter.TypeAnnotation == null ? null : this.binder.BindType(parameter.TypeAnnotation.Type));
+    }
+    return this.Make(syntax, names.ToImmutable(), syntax.Parameters, types.ToImmutable(),
+      syntax.ReturnType == null ? null : this.binder.BindType(syntax.ReturnType.Type, true),
+      syntax.AsyncKeyword != null, syntax.AsteriskToken != null, syntax.Body);
+  }
+  private Make(syntax: SyntaxNode, names: ImmutableArray<string>, parameters: ParameterListSyntax?,
+    explicitTypes: ImmutableArray<TypeSymbol?>, explicitReturn: TypeSymbol?, isAsync: bool, generator: bool,
+    body: SyntaxNode): BoundExpression {
+    const scope = this.binder.Scope;
+    const flow = this.binder.Flow.SaveState();
+    const binding = new BinderLambdaBinding<TFile>(this.binder, this.expressions, this, scope, flow,
+      syntax, names, parameters, explicitTypes, explicitReturn, isAsync, generator, body);
+    const info = new LambdaInfo(names.Length, explicitTypes, binding.Bind, binding.Infer);
+    binding.Info = info;
+    info.ExplicitReturnType = explicitReturn;
+    info.IsAsync = isAsync;
+    info.IsGenerator = generator;
+    info.HasExpressionBody = !(body instanceof BlockSyntax);
+    const result = new BoundUnbound(syntax, binding.BindToType);
+    result.IsLambda = true;
+    result.Lambda = info;
+    return result;
+  }
+  Body(scope: BinderScope, flow: ImmutableDictionary<NarrowPath, TypeSymbol>, syntax: SyntaxNode,
+    names: ImmutableArray<string>, parameters: ParameterListSyntax?, types: ImmutableArray<TypeSymbol>,
+    returns: TypeSymbol?, delegateType: NamedTypeSymbol?, isAsync: bool, generator: bool,
+    body: SyntaxNode, speculative: bool, inferOnly: bool): BoundLambda? {
+    const savedScope = this.binder.Scope;
+    const savedFlow = this.binder.Flow.SaveState();
+    try {
+      this.binder.Scope = scope;
+      this.binder.Flow.RestoreState(flow);
+      if (speculative) {
+        const guard = this.binder.BeginSpeculation();
+        try {
+          return this.binder.Statements.BindLambdaBody(syntax, names, parameters, types, returns,
+            delegateType, isAsync, generator, body, inferOnly);
+        } finally { guard.Dispose(); }
+      }
+      return this.binder.Statements.BindLambdaBody(syntax, names, parameters, types, returns,
+        delegateType, isAsync, generator, body, inferOnly);
+    } finally {
+      this.binder.Scope = savedScope;
+      this.binder.Flow.RestoreState(savedFlow);
+    }
+  }
+  NaturalDelegate(info: LambdaInfo): NamedTypeSymbol? {
+    if (info.IsGenerator || info.ParameterCount > 16) return null;
+    const types = ImmutableArray.CreateBuilder<TypeSymbol>();
+    for (const annotation of info.ExplicitParameterTypes) {
+      if (annotation == null) return null;
+      types.Add(annotation);
+    }
+    let returns = info.ExplicitReturnType ?? info.InferReturnType.Invoke(types.ToImmutable());
+    if (returns == null || returns.IsErrorType) return null;
+    // InferReturnType reports the full async return, including Task wrapping.
+    const isVoid = returns.IsVoid || returns.IsNeverType;
+    const name = isVoid ? (types.Count == 0 ? "System.Action" : "System.Action`" + types.Count) :
+      "System.Func`" + (types.Count + 1);
+    const definition = this.binder.Context.GetWellKnownType(name);
+    if (definition == null) return null;
+    if (!isVoid) types.Add(returns);
+    return types.Count == 0 ? definition : definition.Construct(types.ToImmutable());
+  }
+}

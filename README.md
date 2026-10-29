@@ -94,6 +94,49 @@ The end-to-end suite lives in `tests/Caladesi.E2E` (see [its README](tests/Calad
 throwaway feed, copies each folder in `samples/` to a temp directory, builds and runs it with the real `dotnet` CLI, and
 compares stdout, exit codes and diagnostics.
 
+### Native repeated-bootstrap verification
+
+The explicit native verification entry point is:
+
+```sh
+dotnet msbuild eng/SelfHost.proj -t:Verify -p:BootstrapDirectory=/absolute/path/to/trusted-native-bootstrap
+# Equivalent: eng/build.sh --self-host -p:BootstrapDirectory=/absolute/path/to/trusted-native-bootstrap
+```
+
+Supply trusted **existing native** artifacts, not the C# bootstrap renamed to native filenames. The directory must contain
+`calac-selfhost.dll`, its `.deps.json` and `.runtimeconfig.json`, `Caladesi.Compiler.SelfHost.dll`,
+`Caladesi.Runtime.SelfHost.dll`, and `Caladesi.Build.Tasks.SelfHost.dll`, together with all their runtime dependencies.
+For example, retain the complete native CLI output directory and add the native build-task output and its dependencies.
+Use the pinned .NET SDK; normal NuGet restore sources/cache must also be available. This target does not download
+bootstrap artifacts, build C# projects, or establish the provenance of the trusted input.
+
+The standard MSBuild target restores the five native `.calaproj` projects non-recursively, then builds runtime, compiler,
+build task, CLI and language server in dependency order with `BuildProjectReferences=false`. Stage1 uses the supplied
+CLI and task; stage2 uses stage1's CLI and task; stage3 uses stage2's. References resolve to outputs within the current
+stage, while compiler/task paths are global MSBuild properties. Each stage starts with an empty isolated output directory
+under `artifacts/selfhost/release/stage1`, `stage2`, or `stage3`; the trusted bootstrap must be outside this output root.
+Override `Configuration` or `SelfHostArtifactsDirectory` explicitly if needed. These are framework-dependent managed
+builds, not Native AOT publishes.
+
+Verification requires matching SHA256 hashes for stage2/stage3 compiler, runtime, task, CLI and language-server DLLs and
+portable PDBs, plus CLI/language-server dependency and runtime-configuration files. Missing outputs or any byte mismatch
+fail the command; outputs remain available for diagnosis. `-t:Stage1`, `-t:Stage2`, and `-t:Stage3` stop after that stage
+(rebuilding the preceding stages); only `Verify` compares hashes. Adding this infrastructure does **not** establish that
+the current migration has passed verification. C# bootstrap projects and default packaging remain in place until the
+actual commands pass and the resulting native toolchain is validated.
+
+For an explicitly requested release-identity proof, add `-p:SelfHostReleaseIdentity=true`. All three output stages then
+use `calac.dll`, `Caladesi.Compiler.dll`, `Caladesi.Runtime.dll`, `Caladesi.Build.Tasks.dll`, and `cala-ls.dll`, while
+their artifact project-directory names retain `.SelfHost`. This changes actual compilation identities, not filenames
+after compilation. The trusted input still defaults to the native suffixed names above; independently add
+`-p:BootstrapReleaseIdentity=true` only when supplying a trusted native bootstrap already compiled with stable identities.
+Neither switch builds or retires the C# bootstrap. Packaging must run `Verify` successfully for the selected identity
+mode before consuming that invocation's stage3 files; existing stage directories alone are not evidence of verification.
+Every public stage invocation deletes `NativeVerificationManifest` (default: `verified.txt` under the self-host output
+root) before validating inputs. Only successful `Verify` writes it, recording `SelfHostReleaseIdentity`, `Version`,
+`Configuration`, `ArtifactsRoot`, every required stage3 artifact's SHA256, and a final `Verified=true` line. Consumers
+must check the selected identity/version/configuration/root and current file hashes, not merely manifest existence.
+
 ## License
 
 The Caladesi repository is licensed under the [MIT License](LICENSE).

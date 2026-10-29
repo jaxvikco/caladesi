@@ -1,9 +1,15 @@
 <Project>
   <Import Project="../Caladesi.Sdk/Sdk/Sdk.props" />
+  <Import Project="$(CaladesiRepoRoot)eng/Aot.props" />
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
     <AssemblyName>calac-selfhost</AssemblyName>
+    <AssemblyName Condition="'$(SelfHostReleaseIdentity)' == 'true'">calac</AssemblyName>
+    <GenerateDependencyFile Condition="'$(SelfHostReleaseIdentity)' == 'true'">true</GenerateDependencyFile>
+    <GenerateRuntimeConfigurationFiles Condition="'$(SelfHostReleaseIdentity)' == 'true'">true</GenerateRuntimeConfigurationFiles>
+    <PublishAot Condition="'$(SelfHostReleaseIdentity)' == 'true'">false</PublishAot>
+    <UseAppHost Condition="'$(SelfHostReleaseIdentity)' == 'true'">false</UseAppHost>
     <RootNamespace>Caladesi.Cli</RootNamespace>
     <IsPackable>false</IsPackable>
     <CaladesiCompilerPath>$(CaladesiRepoRoot)src/Caladesi.Cli/bin/$(Configuration)/net10.0/calac.dll</CaladesiCompilerPath>
@@ -15,8 +21,8 @@
   <ItemGroup>
     <ProjectReference Include="../Caladesi.Cli/Caladesi.Cli.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../Caladesi.Build.Tasks/Caladesi.Build.Tasks.csproj" ReferenceOutputAssembly="false" />
-    <ProjectReference Include="../Caladesi.Compiler/Caladesi.Compiler.csproj" />
-    <ProjectReference Include="../Caladesi.Runtime/Caladesi.Runtime.csproj" />
+    <ProjectReference Include="../Caladesi.Compiler.SelfHost/Caladesi.Compiler.SelfHost.calaproj" />
+    <ProjectReference Include="../Caladesi.Runtime.SelfHost/Caladesi.Runtime.SelfHost.calaproj" />
     <CustomAdditionalCompileInputs Include="$([System.IO.Path]::GetDirectoryName('$(CaladesiCompilerPath)'))/*.dll" />
   </ItemGroup>
   <Import Project="../Caladesi.Sdk/Sdk/Sdk.targets" />

@@ -1,0 +1,538 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { IEnumerable, IAsyncEnumerable } from "System.Collections.Generic";
+import { MemoryStream } from "System.IO";
+import { Assembly, BindingFlags, GenericParameterAttributes, FieldAttributes, ParameterAttributes } from "System.Reflection";
+import { MetadataReaderProvider, PEReaderExtensions } from "System.Reflection.Metadata";
+import { MetadataTokens, MetadataReaderExtensions, TableIndex } from "System.Reflection.Metadata.Ecma335";
+import { PEReader, Characteristics, DebugDirectoryEntryType } from "System.Reflection.PortableExecutable";
+import { Task, TaskCompletionSource } from "System.Threading.Tasks";
+import { CancellationToken } from "System.Threading";
+import { CompilationOptions, OutputKind, BoundAttribute } from "Caladesi.Compiler";
+import { ReferenceSet } from "Caladesi.Compiler.Symbols.Metadata";
+import { EmissionContext, AssemblyEmitter, Lowerer } from "Caladesi.Compiler.Emit";
+import { LoweringNotSupportedException } from "Caladesi.Compiler.Emit.Lowering";
+import { SynthesizedNamedType, SynthesizedMethodSymbol, SynthesizedBodyKind, SourceMethodSymbol,
+  SourcePropertySymbol, SourceFieldSymbol, SourceSymbolContext, ModifierSet } from "Caladesi.Compiler.Symbols.Source";
+import { TypeSymbol, NamedTypeSymbol, SpecialType, TypeKind, Accessibility, MethodSymbol, MethodKind, ParameterSymbol, LocalSymbol,
+  ConstantValue, Symbol, NamespaceSymbol, TypeParameterSymbol, VarianceKind, TypeParameterConstraints, RefKind,
+  ArrayTypeSymbol } from "Caladesi.Compiler.Symbols";
+import { BoundBlock, BoundStatement, BoundExpression, BoundParameter, BoundReturn, BoundLiteral, BoundLocal,
+  BoundLocalDeclaration, BoundSequencePoint, BoundYieldReturn, BoundYieldBreak, BoundLambda, LambdaSymbol,
+  BoundAwait, AwaitInfo } from "Caladesi.Compiler.Bound";
+import { SyntaxTree, SyntaxNode, TypeSyntax, TypeParameterSyntax, ParameterListSyntax } from "Caladesi.Compiler.Syntax";
+import { Diagnostic, DiagnosticBag, DiagnosticSeverity, DiagnosticDescriptor } from "Caladesi.Compiler.Diagnostics";
+import { SourceText, TextSpan } from "Caladesi.Compiler.Text";
+
+class AssemblyEmissionSourceContext extends SourceSymbolContext<SyntaxTree> {
+  readonly References: ReferenceSet = ReferenceSet.Create([typeof(object).Assembly.Location]);
+  readonly Diagnostics: DiagnosticBag = new DiagnosticBag();
+  override GetTree(file: SyntaxTree): SyntaxTree { return file; }
+  override GetFilePath(file: SyntaxTree): string { return file.FilePath; }
+  override get DeclarationDiagnostics(): DiagnosticBag { return this.Diagnostics; }
+  override GetSpecialType(type: SpecialType): NamedTypeSymbol { return this.References.GetSpecialType(type)!; }
+  override IsSourceNamedType(type: NamedTypeSymbol): bool { return false; }
+  override BindParameters(file: SyntaxTree, method: SourceMethodSymbol<SyntaxTree>, syntax: ParameterListSyntax): ImmutableArray<ParameterSymbol> {
+    throw new InvalidOperationException("Emission fixtures supply typed parameters");
+  }
+  override BindType(file: SyntaxTree, owner: Symbol, syntax: TypeSyntax, allowVoid: bool): TypeSymbol {
+    throw new InvalidOperationException("Emission fixtures supply typed types");
+  }
+  override AdjustDeclaredReturnType(file: SyntaxTree, method: SourceMethodSymbol<SyntaxTree>, type: TypeSymbol, syntax: TypeSyntax): TypeSymbol { return type; }
+  override BindConstraints(file: SyntaxTree, owner: Symbol, syntax: TypeParameterSyntax, parameter: TypeParameterSymbol): TypeParameterConstraints {
+    throw new InvalidOperationException("Emission fixtures supply typed constraints");
+  }
+  override BindMethodBody(file: SyntaxTree, method: SourceMethodSymbol<SyntaxTree>): BoundBlock? { return null; }
+}
+
+class AssemblyEmissionImage {
+  constructor(readonly PE: byte[], readonly PDB: byte[]) {}
+  Load(): Assembly { return Assembly.Load(this.PE); }
+}
+
+class AssemblyEmissionEnum extends NamedTypeSymbol {
+  Members: ImmutableArray<Symbol> = [];
+  constructor(private readonly systemEnum: NamedTypeSymbol, private readonly integer: NamedTypeSymbol) { super(); }
+  override get Name(): string { return "Choice"; }
+  override get TypeKind(): TypeKind { return TypeKind.Enum; }
+  override get DeclaredAccessibility(): Accessibility { return Accessibility.Public; }
+  override get BaseType(): NamedTypeSymbol? { return this.systemEnum; }
+  override get EnumUnderlyingType(): NamedTypeSymbol? { return this.integer; }
+  override GetMembers(): ImmutableArray<Symbol> { return this.Members; }
+}
+
+class AssemblyEmissionFixture {
+  readonly Source: AssemblyEmissionSourceContext = new AssemblyEmissionSourceContext();
+  readonly Context: EmissionContext<SyntaxTree>;
+  readonly Owner: SynthesizedNamedType;
+  readonly File: SyntaxTree = SyntaxTree.ParseText("return 42;", "src/emission.cala");
+  Entry: MethodSymbol? = null;
+  constructor() {
+    const options = new CompilationOptions();
+    options.AssemblyName = "AssemblyEmissionFixture";
+    options.OutputKind = OutputKind.DynamicallyLinkedLibrary;
+    this.Context = new EmissionContext<SyntaxTree>(options, special => this.Special(special),
+      name => this.Source.References.FindType(name), () => this.Source.Diagnostics.ToImmutable(), () => this.Entry);
+    this.Context.AddDocument(this.File, this.File.FilePath, this.File.Text);
+    this.Owner = new SynthesizedNamedType("Program", new NamespaceSymbol("", (null as (NamespaceSymbol | null))!),
+      TypeKind.Class, Accessibility.Public, this.Special(SpecialType.Object));
+    this.Context.Types.Add(this.Owner);
+  }
+  Special(type: SpecialType): NamedTypeSymbol { return this.Source.GetSpecialType(type); }
+  Integer(value: int): BoundLiteral { return new BoundLiteral(new ConstantValue(value), this.Special(SpecialType.Int32)); }
+  Block(...statements: BoundStatement[]): BoundBlock { return new BoundBlock([], ImmutableArray.CreateRange<BoundStatement>(statements)); }
+  Method(name: string, type: TypeSymbol, isStatic: bool = true): SynthesizedMethodSymbol {
+    const method = new SynthesizedMethodSymbol(this.Owner, name, MethodKind.Ordinary, Accessibility.Public, isStatic, type, []);
+    this.Owner.AddMember(method);
+    this.Context.MethodFiles[method] = this.File;
+    return method;
+  }
+  SourceMethod(name: string, type: TypeSymbol, kind: MethodKind, bodyKind: SynthesizedBodyKind,
+    isStatic: bool = true): SourceMethodSymbol<SyntaxTree> {
+    return this.SourceMethod(name, type, kind, bodyKind, isStatic, null);
+  }
+  SourceMethod(name: string, type: TypeSymbol, kind: MethodKind, bodyKind: SynthesizedBodyKind,
+    isStatic: bool, declaration: SyntaxNode?): SourceMethodSymbol<SyntaxTree> {
+    const method = new SourceMethodSymbol<SyntaxTree>(this.Source, this.File, this.Owner, name, kind,
+      new ModifierSet(), declaration, Accessibility.Public);
+    method.ExplicitReturnType = type;
+    method.ExplicitParameters = [];
+    method.IsStaticFlag = isStatic;
+    method.SynthesizedKind = bodyKind;
+    this.Owner.AddMember(method);
+    return method;
+  }
+  Emit(): AssemblyEmissionImage {
+    const pe = new MemoryStream();
+    const pdb = new MemoryStream();
+    try {
+      const result = new AssemblyEmitter<SyntaxTree>(this.Context).Emit(pe, pdb, "AssemblyEmissionFixture.pdb");
+      if (!result.Success) throw new Exception("Emission failed: " + result.Diagnostics[0].Message);
+      return new AssemblyEmissionImage(pe.ToArray(), pdb.ToArray());
+    } finally { pe.Dispose(); pdb.Dispose(); }
+  }
+  static EqualBytes(left: byte[], right: byte[]): void {
+    if (left.Length != right.Length) throw new Exception("Deterministic output length");
+    for (let i = 0; i < left.Length; i++)
+      if (left[i] != right[i]) throw new Exception("Deterministic output byte " + i);
+  }
+}
+
+@TestClass
+export class AssemblyEmissionTests {
+  @TestMethod
+  emitsExecutableWithDeterministicPePortablePdbAndNamedLocals(): void {
+    const fixture = new AssemblyEmissionFixture();
+    const method = fixture.Method("Main", fixture.Special(SpecialType.Int32));
+    fixture.Entry = method;
+    fixture.Context.Options.OutputKind = OutputKind.ConsoleApplication;
+    const local = new LocalSymbol("answer", fixture.Special(SpecialType.Int32), false, method);
+    fixture.Context.Bodies[method] = new BoundBlock([local], [
+      new BoundLocalDeclaration(local, fixture.Integer(42)),
+      new BoundSequencePoint(new BoundReturn(new BoundLocal(local)), fixture.File.Root.Statements[0])]);
+    const image = fixture.Emit();
+    const repeated = fixture.Emit();
+    AssemblyEmissionFixture.EqualBytes(image.PE, repeated.PE);
+    AssemblyEmissionFixture.EqualBytes(image.PDB, repeated.PDB);
+    const assembly = image.Load();
+    if ((assembly.EntryPoint!.Invoke(null, Array.Empty<object>()) as int) != 42) throw new Exception("Execute PE entry point");
+    const peStream = new MemoryStream(image.PE);
+    const pdbStream = new MemoryStream(image.PDB);
+    const pe = new PEReader(peStream);
+    const provider = MetadataReaderProvider.FromPortablePdbStream(pdbStream);
+    try {
+      const reader = PEReaderExtensions.GetMetadataReader(pe);
+      if (reader.GetString(reader.GetModuleDefinition().Name) != "AssemblyEmissionFixture.exe" ||
+          reader.GetGuid(reader.GetModuleDefinition().Mvid) == Guid.Empty || reader.TypeDefinitions.Count != 2)
+        throw new Exception("Complete executable metadata");
+      if (pe.PEHeaders.CorHeader!.EntryPointTokenOrRelativeVirtualAddress != 0x06000001 ||
+          (pe.PEHeaders.CoffHeader.Characteristics & Characteristics.Dll) != (0 as Characteristics))
+        throw new Exception("Executable PE header");
+      let codeView = false;
+      for (const entry of pe.ReadDebugDirectory()) {
+        if (entry.Type != DebugDirectoryEntryType.CodeView) continue;
+        const data = pe.ReadCodeViewDebugDirectoryData(entry);
+        codeView = data.Path == "AssemblyEmissionFixture.pdb";
+      }
+      if (!codeView) throw new Exception("PE/PDB CodeView association");
+      const debug = provider.GetMetadataReader();
+      if (debug.DebugMetadataHeader!.EntryPoint != MetadataTokens.MethodDefinitionHandle(1) ||
+          debug.MethodDebugInformation.Count != reader.MethodDefinitions.Count || debug.Documents.Count != 1)
+        throw new Exception("PDB table and entry point alignment");
+      const info = debug.GetMethodDebugInformation(MetadataTokens.MethodDebugInformationHandle(1));
+      let count = 0;
+      for (const point of info.GetSequencePoints()) {
+        if (point.StartLine != 1) throw new Exception("Sequence point source line");
+        count++;
+      }
+      if (count == 0 || debug.LocalVariables.Count != 1 ||
+          debug.GetString(debug.GetLocalVariable(MetadataTokens.LocalVariableHandle(1)).Name) != "answer")
+        throw new Exception("PDB source and local names");
+    } finally { provider.Dispose(); pe.Dispose(); peStream.Dispose(); pdbStream.Dispose(); }
+  }
+
+  @TestMethod
+  emitsGenericTypeAndMethodConstraintsAndExecutesConstructedMethod(): void {
+    const fixture = new AssemblyEmissionFixture();
+    const typeParameter = new TypeParameterSymbol("T", 0, fixture.Owner, VarianceKind.None);
+    fixture.Owner.SetTypeParameters([typeParameter]);
+    const method = fixture.Method("Identity", fixture.Special(SpecialType.Object));
+    const parameter = new TypeParameterSymbol("U", 0, method, VarianceKind.None,
+      symbol => new TypeParameterConstraints(true, false, true, false, [fixture.Source.References.FindType("System.IDisposable")!]));
+    method.SetTypeParameters([parameter]);
+    method.SetReturnType(parameter);
+    const argument = new ParameterSymbol("value", parameter, 0, method);
+    method.SetParameters([argument]);
+    fixture.Context.Bodies[method] = fixture.Block(new BoundReturn(new BoundParameter(argument)));
+    const container = new SynthesizedNamedType("Container", fixture.Owner.ContainingSymbol, TypeKind.Class,
+      Accessibility.Public, fixture.Special(SpecialType.Object));
+    const nested = new SynthesizedNamedType("Nested", container, TypeKind.Class, Accessibility.Public, fixture.Special(SpecialType.Object));
+    fixture.Context.Types.Add(nested);
+    fixture.Context.Types.Add(container);
+    const image = fixture.Emit();
+    const assembly = image.Load();
+    const owner = assembly.GetType("Program`1", true)!.MakeGenericType([typeof(object)]);
+    const runtimeMethod = owner.GetMethod("Identity")!.MakeGenericMethod([typeof(MemoryStream)]);
+    const value = new MemoryStream();
+    try {
+      if (!Object.ReferenceEquals(runtimeMethod.Invoke(null, [value]), value)) throw new Exception("Constructed generic method execution");
+    } finally { value.Dispose(); }
+    if (assembly.GetType("Container+Nested", true)!.DeclaringType!.Name != "Container") throw new Exception("Nested metadata owner");
+    const stream = new MemoryStream(image.PE);
+    const pe = new PEReader(stream);
+    try {
+      const reader = PEReaderExtensions.GetMetadataReader(pe);
+      if (MetadataReaderExtensions.GetTableRowCount(reader, TableIndex.GenericParam) != 2 ||
+          MetadataReaderExtensions.GetTableRowCount(reader, TableIndex.GenericParamConstraint) != 1)
+        throw new Exception("Sorted generic parameters and constraints");
+      for (let row = 1; row <= 2; row++) {
+        const generic = reader.GetGenericParameter(MetadataTokens.GenericParameterHandle(row));
+        if (reader.GetString(generic.Name) == "U" &&
+            (generic.Attributes & (GenericParameterAttributes.ReferenceTypeConstraint | GenericParameterAttributes.DefaultConstructorConstraint)) !=
+            (GenericParameterAttributes.ReferenceTypeConstraint | GenericParameterAttributes.DefaultConstructorConstraint))
+          throw new Exception("Generic special constraints");
+      }
+    } finally { pe.Dispose(); stream.Dispose(); }
+  }
+
+  @TestMethod
+  emitsSourceAutoAccessorsConstantsParameterDefaultsAndDecorators(): void {
+    const fixture = new AssemblyEmissionFixture();
+    const integer = fixture.Special(SpecialType.Int32);
+    const property = new SourcePropertySymbol<SyntaxTree>(fixture.Source, fixture.File, fixture.Owner, "Value",
+      Accessibility.Public, true, (null as (SyntaxNode | null))!,
+      (null as (Func<SourcePropertySymbol<SyntaxTree>, TypeSymbol> | null))!, integer);
+    const field = new SourceFieldSymbol<SyntaxTree>(fixture.Source, fixture.File, fixture.Owner, "_value", Accessibility.Private,
+      true, false, false, (null as (SyntaxNode | null))!, integer);
+    field.IsBackingField = true;
+    property.BackingField = field;
+    property.IsInitOnlyProperty = true;
+    const getter = fixture.SourceMethod("get_Value", integer, MethodKind.PropertyGet, SynthesizedBodyKind.AutoGetter);
+    const setter = fixture.SourceMethod("set_Value", fixture.Special(SpecialType.Void), MethodKind.PropertySet, SynthesizedBodyKind.AutoSetter);
+    getter.AssociatedProperty = property;
+    setter.AssociatedProperty = property;
+    setter.ExplicitParameters = [new ParameterSymbol("value", integer, 0, setter)];
+    property.Getter = getter;
+    property.Setter = setter;
+    fixture.Owner.AddMember(field);
+    fixture.Owner.AddMember(property);
+    const constant = new SourceFieldSymbol<SyntaxTree>(fixture.Source, fixture.File, fixture.Owner, "Answer",
+      Accessibility.Public, true, true, true, (null as (SyntaxNode | null))!, integer);
+    constant.ConstantFactory = source => new ConstantValue(99);
+    fixture.Owner.AddMember(constant);
+    const tree = SyntaxTree.ParseText("@Obsolete(\"old\") function Old(value: int): int { return value; }", "decorated.cala");
+    const method = fixture.SourceMethod("Old", integer, MethodKind.Ordinary, SynthesizedBodyKind.Custom, true, tree.Root.Statements[0]);
+    const argument = new ParameterSymbol("value", integer, 0, method, RefKind.None, false, new ConstantValue(7));
+    const rest = new ParameterSymbol("rest", new ArrayTypeSymbol(integer, (null as (NamedTypeSymbol | null))!), 1,
+      method, RefKind.None, true, (null as (ConstantValue | null))!);
+    method.ExplicitParameters = [argument, rest];
+    method.SyntheticBodyFactory = source => fixture.Block(new BoundReturn(new BoundParameter(argument)));
+    const obsolete = fixture.Source.References.FindType("System.ObsoleteAttribute")!;
+    let constructor: MethodSymbol? = null;
+    for (const candidate of obsolete.InstanceConstructors)
+      if (candidate.Parameters.Length == 1) constructor = candidate;
+    fixture.Context.BindAttribute = (file, decorator, context) => new BoundAttribute(obsolete, constructor!,
+      [new BoundLiteral(new ConstantValue("old"), fixture.Special(SpecialType.String))], []);
+    const image = fixture.Emit();
+    const runtime = image.Load().GetType("Program", true)!;
+    runtime.GetProperty("Value")!.SetValue(null, 37);
+    if ((runtime.GetProperty("Value")!.GetValue(null) as int) != 37 ||
+        (runtime.GetField("Answer")!.GetRawConstantValue() as int) != 99)
+      throw new Exception("Source accessors and literal constants execute");
+    const old = runtime.GetMethod("Old")!;
+    const parameters = old.GetParameters();
+    if (!parameters[0].IsOptional || (parameters[0].DefaultValue as int) != 7 ||
+        (old.Invoke(null, [21, new int[0]]) as int) != 21 || old.GetCustomAttributesData().Count != 1 ||
+        parameters[1].GetCustomAttributesData().Count != 1 ||
+        parameters[1].GetCustomAttributesData()[0].AttributeType.FullName != "System.ParamArrayAttribute")
+      throw new Exception("Optional parameters, constants, and bound decorators");
+    if ((old.GetCustomAttributesData()[0].ConstructorArguments[0].Value as string) != "old")
+      throw new Exception("Custom attribute fixed argument blob");
+    const modifiers = runtime.GetMethod("set_Value")!.ReturnParameter.GetRequiredCustomModifiers();
+    if (modifiers.Length != 1 || modifiers[0].FullName != "System.Runtime.CompilerServices.IsExternalInit")
+      throw new Exception("Init accessor required return modifier");
+  }
+
+  @TestMethod
+  enumUnderlyingFieldAndLiteralRowsDoNotShiftFollowingMembers(): void {
+    const fixture = new AssemblyEmissionFixture();
+    const integer = fixture.Special(SpecialType.Int32);
+    const enumType = new AssemblyEmissionEnum(fixture.Special(SpecialType.Enum), integer);
+    const member = new SourceFieldSymbol<SyntaxTree>(fixture.Source, fixture.File, enumType, "One",
+      Accessibility.Public, true, true, true, (null as (SyntaxNode | null))!, enumType);
+    member.ConstantFactory = field => new ConstantValue(1);
+    enumType.Members = [member];
+    fixture.Context.Types.Insert(0, enumType);
+    const method = fixture.Method("Answer", integer);
+    fixture.Context.Bodies[method] = fixture.Block(new BoundReturn(fixture.Integer(42)));
+    const image = fixture.Emit();
+    const assembly = image.Load();
+    const runtimeEnum = assembly.GetType("Choice", true)!;
+    if (!runtimeEnum.IsEnum || (runtimeEnum.GetField("One")!.GetRawConstantValue() as int) != 1 ||
+        runtimeEnum.GetField("value__")!.FieldType != typeof(int) ||
+        (assembly.GetType("Program", true)!.GetMethod("Answer")!.Invoke(null, Array.Empty<object>()) as int) != 42)
+      throw new Exception("Enum value__, literal field, and following method handles");
+    const stream = new MemoryStream(image.PE);
+    const pe = new PEReader(stream);
+    try {
+      const reader = PEReaderExtensions.GetMetadataReader(pe);
+      if (reader.FieldDefinitions.Count != 2 || reader.MethodDefinitions.Count != 1 ||
+          (pe.PEHeaders.CoffHeader.Characteristics & Characteristics.Dll) == (0 as Characteristics))
+        throw new Exception("Enum and library PE metadata");
+      const value = reader.GetFieldDefinition(MetadataTokens.FieldDefinitionHandle(1));
+      if ((value.Attributes & (FieldAttributes.SpecialName | FieldAttributes.RTSpecialName)) !=
+          (FieldAttributes.SpecialName | FieldAttributes.RTSpecialName))
+        throw new Exception("Enum underlying-field metadata flags");
+    } finally { pe.Dispose(); stream.Dispose(); }
+  }
+
+  @TestMethod
+  createsExplicitCovariantInterfaceBridgeAndExecutesThroughInterface(): void {
+    const fixture = new AssemblyEmissionFixture();
+    const iface = new SynthesizedNamedType("IProducer", fixture.Owner.ContainingSymbol, TypeKind.Interface, Accessibility.Public);
+    const contract = new SynthesizedMethodSymbol(iface, "Produce", MethodKind.Ordinary, Accessibility.Public,
+      false, fixture.Special(SpecialType.Object), [], true, false, false, true);
+    iface.AddMember(contract);
+    fixture.Owner.AddInterface(iface);
+    fixture.Context.Types.Add(iface);
+    const target = fixture.Method("produce", fixture.Special(SpecialType.String), false);
+    fixture.Context.Bodies[target] = fixture.Block(new BoundReturn(new BoundLiteral(new ConstantValue("bridge"), fixture.Special(SpecialType.String))));
+    const constructor = new SynthesizedMethodSymbol(fixture.Owner, ".ctor", MethodKind.Constructor, Accessibility.Public,
+      false, fixture.Special(SpecialType.Void), []);
+    fixture.Owner.AddMember(constructor);
+    const image = fixture.Emit();
+    const assembly = image.Load();
+    const type = assembly.GetType("Program", true)!;
+    const runtimeInterface = assembly.GetType("IProducer", true)!;
+    const instance = Activator.CreateInstance(type);
+    if ((runtimeInterface.GetMethod("Produce")!.Invoke(instance, Array.Empty<object>()) as string) != "bridge")
+      throw new Exception("Explicit covariant bridge execution");
+    const map = type.GetInterfaceMap(runtimeInterface);
+    if (!map.TargetMethods[0].IsPrivate || !map.TargetMethods[0].IsFinal || !map.TargetMethods[0].IsVirtual)
+      throw new Exception("Bridge CLR method flags");
+    const stream = new MemoryStream(image.PE);
+    const pe = new PEReader(stream);
+    try {
+      const reader = PEReaderExtensions.GetMetadataReader(pe);
+      if (MetadataReaderExtensions.GetTableRowCount(reader, TableIndex.MethodImpl) != 1 ||
+          MetadataReaderExtensions.GetTableRowCount(reader, TableIndex.InterfaceImpl) != 1)
+        throw new Exception("Explicit interface mapping metadata");
+    } finally { pe.Dispose(); stream.Dispose(); }
+  }
+
+  @TestMethod
+  genericInterfaceBridgesPreserveByRefParametersAndMethodTypeArguments(): void {
+    const fixture = new AssemblyEmissionFixture();
+    const iface = new SynthesizedNamedType("IGenericProducer", fixture.Owner.ContainingSymbol, TypeKind.Interface, Accessibility.Public);
+    const contract = new SynthesizedMethodSymbol(iface, "Produce", MethodKind.Ordinary, Accessibility.Public,
+      false, fixture.Special(SpecialType.Object), [], true, false, false, true);
+    const parameter = new TypeParameterSymbol("T", 0, contract, VarianceKind.None);
+    contract.SetTypeParameters([parameter]);
+    contract.SetParameters([
+      new ParameterSymbol("state", fixture.Special(SpecialType.Int32), 0, contract, RefKind.Ref),
+      new ParameterSymbol("input", parameter, 1, contract)]);
+    iface.AddMember(contract);
+    fixture.Owner.AddInterface(iface);
+    fixture.Context.Types.Add(iface);
+    const target = fixture.Method("Produce", fixture.Special(SpecialType.String), false);
+    const targetParameter = new TypeParameterSymbol("U", 0, target, VarianceKind.None);
+    target.SetTypeParameters([targetParameter]);
+    target.SetParameters([
+      new ParameterSymbol("state", fixture.Special(SpecialType.Int32), 0, target, RefKind.Ref),
+      new ParameterSymbol("input", targetParameter, 1, target)]);
+    fixture.Context.Bodies[target] = fixture.Block(new BoundReturn(new BoundLiteral(
+      new ConstantValue("generic bridge"), fixture.Special(SpecialType.String))));
+    fixture.Owner.AddMember(new SynthesizedMethodSymbol(fixture.Owner, ".ctor", MethodKind.Constructor, Accessibility.Public,
+      false, fixture.Special(SpecialType.Void), []));
+    const assembly = fixture.Emit().Load();
+    const type = assembly.GetType("Program", true)!;
+    const runtimeInterface = assembly.GetType("IGenericProducer", true)!;
+    const instance = Activator.CreateInstance(type);
+    const generic = runtimeInterface.GetMethod("Produce")!.MakeGenericMethod([typeof(string)]);
+    if ((generic.Invoke(instance, [1, "input"]) as string) != "generic bridge")
+      throw new Exception("Generic MethodSpec in covariant bridge body");
+    const bridge = type.GetInterfaceMap(runtimeInterface).TargetMethods[0];
+    if (!bridge.IsGenericMethodDefinition || bridge.GetGenericArguments().Length != 1 ||
+        !bridge.GetParameters()[0].ParameterType.IsByRef)
+      throw new Exception("Bridge generic arity and by-ref signature");
+  }
+
+  @TestMethod
+  closureConversionEmitsCapturedEnvironmentAndAsyncLambdaStateMachine(): void {
+    const fixture = new AssemblyEmissionFixture();
+    const integer = fixture.Special(SpecialType.Int32);
+    const func = fixture.Source.References.FindType("System.Func`1")!.Construct([integer]);
+    const method = fixture.Method("Capture", func);
+    const parameter = new ParameterSymbol("seed", integer, 0, method);
+    method.SetParameters([parameter]);
+    const lambda = new LambdaSymbol(method, "lambda", false, false);
+    lambda.ReturnTypeValue = integer;
+    fixture.Context.Bodies[method] = fixture.Block(new BoundReturn(
+      new BoundLambda(lambda, fixture.Block(new BoundReturn(new BoundParameter(parameter))), func)));
+    const task = fixture.Special(SpecialType.TaskT).Construct([integer]);
+    const asyncFunc = fixture.Source.References.FindType("System.Func`1")!.Construct([task]);
+    const factory = fixture.Method("AsyncLambda", asyncFunc);
+    const asyncLambda = new LambdaSymbol(factory, "asyncLambda", true, false);
+    asyncLambda.ReturnTypeValue = task;
+    fixture.Context.Bodies[factory] = fixture.Block(new BoundReturn(
+      new BoundLambda(asyncLambda, fixture.Block(new BoundReturn(fixture.Integer(73))), asyncFunc)));
+    const image = fixture.Emit();
+    const runtime = image.Load().GetType("Program", true)!;
+    const captured = runtime.GetMethod("Capture")!.Invoke(null, [41]) as Func<int>;
+    if (captured() != 41) throw new Exception("Captured display-class field execution");
+    const asyncFactory = runtime.GetMethod("AsyncLambda")!.Invoke(null, Array.Empty<object>()) as Func<Task<int>>;
+    if (asyncFactory().GetAwaiter().GetResult() != 73) throw new Exception("Async synthesized lambda lowering pass");
+    AssemblyEmissionFixture.EqualBytes(image.PE, fixture.Emit().PE);
+  }
+
+  @TestMethod
+  asyncMethodSuspendsResumesAndEntryBridgeReturnsTaskResult(): void {
+    const fixture = new AssemblyEmissionFixture();
+    const taskType = fixture.Special(SpecialType.TaskT).Construct([fixture.Special(SpecialType.Int32)]);
+    const method = fixture.Method("Await", taskType);
+    method.IsAsyncMethod = true;
+    const parameter = new ParameterSymbol("pending", taskType, 0, method);
+    method.SetParameters([parameter]);
+    let getAwaiter: MethodSymbol? = null;
+    for (const member of taskType.GetMembers("GetAwaiter")) if (member instanceof MethodSymbol) getAwaiter = member as MethodSymbol;
+    const awaiterType = getAwaiter!.ReturnType as NamedTypeSymbol;
+    let getResult: MethodSymbol? = null;
+    let completed: MethodSymbol? = null;
+    for (const member of awaiterType.GetMembers("GetResult")) if (member instanceof MethodSymbol) getResult = member as MethodSymbol;
+    for (const member of awaiterType.GetMembers("get_IsCompleted")) if (member instanceof MethodSymbol) completed = member as MethodSymbol;
+    const awaited = new BoundAwait(new BoundParameter(parameter),
+      new AwaitInfo(getAwaiter!, null, completed, getResult!, awaiterType), fixture.Special(SpecialType.Int32));
+    fixture.Context.Bodies[method] = fixture.Block(new BoundReturn(awaited));
+    const entry = fixture.Method("UserMain", taskType);
+    entry.IsAsyncMethod = true;
+    fixture.Context.Bodies[entry] = fixture.Block(new BoundReturn(fixture.Integer(42)));
+    fixture.Entry = entry;
+    fixture.Context.Options.OutputKind = OutputKind.ConsoleApplication;
+    const image = fixture.Emit();
+    const assembly = image.Load();
+    const completion = new TaskCompletionSource<int>();
+    const task = assembly.GetType("Program", true)!.GetMethod("Await")!.Invoke(null, [completion.Task]) as Task<int>;
+    if (task.IsCompleted) throw new Exception("Async method must suspend on incomplete task");
+    completion.SetResult(19);
+    if (task.GetAwaiter().GetResult() != 19) throw new Exception("Async resumed result");
+    if (assembly.EntryPoint!.Name != "<Main>" || (assembly.EntryPoint.Invoke(null, Array.Empty<object>()) as int) != 42)
+      throw new Exception("Synchronous CLR bridge for async entry point");
+  }
+
+  @TestMethod
+  iteratorLoweringExecutesEnumerationAndDispose(): void {
+    const fixture = new AssemblyEmissionFixture();
+    const enumerable = fixture.Source.References.FindType("System.Collections.Generic.IEnumerable`1")!
+      .Construct([fixture.Special(SpecialType.Int32)]);
+    const method = fixture.Method("Numbers", enumerable);
+    method.IsIteratorMethod = true;
+    fixture.Context.Bodies[method] = fixture.Block(new BoundYieldReturn(fixture.Integer(5)),
+      new BoundYieldReturn(fixture.Integer(8)), new BoundYieldBreak());
+    const image = fixture.Emit();
+    const result = image.Load().GetType("Program", true)!.GetMethod("Numbers")!.Invoke(null, Array.Empty<object>()) as IEnumerable<int>;
+    let sum = 0;
+    for (const value of result) sum += value;
+    if (sum != 13) throw new Exception("Iterator MoveNext and Current execution");
+    const enumerator = result.GetEnumerator();
+    try {
+      if (!enumerator.MoveNext() || enumerator.Current != 5) throw new Exception("Reusable iterator initial state");
+    } finally { enumerator.Dispose(); }
+    AssemblyEmissionFixture.EqualBytes(image.PE, fixture.Emit().PE);
+  }
+
+  @TestMethod
+  asyncIteratorEmitsValueTaskSupportAndExecutesEnumeration(): void {
+    const fixture = new AssemblyEmissionFixture();
+    const enumerable = fixture.Source.References.FindType("System.Collections.Generic.IAsyncEnumerable`1")!
+      .Construct([fixture.Special(SpecialType.Int32)]);
+    const method = fixture.Method("AsyncNumbers", enumerable);
+    method.IsIteratorMethod = true;
+    method.IsAsyncMethod = true;
+    fixture.Context.Bodies[method] = fixture.Block(new BoundYieldReturn(fixture.Integer(3)), new BoundYieldBreak());
+    const image = fixture.Emit();
+    const result = image.Load().GetType("Program", true)!.GetMethod("AsyncNumbers")!.Invoke(null, Array.Empty<object>()) as IAsyncEnumerable<int>;
+    const enumerator = result.GetAsyncEnumerator(new CancellationToken());
+    try {
+      if (!enumerator.MoveNextAsync().GetAwaiter().GetResult() || enumerator.Current != 3 ||
+          enumerator.MoveNextAsync().GetAwaiter().GetResult())
+        throw new Exception("Async iterator MoveNextAsync/Current execution");
+    } finally { enumerator.DisposeAsync().GetAwaiter().GetResult(); }
+  }
+
+  @TestMethod
+  asyncEntryBridgesHandleAllTaskAndValueTaskReturnShapes(): void {
+    const shapes: SpecialType[] = [SpecialType.Task, SpecialType.TaskT, SpecialType.ValueTask, SpecialType.ValueTaskT];
+    for (const shape of shapes) {
+      const fixture = new AssemblyEmissionFixture();
+      const returnsValue = shape == SpecialType.TaskT || shape == SpecialType.ValueTaskT;
+      const type = returnsValue ? fixture.Special(shape).Construct([fixture.Special(SpecialType.Int32)]) : fixture.Special(shape);
+      const method = fixture.Method("UserMain", type);
+      method.IsAsyncMethod = true;
+      fixture.Context.Bodies[method] = returnsValue ? fixture.Block(new BoundReturn(fixture.Integer(55))) : fixture.Block();
+      fixture.Entry = method;
+      fixture.Context.Options.OutputKind = OutputKind.ConsoleApplication;
+      const assembly = fixture.Emit().Load();
+      const result = assembly.EntryPoint!.Invoke(null, Array.Empty<object>());
+      if (assembly.EntryPoint.Name != "<Main>" || (returnsValue ? (result as int) != 55 : result != null))
+        throw new Exception("Async entry return shape " + shape);
+    }
+  }
+
+  @TestMethod
+  unsupportedLoweringReportsSourceDiagnosticWithoutPublishingOutput(): void {
+    const fixture = new AssemblyEmissionFixture();
+    const method = fixture.SourceMethod("Unsupported", fixture.Special(SpecialType.Void), MethodKind.Ordinary, SynthesizedBodyKind.Custom);
+    method.SyntheticBodyFactory = source => {
+      throw new LoweringNotSupportedException("unsupported lowering", fixture.File.Root.Statements[0]);
+    };
+    const pe = new MemoryStream();
+    const pdb = new MemoryStream();
+    try {
+      const result = new AssemblyEmitter<SyntaxTree>(fixture.Context).Emit(pe, pdb);
+      if (result.Success || result.Diagnostics.Length != 1 || result.Diagnostics[0].FilePath != fixture.File.FilePath ||
+          result.Diagnostics[0].Span.Length == 0 || !result.Diagnostics[0].Message.Contains("unsupported lowering") ||
+          pe.Length != 0 || pdb.Length != 0)
+        throw new Exception("Lowering failure must preserve source location and diagnostics");
+    } finally { pe.Dispose(); pdb.Dispose(); }
+  }
+
+  @TestMethod
+  diagnosticsDiscoveredDuringLoweringPreventPeAndPdbWrites(): void {
+    const fixture = new AssemblyEmissionFixture();
+    const method = fixture.SourceMethod("Invalid", fixture.Special(SpecialType.Void), MethodKind.Ordinary, SynthesizedBodyKind.Custom);
+    method.SyntheticBodyFactory = source => {
+      fixture.Source.Diagnostics.Add(Diagnostic.Create(new DiagnosticDescriptor("EMIT001", DiagnosticSeverity.Error, "late error"),
+        fixture.File.FilePath, new TextSpan()));
+      return fixture.Block();
+    };
+    const pe = new MemoryStream();
+    const pdb = new MemoryStream();
+    try {
+      const result = new AssemblyEmitter<SyntaxTree>(fixture.Context).Emit(pe, pdb);
+      if (result.Success || result.Diagnostics.Length != 1 || pe.Length != 0 || pdb.Length != 0)
+        throw new Exception("Late binding diagnostics must prevent publishing invalid output");
+      const beforeLowering = new AssemblyEmitter<SyntaxTree>(fixture.Context).Emit(pe, pdb);
+      if (beforeLowering.Success || pe.Length != 0 || pdb.Length != 0) throw new Exception("Pre-existing errors prevent lowering");
+    } finally { pe.Dispose(); pdb.Dispose(); }
+  }
+}

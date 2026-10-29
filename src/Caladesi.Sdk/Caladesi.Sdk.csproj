@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!--
-    Packs the Caladesi.Sdk MSBuild SDK. Not built on its own: eng/pack.sh first publishes calac and the task assembly and
-    passes their directories in (CalacPublishDir, CaladesiTasksDir).
+    Source-free packaging wrapper. eng/pack.sh supplies verified native stage3
+    compiler/task outputs; this project must never compile an oracle assembly.
   -->
   <PropertyGroup>
     <PackageId>Caladesi.Sdk</PackageId>
@@ -16,14 +16,15 @@
     <!-- Packaging-only project: no assembly is produced, so there is nothing to version. -->
     <NoWarn>$(NoWarn);CA1016</NoWarn>
     <NoWarn>$(NoWarn);NU5128;NU5100;NU5105</NoWarn>
-    <CalacPublishDir Condition="'$(CalacPublishDir)' == ''">$(CaladesiRepoRoot)artifacts/pack-obj/calac/</CalacPublishDir>
-    <CaladesiTasksDir Condition="'$(CaladesiTasksDir)' == ''">$(CaladesiRepoRoot)artifacts/pack-obj/tasks/</CaladesiTasksDir>
   </PropertyGroup>
   <ItemGroup>
     <None Include="README.md" Pack="true" PackagePath="README.md" />
     <None Include="Sdk/**" Pack="true" PackagePath="Sdk/" />
     <None Include="targets/**" Pack="true" PackagePath="targets/" />
     <None Include="$(CaladesiTasksDir)Caladesi.Build.Tasks.dll" Pack="true" PackagePath="tasks/net10.0/" />
-    <None Include="$(CalacPublishDir)**" Pack="true" PackagePath="tools/net10.0/%(RecursiveDir)%(Filename)%(Extension)" />
+    <None Include="$(NativeRuntimeDir)Caladesi.Runtime.dll" Pack="true" PackagePath="tasks/net10.0/" />
+    <None Include="$(CalacPublishDir)calac.dll;$(CalacPublishDir)calac.pdb;$(CalacPublishDir)calac.deps.json;$(CalacPublishDir)calac.runtimeconfig.json;$(CalacPublishDir)Caladesi.Compiler.dll;$(CalacPublishDir)Caladesi.Runtime.dll"
+          Pack="true" PackagePath="tools/net10.0/" />
   </ItemGroup>
+  <Import Project="../../eng/NativePackaging.targets" />
 </Project>

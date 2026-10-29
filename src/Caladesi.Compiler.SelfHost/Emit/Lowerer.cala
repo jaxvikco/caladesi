@@ -1,0 +1,143 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { List } from "System.Collections.Generic";
+import { Symbol, Accessibility } from "../Symbols/Symbol";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { TypeSymbol, TypeKind } from "../Symbols/TypeSymbols";
+import { SpecialType } from "../Symbols/SpecialType";
+import { MethodSymbol, MethodKind, ParameterSymbol } from "../Symbols/MemberSymbols";
+import { SourceMethodSymbol } from "../Symbols/Source/SourceMembers";
+import { SynthesizedMethodSymbol } from "../Symbols/Source/Synthesized";
+import { SynthesizedBodyKind } from "../Symbols/Source/SynthesizedBodyKind";
+import { DeclarationChecker } from "../DeclarationChecker";
+import { BoundBlock, BoundExpression, BoundStatement, BoundCall, BoundParameter, BoundReturn,
+  BoundExpressionStatement, BoundThis, BoundConversion, ConversionKind } from "../Bound/BoundNodes";
+import { EmissionContext } from "./EmissionContext";
+import { LoweredProgram } from "./LoweredProgram";
+import { ClosureLowerer } from "./ClosureLowerer";
+import { StateMachineLowerer } from "./StateMachineLowerer";
+
+export sealed class Lowerer<TSourceFile> {
+  static Lower(context: EmissionContext<TSourceFile>): LoweredProgram<TSourceFile> {
+    const program = new LoweredProgram<TSourceFile>();
+    program.Types.AddRange(context.Types);
+    for (const pair of context.MethodFiles) program.MethodFiles[pair.Key] = pair.Value;
+    const originalTypes = new List<NamedTypeSymbol>(program.Types);
+    for (const type of originalTypes) {
+      let ordinal = 0;
+      for (const member of type.GetMembers()) {
+        if (!(member instanceof MethodSymbol)) continue;
+        const method = member as MethodSymbol;
+        const [supplied, suppliedBody] = context.Bodies.TryGetValue(method);
+        let body: BoundBlock? = supplied ? suppliedBody : null;
+        if (method instanceof SourceMethodSymbol<TSourceFile>) {
+          const source = method as SourceMethodSymbol<TSourceFile>;
+          program.MethodFiles[method] = source.File;
+          if (!supplied) body = source.GetBoundBody();
+        }
+        if (body == null) continue;
+        body = ClosureLowerer<TSourceFile>.Lower(context.GetSpecialType(SpecialType.Object),
+          context.GetSpecialType(SpecialType.Void), program, method, type, ordinal, body);
+        if (method.IsAsync || method.IsIterator)
+          StateMachineLowerer<TSourceFile>.Lower(context.GetSpecialType, context.GetWellKnownType,
+            program, method, type, ordinal, body);
+        else program.Bodies[method] = body;
+        ordinal++;
+      }
+    }
+    // Closure conversion can introduce async/iterator lambdas after the source walk.
+    const lambdas = new List<MethodSymbol>(program.Bodies.Keys);
+    let lambdaOrdinal = 10000;
+    for (const method of lambdas) {
+      if (method instanceof SynthesizedMethodSymbol && (method as SynthesizedMethodSymbol).LambdaOrigin != null &&
+          (method.IsAsync || method.IsIterator))
+        StateMachineLowerer<TSourceFile>.Lower(context.GetSpecialType, context.GetWellKnownType,
+          program, method, method.ContainingType!, lambdaOrdinal++, program.Bodies[method]);
+    }
+    for (const type of originalTypes)
+      if (type.TypeKind == TypeKind.Class || type.TypeKind == TypeKind.Struct)
+        Lowerer<TSourceFile>.AddInterfaceBridges(program, type);
+    program.EntryPoint = context.FindEntryPoint();
+    if (program.EntryPoint != null) {
+      const returnType = program.EntryPoint.ReturnType.StripNullable();
+      if (returnType instanceof NamedTypeSymbol) {
+        const named = returnType as NamedTypeSymbol;
+        const special = named.OriginalDefinition.SpecialType;
+        if (special == SpecialType.Task || special == SpecialType.TaskT ||
+            special == SpecialType.ValueTask || special == SpecialType.ValueTaskT)
+          program.EntryPoint = Lowerer<TSourceFile>.CreateAsyncEntryBridge(context, program, program.EntryPoint!, named);
+      }
+    }
+    return program;
+  }
+
+  private static AddMember(program: LoweredProgram<TSourceFile>, type: NamedTypeSymbol, method: MethodSymbol): void {
+    if (!program.ExtraMembers.ContainsKey(type)) program.ExtraMembers[type] = new List<Symbol>();
+    program.ExtraMembers[type].Add(method);
+  }
+  private static CloneParameters(method: MethodSymbol): ImmutableArray<ParameterSymbol> {
+    const result = ImmutableArray.CreateBuilder<ParameterSymbol>();
+    for (const parameter of method.Parameters)
+      result.Add(new ParameterSymbol(parameter.Name, parameter.Type, parameter.Ordinal, null, parameter.RefKind));
+    return result.ToImmutable();
+  }
+  private static Arguments(parameters: ImmutableArray<ParameterSymbol>): ImmutableArray<BoundExpression> {
+    const result = ImmutableArray.CreateBuilder<BoundExpression>();
+    for (const parameter of parameters) result.Add(new BoundParameter(parameter));
+    return result.ToImmutable();
+  }
+  private static CreateAsyncEntryBridge(context: EmissionContext<TSourceFile>, program: LoweredProgram<TSourceFile>,
+    entry: MethodSymbol, taskType: NamedTypeSymbol): MethodSymbol {
+    const returnsValue = taskType.OriginalDefinition.SpecialType == SpecialType.TaskT ||
+      taskType.OriginalDefinition.SpecialType == SpecialType.ValueTaskT;
+    const parameters = Lowerer<TSourceFile>.CloneParameters(entry);
+    const bridge = new SynthesizedMethodSymbol(entry.ContainingType!, "<Main>", MethodKind.Ordinary,
+      Accessibility.Private, true, returnsValue ? taskType.TypeArguments[0] : context.GetSpecialType(SpecialType.Void), parameters);
+    bridge.SynthesizedKind = SynthesizedBodyKind.Custom;
+    bridge.SourceMethod = entry;
+    const call = new BoundCall(null, entry, Lowerer<TSourceFile>.Arguments(parameters));
+    const awaiter = Lowerer<TSourceFile>.FindZeroArgumentMethod(taskType, "GetAwaiter");
+    const getAwaiter = new BoundCall(call, awaiter, []);
+    const getResult = Lowerer<TSourceFile>.FindZeroArgumentMethod(awaiter.ReturnType as NamedTypeSymbol, "GetResult");
+    const result = new BoundCall(getAwaiter, getResult, []);
+    const last: BoundStatement = returnsValue ? new BoundReturn(result) : new BoundExpressionStatement(result);
+    program.Bodies[bridge] = new BoundBlock([], [last]);
+    Lowerer<TSourceFile>.AddMember(program, entry.ContainingType!, bridge);
+    return bridge;
+  }
+  private static FindZeroArgumentMethod(type: NamedTypeSymbol, name: string): MethodSymbol {
+    for (const member of type.GetMembers(name))
+      if (member instanceof MethodSymbol && (member as MethodSymbol).Parameters.Length == 0) return member as MethodSymbol;
+    throw new InvalidOperationException("Missing " + type.Name + "." + name);
+  }
+  private static AddInterfaceBridges(program: LoweredProgram<TSourceFile>, type: NamedTypeSymbol): void {
+    for (const iface of type.AllInterfaces) {
+      for (const member of iface.GetMembers()) {
+        if (!(member instanceof MethodSymbol)) continue;
+        const method = member as MethodSymbol;
+        if ((method.MethodKind != MethodKind.Ordinary && method.MethodKind != MethodKind.PropertyGet) ||
+            method.IsStatic || !method.IsAbstract || DeclarationChecker<TSourceFile>.FindImplementation(type, method, false) != null) continue;
+        const target = DeclarationChecker<TSourceFile>.FindBridgeTarget(type, method);
+        if (target == null) continue;
+        const parameters = Lowerer<TSourceFile>.CloneParameters(method);
+        const bridge = new SynthesizedMethodSymbol(type, iface.ToDisplayString() + "." + method.Name,
+          MethodKind.Ordinary, Accessibility.Private, false, method.ReturnType, parameters);
+        bridge.SynthesizedKind = SynthesizedBodyKind.Custom;
+        bridge.Overrides = [method];
+        bridge.SetTypeParameters(method.TypeParameters);
+        let callTarget: MethodSymbol = target;
+        if (method.Arity > 0) {
+          const arguments = ImmutableArray.CreateBuilder<TypeSymbol>();
+          for (const parameter of bridge.TypeParameters) arguments.Add(parameter);
+          callTarget = target.Construct(arguments.ToImmutable());
+        }
+        let call: BoundExpression = new BoundCall(new BoundThis(type.IsGenericType ? type.Construct(type.TypeArguments) : type),
+          callTarget, Lowerer<TSourceFile>.Arguments(parameters));
+        if (!callTarget.ReturnType.Equals(method.ReturnType))
+          call = new BoundConversion(call, ConversionKind.ImplicitReference, method.ReturnType);
+        const statement: BoundStatement = method.ReturnType.IsVoid ? new BoundExpressionStatement(call) : new BoundReturn(call);
+        program.Bodies[bridge] = new BoundBlock([], [statement]);
+        Lowerer<TSourceFile>.AddMember(program, type, bridge);
+      }
+    }
+  }
+}

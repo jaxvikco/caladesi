@@ -1,0 +1,1767 @@
+import { Object, Func, IFormattable, StringComparer, Math } from "System";
+import { CultureInfo } from "System.Globalization";
+import { BigInteger } from "System.Numerics";
+import { ImmutableArray, ImmutableDictionary } from "System.Collections.Immutable";
+import { List, Dictionary, HashSet, IEnumerable } from "System.Collections.Generic";
+import { Binder } from "./Binder";
+import { BinderScope, BinderScopeKind } from "./BinderScope";
+import { FlowNarrowing, NarrowPath, Narrowings, NarrowingFact } from "./FlowNarrowing";
+import { ResolvedCall } from "./OverloadResolver";
+import { ConstantFolding } from "../ConstantFolding";
+import { FileModuleSymbol } from "../FileScope";
+import { Symbol } from "../Symbols/Symbol";
+import { TypeSymbol, TypeKind, ArrayTypeSymbol, NullableTypeSymbol, TypeParameterSymbol,
+  NullTypeSymbol, NeverTypeSymbol } from "../Symbols/TypeSymbols";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { TypeMap } from "../Symbols/TypeMap";
+import { NamespaceSymbol } from "../Symbols/NamespaceSymbol";
+import { MethodSymbol, MethodKind, FieldSymbol, PropertySymbol, LocalSymbol, ParameterSymbol,
+  ConstantValue } from "../Symbols/MemberSymbols";
+import { SourceFieldSymbol, SourcePropertySymbol } from "../Symbols/Source/SourceMembers";
+import { TypeAliasSymbol } from "../Symbols/Source/SourceTypes";
+import { SourceUnionSymbol, SourceLiteralEnumSymbol } from "../Symbols/Source/SourceTypeAliasTypes";
+import { SpecialType, SpecialTypes } from "../Symbols/SpecialType";
+import { SyntaxNode, SeparatedSyntaxList } from "../Syntax/SyntaxElement";
+import { SyntaxKind } from "../Syntax/SyntaxKind";
+import { ExpressionSyntax, TypeSyntax, SimpleNameSyntax, IdentifierNameSyntax, GenericNameSyntax,
+  TypeArgumentListSyntax, LiteralExpressionSyntax, TemplateExpressionSyntax, ThisExpressionSyntax,
+  SuperExpressionSyntax, ParenthesizedExpressionSyntax, ArrayLiteralExpressionSyntax,
+  ObjectLiteralExpressionSyntax, ArrowFunctionSyntax, FunctionExpressionSyntax,
+  PrefixUnaryExpressionSyntax, PostfixUnaryExpressionSyntax, AwaitExpressionSyntax,
+  ThrowExpressionSyntax, TypeOfExpressionSyntax, YieldExpressionSyntax, BinaryExpressionSyntax,
+  AssignmentExpressionSyntax, ConditionalExpressionSyntax, InvocationExpressionSyntax,
+  NewExpressionSyntax, ArrayCreationExpressionSyntax, MemberAccessExpressionSyntax,
+  ElementAccessExpressionSyntax, NonNullExpressionSyntax, AsExpressionSyntax,
+  SatisfiesExpressionSyntax, InstanceOfExpressionSyntax, SpreadElementSyntax, MissingExpressionSyntax,
+  ParameterListSyntax, BlockSyntax, PropertyAssignmentSyntax, ShorthandPropertyAssignmentSyntax,
+  SpreadAssignmentSyntax, VariableDeclaratorSyntax, BindingPatternSyntax } from "../Syntax/Nodes.Core";
+import { Descriptors } from "../Diagnostics/Descriptors";
+import { BoundNode, BoundExpression, BoundBadExpression, BoundLiteral, BoundLocal, BoundParameter,
+  BoundThis, BoundBaseReference, BoundFieldAccess, BoundPropertyAccess, BoundCall,
+  BoundMemberInit, BoundObjectCreation, BoundDefaultValue, BoundArrayCreation, BoundArrayAccess,
+  BoundConversion, ConversionKind, BoundUnary, UnaryOperatorKind, BoundBinary, BinaryOperatorKind,
+  BoundLogicalBinary, BoundAssignment, BoundConditional, BoundCoalesce, BoundConditionalReceiver,
+  BoundConditionalAccess, BoundTypeTest, TypeTestKind, BoundLambda, BoundDelegateCreation,
+  BoundSequence, BoundAddressOf, BoundTypeOf, AwaitInfo, BoundAwait, BoundThrowExpression,
+  BoundTypeExpression, BoundNamespaceExpression, BoundMethodGroup, BoundUnbound,
+  BoundStatement, BoundBlock, BoundExpressionStatement, BoundLocalDeclaration } from "../Bound/BoundNodes";
+import { LambdaInfo, CollectionInfo, ObjectLiteralInfo } from "../Bound/UnboundInfo";
+import { BinderExpressionLiterals } from "./BinderExpressionLiterals";
+import { BinderExpressionLambdas } from "./BinderExpressionLambdas";
+
+// A module receiver deliberately has no value type; only name lookup consumes it.
+export sealed class BinderExpressionModule<TFile> extends BoundExpression {
+  constructor(public readonly File: TFile) { super(null); }
+}
+
+class BinderAssignmentBinding<TFile> {
+  constructor(private readonly binder: Binder<TFile>, private readonly expressions: BinderExpressions<TFile>,
+    private readonly syntax: AssignmentExpressionSyntax, private readonly type: TypeSymbol,
+    private readonly right: BoundExpression?, private readonly kind: BinaryOperatorKind?) {}
+  Coalesce(read: BoundExpression): BoundExpression {
+    const rhs = this.expressions.Convert(this.binder.BindValue(this.syntax.Right, this.type.StripNullable()), this.type, this.syntax.Right);
+    return this.expressions.At(new BoundCoalesce(read, rhs, this.type), this.syntax);
+  }
+  Logical(read: BoundExpression): BoundExpression {
+    return this.expressions.At(new BoundLogicalBinary(
+      this.syntax.OperatorToken.Kind == SyntaxKind.AmpersandAmpersandEqualsToken,
+      this.binder.Conversions.ConvertToBool(read, this.syntax.Left),
+      this.binder.Conversions.ConvertToBool(this.binder.BindValue(this.syntax.Right), this.syntax.Right),
+      this.binder.BoolType), this.syntax);
+  }
+  Arithmetic(read: BoundExpression): BoundExpression {
+    const value = this.syntax.OperatorToken.Kind == SyntaxKind.AsteriskAsteriskEqualsToken ?
+      this.expressions.Power(this.syntax, read, this.right!) :
+      this.expressions.Arithmetic(this.syntax, this.kind as BinaryOperatorKind, read, this.right!);
+    if (value.HasErrors || value.Type == null) return value;
+    if (this.binder.Classifier.ClassifyImplicit(value, value.Type, this.type).Exists)
+      return this.expressions.Convert(value, this.type, this.syntax);
+    if (SpecialTypes.IsNumeric(value.Type!.StripNullable().SpecialType) && SpecialTypes.IsNumeric(this.type.StripNullable().SpecialType))
+      return this.binder.Conversions.ConvertExplicit(value, this.type, this.syntax);
+    this.binder.Report(Descriptors.NotAssignable, this.syntax, [value.Type!.ToDisplayString(), this.type.ToDisplayString()]);
+    return this.expressions.Bad(this.syntax, value);
+  }
+}
+class BinderIncrementBinding<TFile> {
+  constructor(private readonly binder: Binder<TFile>, private readonly expressions: BinderExpressions<TFile>,
+    private readonly type: TypeSymbol, private readonly special: SpecialType,
+    private readonly increment: bool, private readonly at: SyntaxNode) {}
+  Compute(read: BoundExpression): BoundExpression {
+    const oneType = this.special == SpecialType.BigInteger || this.special == SpecialType.Decimal ||
+      SpecialTypes.IsFloating(this.special) ? this.type : this.binder.IntType;
+    const one = this.expressions.Convert(this.binder.Literal(1, this.binder.IntType, this.at), oneType, this.at);
+    const value = this.expressions.Arithmetic(this.at, this.increment ? BinaryOperatorKind.Add : BinaryOperatorKind.Subtract, read, one);
+    if (value.HasErrors || value.Type!.Equals(this.type)) return value;
+    return this.binder.Conversions.ConvertExplicit(value, this.type, this.at);
+  }
+}
+
+export sealed class BinderExpressions<TFile> {
+  UsesThis: bool = false;
+  constructor(private readonly binder: Binder<TFile>) {}
+
+  Bind(syntax: ExpressionSyntax): BoundExpression { return this.Bind(syntax, null); }
+  Bind(syntax: ExpressionSyntax, target: TypeSymbol?): BoundExpression {
+    let result = this.BindCore(syntax, target);
+    if (target != null && !target.IsErrorType && result instanceof BoundUnbound) {
+      const bound = (result as BoundUnbound).BindToType.Invoke(target);
+      if (!(bound instanceof BoundUnbound)) result = bound;
+    }
+    if (result.Syntax == null) result.Syntax = syntax;
+    return result;
+  }
+  BindDestructuringDeclaration(syntax: VariableDeclaratorSyntax, isConst: bool): BoundStatement {
+    return new BinderExpressionLiterals<TFile>(this.binder, this).DestructuringDeclaration(syntax, isConst);
+  }
+  BindDestructuringFrom(pattern: BindingPatternSyntax, source: BoundExpression, type: TypeSymbol,
+    isConst: bool, at: SyntaxNode): BoundStatement {
+    return new BinderExpressionLiterals<TFile>(this.binder, this).DestructuringFrom(pattern, source, type, isConst, at);
+  }
+  GetIterationType(type: TypeSymbol, isAsync: bool = false): TypeSymbol? {
+    return new BinderExpressionLiterals<TFile>(this.binder, this).IterationType(type, isAsync);
+  }
+  static HasNaturalType(value: BoundUnbound): bool {
+    if (!value.IsLambda) return true;
+    const info = value.Lambda;
+    if (info == null || info.IsGenerator) return false;
+    for (const type of info.ExplicitParameterTypes) if (type == null) return false;
+    return true;
+  }
+
+  private BindCore(syntax: ExpressionSyntax, target: TypeSymbol?): BoundExpression {
+    if (syntax instanceof LiteralExpressionSyntax) return this.BindLiteral(syntax as LiteralExpressionSyntax);
+    if (syntax instanceof TemplateExpressionSyntax) return this.BindTemplate(syntax as TemplateExpressionSyntax);
+    if (syntax instanceof IdentifierNameSyntax) {
+      const identifier = syntax as IdentifierNameSyntax;
+      return identifier.Identifier.IsMissing ? this.Bad(syntax) :
+        this.BindName(identifier.Name, ImmutableArray<TypeSymbol>.Empty, syntax);
+    }
+    if (syntax instanceof GenericNameSyntax) {
+      const generic = syntax as GenericNameSyntax;
+      return this.BindName(generic.Name, this.BindTypeArguments(generic.TypeArguments), syntax);
+    }
+    if (syntax instanceof ThisExpressionSyntax) return this.ImplicitThis(syntax);
+    if (syntax instanceof SuperExpressionSyntax) {
+      this.binder.Report(Descriptors.SuperNotAllowedHere, syntax, []);
+      return this.Bad(syntax);
+    }
+    if (syntax instanceof ParenthesizedExpressionSyntax)
+      return this.binder.BindExpression((syntax as ParenthesizedExpressionSyntax).Expression, target);
+    if (syntax instanceof ArrayLiteralExpressionSyntax)
+      return new BinderExpressionLiterals<TFile>(this.binder, this).Collection(syntax as ArrayLiteralExpressionSyntax, target);
+    if (syntax instanceof ObjectLiteralExpressionSyntax)
+      return new BinderExpressionLiterals<TFile>(this.binder, this).Object(syntax as ObjectLiteralExpressionSyntax);
+    if (syntax instanceof ArrowFunctionSyntax)
+      return new BinderExpressionLambdas<TFile>(this.binder, this).Arrow(syntax as ArrowFunctionSyntax);
+    if (syntax instanceof FunctionExpressionSyntax)
+      return new BinderExpressionLambdas<TFile>(this.binder, this).Function(syntax as FunctionExpressionSyntax);
+    if (syntax instanceof PrefixUnaryExpressionSyntax) return this.BindPrefix(syntax as PrefixUnaryExpressionSyntax);
+    if (syntax instanceof PostfixUnaryExpressionSyntax) {
+      const postfix = syntax as PostfixUnaryExpressionSyntax;
+      return this.Increment(postfix.Operand, postfix.OperatorToken.Kind == SyntaxKind.PlusPlusToken, false, syntax);
+    }
+    if (syntax instanceof AwaitExpressionSyntax) return this.BindAwait(syntax as AwaitExpressionSyntax);
+    if (syntax instanceof ThrowExpressionSyntax) {
+      const value = this.binder.BindToType((syntax as ThrowExpressionSyntax).Operand, this.binder.Special(SpecialType.Exception));
+      return value.HasErrors ? this.Bad(syntax, value) : this.At(new BoundThrowExpression(value, NeverTypeSymbol.Instance), syntax);
+    }
+    if (syntax instanceof TypeOfExpressionSyntax)
+      return this.At(new BoundTypeOf(this.binder.BindType((syntax as TypeOfExpressionSyntax).Type),
+        this.binder.Special(SpecialType.Type)), syntax);
+    if (syntax instanceof YieldExpressionSyntax) {
+      this.binder.Report(Descriptors.YieldNotAllowedHere, syntax, []);
+      return this.Bad(syntax);
+    }
+    if (syntax instanceof BinaryExpressionSyntax) return this.BindBinary(syntax as BinaryExpressionSyntax, target);
+    if (syntax instanceof AssignmentExpressionSyntax) return this.BindAssignment(syntax as AssignmentExpressionSyntax);
+    if (syntax instanceof ConditionalExpressionSyntax) return this.BindConditional(syntax as ConditionalExpressionSyntax, target);
+    if (syntax instanceof InvocationExpressionSyntax) return this.BindInvocation(syntax as InvocationExpressionSyntax, target);
+    if (syntax instanceof NewExpressionSyntax) return this.BindNew(syntax as NewExpressionSyntax, target);
+    if (syntax instanceof ArrayCreationExpressionSyntax) {
+      const array = syntax as ArrayCreationExpressionSyntax;
+      const element = this.binder.BindType(array.ElementType);
+      const size = this.ConvertIndex(this.binder.BindValue(array.Size), array.Size);
+      return element.IsErrorType ? this.Bad(syntax, size) :
+        this.At(new BoundArrayCreation(this.binder.Context.CreateArrayType(element), size,
+          ImmutableArray<BoundExpression>.Empty), syntax);
+    }
+    if (syntax instanceof MemberAccessExpressionSyntax) return this.BindMemberAccess(syntax as MemberAccessExpressionSyntax);
+    if (syntax instanceof ElementAccessExpressionSyntax) return this.BindElementAccess(syntax as ElementAccessExpressionSyntax);
+    if (syntax instanceof NonNullExpressionSyntax) {
+      const value = this.binder.BindValue((syntax as NonNullExpressionSyntax).Expression);
+      return value.Type instanceof NullableTypeSymbol ?
+        this.At(new BoundConversion(value, ConversionKind.FromNullable, (value.Type as NullableTypeSymbol).Underlying), syntax) : value;
+    }
+    if (syntax instanceof AsExpressionSyntax) {
+      const cast = syntax as AsExpressionSyntax;
+      const type = this.binder.BindType(cast.Type);
+      const value = this.binder.BindValue(cast.Expression, type);
+      return type.IsErrorType ? this.Bad(syntax, value) :
+        this.binder.Conversions.ConvertExplicit(value, type, syntax);
+    }
+    if (syntax instanceof SatisfiesExpressionSyntax) {
+      const satisfies = syntax as SatisfiesExpressionSyntax;
+      const type = this.binder.BindType(satisfies.Type);
+      const value = this.binder.BindValue(satisfies.Expression, type);
+      if (type.IsErrorType) return value;
+      const converted = this.binder.Conversions.ConvertImplicit(value, type, syntax);
+      return value instanceof BoundUnbound ? converted : value;
+    }
+    if (syntax instanceof InstanceOfExpressionSyntax) return this.BindInstanceOf(syntax as InstanceOfExpressionSyntax);
+    if (syntax instanceof SpreadElementSyntax) {
+      this.binder.Report(Descriptors.SpreadNotAllowedHere, syntax, []);
+      return this.Bad(syntax);
+    }
+    if (syntax instanceof TypeSyntax) return this.At(new BoundTypeExpression(this.binder.BindType(syntax as TypeSyntax)), syntax);
+    return this.Bad(syntax);
+  }
+
+  At<T extends BoundNode>(node: T, syntax: SyntaxNode?): T {
+    node.Syntax = syntax;
+    return node;
+  }
+    private BindMemberAccess(syntax: MemberAccessExpressionSyntax): BoundExpression {
+      let left: BoundExpression;
+      if (syntax.Expression instanceof SuperExpressionSyntax) {
+        const current = this.binder.CurrentType;
+        if (current == null || current.BaseType == null || this.StaticContext) {
+          this.binder.Report(Descriptors.SuperNotAllowedHere, syntax, []);
+          return this.Bad(syntax);
+        }
+        this.UsesThis = true;
+        left = this.At(new BoundBaseReference(current.BaseType), syntax.Expression);
+        const access = this.BindMemberOf(left, syntax.Name, syntax);
+        if (access instanceof BoundMethodGroup) (access as BoundMethodGroup).IsBaseAccess = true;
+        if (access instanceof BoundPropertyAccess) (access as BoundPropertyAccess).IsBaseAccess = true;
+        return access;
+      }
+      left = this.Natural(this.binder.BindExpression(syntax.Expression), syntax.Expression);
+      if (left.HasErrors) return this.Bad(syntax, left);
+      if (left instanceof BoundConditionalAccess && !(syntax.Expression instanceof ParenthesizedExpressionSyntax)) {
+        const chain = left as BoundConditionalAccess;
+        const inner = syntax.IsConditional ? this.ConditionalMember(chain.WhenNotNull, syntax) :
+          this.BindMemberOf(chain.WhenNotNull, syntax.Name, syntax);
+        return this.MakeConditional(chain.Receiver, chain.Placeholder, inner, syntax);
+      }
+      return syntax.IsConditional ? this.ConditionalMember(left, syntax) : this.BindMemberOf(left, syntax.Name, syntax);
+    }
+    private ConditionalMember(left: BoundExpression, syntax: MemberAccessExpressionSyntax): BoundExpression {
+      if (left.Type == null || left instanceof BoundTypeExpression || left instanceof BoundMethodGroup) {
+        this.binder.Report(Descriptors.ConditionalOnNonValue, syntax, []);
+        return this.Bad(syntax, left);
+      }
+      if (left.Type.IsValueType && !(left.Type instanceof NullableTypeSymbol))
+        return this.BindMemberOf(left, syntax.Name, syntax);
+      const placeholder = this.At(new BoundConditionalReceiver(left.Type.StripNullable()), syntax.Expression);
+      return this.MakeConditional(left, placeholder, this.BindMemberOf(placeholder, syntax.Name, syntax), syntax);
+    }
+    MakeConditional(receiver: BoundExpression, placeholder: BoundConditionalReceiver,
+      inner: BoundExpression, syntax: SyntaxNode): BoundExpression {
+      if (inner.HasErrors) return this.Bad(syntax, inner);
+      let type = inner.Type;
+      if (type != null && !type.IsVoid && !type.IsNeverType && !(type instanceof NullableTypeSymbol))
+        type = new NullableTypeSymbol(type);
+      return this.At(new BoundConditionalAccess(receiver, placeholder, inner, type), syntax);
+    }
+    BindMemberOf(left: BoundExpression, name: SimpleNameSyntax, syntax: SyntaxNode): BoundExpression {
+      if (name.Identifier.IsMissing) return this.Bad(syntax, left);
+      const args = name instanceof GenericNameSyntax ? this.BindTypeArguments((name as GenericNameSyntax).TypeArguments) :
+        ImmutableArray<TypeSymbol>.Empty;
+      if (left instanceof BinderExpressionModule<TFile>) {
+        const exports = this.binder.Context.GetScope((left as BinderExpressionModule<TFile>).File).GetExports(name.Name);
+        return this.BindSymbols(exports, name.Name, args, name);
+      }
+      if (left instanceof BoundNamespaceExpression) {
+        const ns = (left as BoundNamespaceExpression).Namespace;
+        const child = args.Length == 0 ? ns.GetNamespaceMember(name.Name) : null;
+        if (child != null) {
+          this.binder.Record(name, child);
+          return this.At(new BoundNamespaceExpression(child), syntax);
+        }
+        const type = ns.GetTypeMember(name.Name, args.Length);
+        if (type != null) {
+          this.binder.Record(name, type);
+          return this.At(new BoundTypeExpression(this.NamedOrNullable(args.Length == 0 ? type : type.Construct(args))), syntax);
+        }
+        this.binder.Report(Descriptors.NamespaceHasNoMember, name, [ns.ToDisplayString(), name.Name]);
+        return this.Bad(syntax, left);
+      }
+      let type = left.Type;
+      if (type == null || type.IsErrorType) return this.Bad(syntax, left);
+      const isStatic = left instanceof BoundTypeExpression;
+      if (!isStatic && type instanceof NullableTypeSymbol) {
+        this.binder.Report(Descriptors.PossiblyNull, syntax, ["expression"]);
+        type = (type as NullableTypeSymbol).Underlying;
+      }
+      if (type.IsNullType || type.IsVoid) {
+        this.binder.Report(type.IsNullType ? Descriptors.NullDeref : Descriptors.VoidDeref, syntax, []);
+        return this.Bad(syntax, left);
+      }
+      const members = this.binder.LookupMembers(type, name.Name);
+      const methods = this.Methods(members);
+      if (!methods.IsDefaultOrEmpty && methods.Length == members.Length) {
+        this.binder.Record(name, methods[0]);
+        return this.At(new BoundMethodGroup(left, name.Name, methods, args), syntax);
+      }
+      for (const member of members) {
+        if (member instanceof MethodSymbol) continue;
+        this.binder.Record(name, member);
+        if (member instanceof NamedTypeSymbol) {
+          if (!isStatic) {
+            this.binder.Report(Descriptors.TypeViaInstance, name, [name.Name]);
+            return this.Bad(syntax, left);
+          }
+          for (const candidate of members) if (candidate instanceof NamedTypeSymbol &&
+            (candidate as NamedTypeSymbol).OwnArity == args.Length) {
+            const nested = candidate as NamedTypeSymbol;
+            let full = args;
+            if (type instanceof NamedTypeSymbol && nested.Arity > nested.OwnArity)
+              full = (type as NamedTypeSymbol).TypeArguments.AddRange(args);
+            return this.At(new BoundTypeExpression(this.NamedOrNullable(full.Length == 0 ? nested : nested.Construct(full))), syntax);
+          }
+          this.binder.Report(Descriptors.TypeNotGeneric, name, [name.Name, args.Length]);
+          return this.Bad(syntax, left);
+        }
+        if (isStatic && !member.IsStatic) {
+          this.binder.Report(Descriptors.InstanceViaType, name, [name.Name, type.ToDisplayString()]);
+          return this.Bad(syntax, left);
+        }
+        if (!isStatic && member.IsStatic)
+          this.binder.Report(Descriptors.StaticViaInstance, name, [name.Name, type.ToDisplayString()]);
+        const receiver = member.IsStatic ? null : left;
+        if (member instanceof FieldSymbol) return this.Narrow(new BoundFieldAccess(receiver, member as FieldSymbol), syntax);
+        if (member instanceof PropertySymbol) {
+          const property = member as PropertySymbol;
+          if (property.IsIndexer) {
+            this.binder.Report(Descriptors.IndexerNeedsArguments, name, [name.Name]);
+            return this.Bad(syntax, left);
+          }
+          return this.Narrow(new BoundPropertyAccess(receiver, property, ImmutableArray<BoundExpression>.Empty), syntax);
+        }
+      }
+      if (!isStatic) for (const extension of this.binder.LookupExtensionMethods(name.Name))
+        return this.At(new BoundMethodGroup(left, name.Name, ImmutableArray<MethodSymbol>.Empty, args), syntax);
+      this.binder.Report(Descriptors.MemberNotFound, name, [name.Name, type.ToDisplayString()]);
+      return this.Bad(syntax, left);
+    }
+    private BindElementAccess(syntax: ElementAccessExpressionSyntax): BoundExpression {
+      const left = this.Natural(this.binder.BindValue(syntax.Expression), syntax.Expression);
+      if (left.HasErrors) return this.Bad(syntax, left);
+      if (left instanceof BoundConditionalAccess && !(syntax.Expression instanceof ParenthesizedExpressionSyntax) && !syntax.IsConditional) {
+        const chain = left as BoundConditionalAccess;
+        return this.MakeConditional(chain.Receiver, chain.Placeholder, this.ElementOn(chain.WhenNotNull, syntax), syntax);
+      }
+      if (syntax.IsConditional && left.Type != null) {
+        const placeholder = this.At(new BoundConditionalReceiver(left.Type.StripNullable()), syntax.Expression);
+        return this.MakeConditional(left, placeholder, this.ElementOn(placeholder, syntax), syntax);
+      }
+      return this.ElementOn(left, syntax);
+    }
+    private ElementOn(left: BoundExpression, syntax: ElementAccessExpressionSyntax): BoundExpression {
+      let type = left.Type;
+      const args = this.BindArguments(syntax.Arguments);
+      if (type == null || type.IsErrorType) return this.Bad(syntax, left);
+      if (type instanceof NullableTypeSymbol) {
+        this.binder.Report(Descriptors.PossiblyNull, syntax.Expression, ["expression"]);
+        type = (type as NullableTypeSymbol).Underlying;
+      }
+      if (type instanceof ArrayTypeSymbol) {
+        const array = type as ArrayTypeSymbol;
+        if (array.Rank != 1 || args.Length != 1) {
+          this.binder.Report(Descriptors.NotIndexable, syntax, [type.ToDisplayString()]);
+          return this.Bad(syntax, left);
+        }
+        return this.Narrow(new BoundArrayAccess(left, this.ConvertIndex(args[0], syntax.Arguments.Get(0)), array.ElementType), syntax);
+      }
+      if (type instanceof NamedTypeSymbol && (type as NamedTypeSymbol).IsTuple && args.Length == 1) {
+        const tuple = type as NamedTypeSymbol;
+        const value = args[0].ConstantValue?.Value;
+        if (value instanceof int) {
+          const index = value as int;
+          if (index >= 0 && index < tuple.TypeArguments.Length && index < 7)
+            for (const field of tuple.GetMembers("Item" + (index + 1)))
+              if (field instanceof FieldSymbol) return this.Narrow(new BoundFieldAccess(left, field as FieldSymbol), syntax);
+        }
+        this.binder.Report(Descriptors.TupleIndexMustBeConstant, syntax, [tuple.ToDisplayString()]);
+        return this.Bad(syntax, left);
+      }
+      const indexers = new List<PropertySymbol>();
+      this.CollectIndexers(type, new HashSet<TypeSymbol>(), indexers);
+      const accessors = new List<MethodSymbol>();
+      for (const indexer of indexers) {
+        const accessor = indexer.GetMethod ?? indexer.SetMethod;
+        if (accessor != null) accessors.Add(accessor);
+      }
+      if (accessors.Count == 0) {
+        this.binder.Report(Descriptors.NotIndexable, syntax, [type.ToDisplayString()]);
+        return this.Bad(syntax, left);
+      }
+      const resolved = this.binder.Overloads.ResolveOverloads(accessors, args, ImmutableArray<TypeSymbol>.Empty,
+        syntax, "this[]", true, true, args.Length);
+      if (resolved == null) return this.Bad(syntax, left);
+      let property = indexers[0];
+      if (resolved.Method.AssociatedSymbol instanceof PropertySymbol) property = resolved.Method.AssociatedSymbol as PropertySymbol;
+      if (resolved.Method.ContainingType != null) for (const member of resolved.Method.ContainingType.GetMembers()) {
+        if (!(member instanceof PropertySymbol)) continue;
+        const candidate = member as PropertySymbol;
+        if (Object.ReferenceEquals(candidate.GetMethod?.OriginalDefinition, resolved.Method.OriginalDefinition) ||
+          Object.ReferenceEquals(candidate.SetMethod?.OriginalDefinition, resolved.Method.OriginalDefinition)) property = candidate;
+      }
+      return this.Narrow(new BoundPropertyAccess(left, property, resolved.Arguments), syntax);
+    }
+    private CollectIndexers(type: TypeSymbol, seen: HashSet<TypeSymbol>, result: List<PropertySymbol>): void {
+      if (!seen.Add(type)) return;
+      for (const member of type.GetMembers()) if (member instanceof PropertySymbol) {
+        const property = member as PropertySymbol;
+        if (property.IsIndexer && !property.IsStatic && this.binder.IsAccessible(property)) result.Add(property);
+      }
+      if (result.Count > 0 && type.TypeKind != TypeKind.Interface) return;
+      if (type.TypeKind == TypeKind.Interface || type instanceof TypeParameterSymbol)
+        for (const iface of type.AllInterfaces) this.CollectIndexers(iface, seen, result);
+      if (type instanceof TypeParameterSymbol)
+        for (const constraint of (type as TypeParameterSymbol).ConstraintTypes) this.CollectIndexers(constraint, seen, result);
+      if (type.BaseType != null) this.CollectIndexers(type.BaseType, seen, result);
+    }
+    ConvertIndex(value: BoundExpression, syntax: SyntaxNode): BoundExpression {
+      const special = value.Type?.SpecialType ?? SpecialType.None;
+      if (special == SpecialType.Int32 || special == SpecialType.UInt32 || special == SpecialType.Int64 ||
+        special == SpecialType.UInt64 || special == SpecialType.IntPtr || special == SpecialType.UIntPtr) return value;
+      return this.Convert(value, this.binder.IntType, syntax);
+    }
+
+    BindArguments(list: SeparatedSyntaxList<ExpressionSyntax>): ImmutableArray<BoundExpression> {
+      const args = ImmutableArray.CreateBuilder<BoundExpression>();
+      for (let i = 0; i < list.Count; i++) {
+        const syntax = list.Get(i);
+        if (syntax instanceof SpreadElementSyntax) {
+          if (i != list.Count - 1) this.binder.Report(Descriptors.SpreadMustBeLast, syntax, []);
+          args.Add(this.binder.BindValue((syntax as SpreadElementSyntax).Expression));
+        } else args.Add(this.binder.BindValue(syntax));
+      }
+      return args.ToImmutable();
+    }
+    private BindInvocation(syntax: InvocationExpressionSyntax, target: TypeSymbol?): BoundExpression {
+      if (syntax.Expression instanceof SuperExpressionSyntax) {
+        this.binder.Report(Descriptors.SuperCallPosition, syntax.Expression, []);
+        this.BindArguments(syntax.Arguments.Arguments);
+        return this.Bad(syntax);
+      }
+      const callee = this.Natural(this.binder.BindExpression(syntax.Expression), syntax.Expression);
+      let result: BoundExpression;
+      if (callee instanceof BoundConditionalAccess && !(syntax.Expression instanceof ParenthesizedExpressionSyntax)) {
+        const chain = callee as BoundConditionalAccess;
+        result = this.MakeConditional(chain.Receiver, chain.Placeholder, this.InvokeOn(chain.WhenNotNull, syntax, target), syntax);
+      } else result = this.InvokeOn(callee, syntax, target);
+      this.binder.Flow.InvalidateAfterCall(this.CalledMethod(result));
+      return result;
+    }
+    private CalledMethod(value: BoundExpression): MethodSymbol? {
+      if (value instanceof BoundCall) return (value as BoundCall).Method;
+      if (value instanceof BoundObjectCreation) return (value as BoundObjectCreation).Constructor;
+      if (value instanceof BoundConditionalAccess) return this.CalledMethod((value as BoundConditionalAccess).WhenNotNull);
+      if (value instanceof BoundSequence) return this.CalledMethod((value as BoundSequence).Value);
+      return null;
+    }
+    private InvokeOn(callee: BoundExpression, syntax: InvocationExpressionSyntax, target: TypeSymbol?): BoundExpression {
+      const args = this.BindArguments(syntax.Arguments.Arguments);
+      if (callee.HasErrors) return this.Bad(syntax, callee);
+      if (callee instanceof BoundMethodGroup) return this.CallGroup(callee as BoundMethodGroup, args, syntax, target);
+      if (callee instanceof BoundTypeExpression) {
+        this.binder.Report(Descriptors.UseNewForType, syntax.Expression, []);
+        return this.Bad(syntax, callee);
+      }
+      let type = callee.Type;
+      if (type == null) {
+        this.binder.Report(Descriptors.ExpressionNotAValue, syntax.Expression, []);
+        return this.Bad(syntax, callee);
+      }
+      if (type instanceof NullableTypeSymbol) {
+        this.binder.Report(Descriptors.PossiblyNull, syntax.Expression, ["expression"]);
+        type = (type as NullableTypeSymbol).Underlying;
+      }
+      if (type instanceof NamedTypeSymbol && type.TypeKind == TypeKind.Delegate) {
+        const invoke = (type as NamedTypeSymbol).DelegateInvokeMethod;
+        if (invoke != null) {
+          const resolved = this.binder.Overloads.ResolveOverloads(ImmutableArray.Create<MethodSymbol>(invoke),
+            args, ImmutableArray<TypeSymbol>.Empty, syntax, "invoke", true);
+          if (resolved != null) return this.At(new BoundCall(callee, resolved.Method, resolved.Arguments), syntax);
+          return this.Bad(syntax, callee);
+        }
+      }
+      this.binder.Report(Descriptors.NotCallable, syntax.Expression, [type!.ToDisplayString()]);
+      return this.Bad(syntax, callee);
+    }
+    private CallGroup(group: BoundMethodGroup, args: ImmutableArray<BoundExpression>,
+      syntax: InvocationExpressionSyntax, target: TypeSymbol?): BoundExpression {
+      for (const arg of args) if (arg.HasErrors) return this.Bad(syntax, group, arg);
+      const typeReceiver = group.Receiver instanceof BoundTypeExpression;
+      let resolved: ResolvedCall? = null;
+      let extension = false;
+      if (!group.Candidates.IsDefaultOrEmpty)
+        resolved = this.binder.Overloads.ResolveOverloads(group.Candidates, args, group.TypeArguments,
+          syntax, group.Name, false, false, 0, null, target);
+      if (resolved == null && group.Receiver != null && !typeReceiver && group.Receiver.Type != null) {
+        resolved = this.binder.Overloads.ResolveOverloads(this.binder.LookupExtensionMethods(group.Name),
+          args, group.TypeArguments, syntax, group.Name, false, false, 0, group.Receiver, target);
+        extension = resolved != null;
+      }
+      if (resolved == null) {
+        if (!group.Candidates.IsDefaultOrEmpty)
+          this.binder.Overloads.ResolveOverloads(group.Candidates, args, group.TypeArguments, syntax, group.Name, true);
+        else if (group.Receiver != null)
+          this.binder.Overloads.ResolveOverloads(this.binder.LookupExtensionMethods(group.Name), args,
+            group.TypeArguments, syntax, group.Name, true, false, 0, group.Receiver, target);
+        else this.binder.Report(Descriptors.NotCallable, syntax, [group.Name]);
+        return this.Bad(syntax, group);
+      }
+      const method = resolved.Method;
+      if (resolved.Ambiguity != null)
+        this.binder.Report(Descriptors.AmbiguousCall, syntax, [group.Name,
+          this.Signature(resolved.Ambiguity!.First), this.Signature(resolved.Ambiguity!.Second)]);
+      this.binder.Record(syntax.Expression instanceof MemberAccessExpressionSyntax ?
+        (syntax.Expression as MemberAccessExpressionSyntax).Name : syntax.Expression, method.OriginalDefinition);
+      let receiver: BoundExpression? = null;
+      if (!extension && !method.IsStatic) {
+        if (typeReceiver) {
+          this.binder.Report(Descriptors.InstanceViaType, syntax, [method.Name, group.Receiver!.Type!.ToDisplayString()]);
+          return this.Bad(syntax, group);
+        }
+        receiver = group.Receiver ?? this.ImplicitThis(syntax);
+        if (receiver.HasErrors) return this.Bad(syntax, group);
+      } else if (!extension && group.Receiver != null && !typeReceiver && method.IsStatic)
+        this.binder.Report(Descriptors.StaticViaInstance, syntax, [method.Name, group.Receiver.Type?.ToDisplayString() ?? "?"]);
+      const call = this.At(new BoundCall(receiver, method, resolved.Arguments), syntax);
+      call.IsBaseCall = group.IsBaseAccess;
+      return resolved.OutLocals.IsDefaultOrEmpty ? call : this.WrapOut(call, resolved.OutLocals, syntax);
+    }
+    private Signature(method: MethodSymbol): string {
+      let text = (method.ContainingType?.Name ?? "") + "." +
+        (method.MethodKind == MethodKind.Constructor ? method.ContainingType?.Name ?? method.Name : method.Name) + "(";
+      for (let i = 0; i < method.Parameters.Length; i++) {
+        if (i != 0) text += ", ";
+        text += method.Parameters[i].Type.ToDisplayString();
+      }
+      return text + ")";
+    }
+    private WrapOut(call: BoundCall, outs: ImmutableArray<LocalSymbol>, syntax: SyntaxNode): BoundExpression {
+      const locals = outs.ToBuilder();
+      const effects = ImmutableArray.CreateBuilder<BoundStatement>();
+      const elements = ImmutableArray.CreateBuilder<BoundExpression>();
+      if (call.Method.ReturnType.IsVoid) effects.Add(this.At(new BoundExpressionStatement(call), syntax));
+      else {
+        const temp = this.Temp("<ret>", call.Type!);
+        locals.Add(temp);
+        effects.Add(this.At(new BoundLocalDeclaration(temp, call), syntax));
+        elements.Add(new BoundLocal(temp));
+      }
+      for (const local of outs) elements.Add(new BoundLocal(local));
+      const value = elements.Count == 1 ? elements[0] : this.Tuple(elements.ToImmutable(), syntax);
+      return this.At(new BoundSequence(locals.ToImmutable(), effects.ToImmutable(), value), syntax);
+    }
+    Tuple(elements: ImmutableArray<BoundExpression>, syntax: SyntaxNode): BoundExpression {
+      const definition = this.binder.Context.GetWellKnownType("System.ValueTuple`" + elements.Length);
+      if (definition == null || elements.Length > 7) {
+        this.binder.Report(Descriptors.RuntimeMissing, syntax, ["System.ValueTuple`" + elements.Length]);
+        return this.Bad(syntax);
+      }
+      const types = ImmutableArray.CreateBuilder<TypeSymbol>();
+      for (const element of elements) types.Add(element.Type!);
+      const tuple = definition.Construct(types.ToImmutable());
+      return this.At(new BoundObjectCreation(this.Constructor(tuple, elements.Length), tuple, elements,
+        ImmutableArray<BoundMemberInit>.Empty), syntax);
+    }
+    Temp(name: string, type: TypeSymbol): LocalSymbol {
+      const local = new LocalSymbol(name, type, false, this.binder.ContainingSymbol);
+      local.IsSynthesized = true;
+      return local;
+    }
+    Constructor(type: NamedTypeSymbol, count: int): MethodSymbol? {
+      for (const constructor of type.InstanceConstructors) if (constructor.Parameters.Length == count) return constructor;
+      return null;
+    }
+    private BindNew(syntax: NewExpressionSyntax, target: TypeSymbol?): BoundExpression {
+      let type: TypeSymbol? = null;
+      if (target != null && syntax.Type instanceof IdentifierNameSyntax) {
+        const candidates = this.binder.Context.GetScope(this.binder.File).Lookup((syntax.Type as IdentifierNameSyntax).Name);
+        let nonGeneric = false;
+        let generic: NamedTypeSymbol? = null;
+        for (const candidate of candidates) if (candidate instanceof NamedTypeSymbol) {
+          if ((candidate as NamedTypeSymbol).OwnArity == 0) nonGeneric = true;
+          else if (generic == null) generic = candidate as NamedTypeSymbol;
+        }
+        if (!nonGeneric && generic != null && target.StripNullable() instanceof NamedTypeSymbol) {
+          const actual = target.StripNullable() as NamedTypeSymbol;
+          if (Object.ReferenceEquals(generic.OriginalDefinition, actual.OriginalDefinition)) type = actual;
+          else {
+            const supers = new List<NamedTypeSymbol>();
+            supers.AddRange(generic.AllInterfaces);
+            for (let baseType = generic.BaseType; baseType != null; baseType = baseType.BaseType) supers.Add(baseType);
+            for (const superType of supers) {
+              const solved = new Dictionary<TypeParameterSymbol, TypeSymbol>();
+              if (!this.Unify(superType, actual, generic, solved)) continue;
+              const args = ImmutableArray.CreateBuilder<TypeSymbol>();
+              for (const parameter of generic.TypeParameters) if (solved.ContainsKey(parameter)) args.Add(solved[parameter]);
+              if (args.Count == generic.Arity) { type = generic.Construct(args.ToImmutable()); break; }
+            }
+          }
+        }
+      }
+      type = type ?? this.binder.BindType(syntax.Type);
+      const args = syntax.Arguments == null ? ImmutableArray<BoundExpression>.Empty : this.BindArguments(syntax.Arguments.Arguments);
+      const result = this.BuildObjectCreation(type, args, syntax);
+      this.binder.Flow.InvalidateAfterCall(this.CalledMethod(result));
+      return result;
+    }
+    private Unify(pattern: TypeSymbol, actual: TypeSymbol, generic: NamedTypeSymbol,
+      solved: Dictionary<TypeParameterSymbol, TypeSymbol>): bool {
+      if (pattern instanceof TypeParameterSymbol && generic.TypeParameters.Contains(pattern as TypeParameterSymbol)) {
+        const parameter = pattern as TypeParameterSymbol;
+        if (solved.ContainsKey(parameter)) return solved[parameter].Equals(actual);
+        solved[parameter] = actual;
+        return true;
+      }
+      if (pattern instanceof NamedTypeSymbol && actual instanceof NamedTypeSymbol) {
+        const p = pattern as NamedTypeSymbol;
+        const a = actual as NamedTypeSymbol;
+        if (!Object.ReferenceEquals(p.OriginalDefinition, a.OriginalDefinition) || p.TypeArguments.Length != a.TypeArguments.Length) return false;
+        for (let i = 0; i < p.TypeArguments.Length; i++) if (!this.Unify(p.TypeArguments[i], a.TypeArguments[i], generic, solved)) return false;
+        return true;
+      }
+      if (pattern instanceof ArrayTypeSymbol && actual instanceof ArrayTypeSymbol)
+        return this.Unify((pattern as ArrayTypeSymbol).ElementType, (actual as ArrayTypeSymbol).ElementType, generic, solved);
+      return pattern.Equals(actual);
+    }
+    BuildObjectCreation(type: TypeSymbol, args: ImmutableArray<BoundExpression>, syntax: SyntaxNode): BoundExpression {
+      if (type.IsErrorType) return this.Bad(syntax);
+      for (const arg of args) if (arg.HasErrors) return this.Bad(syntax, arg);
+      if (type instanceof TypeParameterSymbol) {
+        const parameter = type as TypeParameterSymbol;
+        if (!parameter.HasConstructorConstraint) {
+          this.binder.Report(Descriptors.NewRequiresConstraint, syntax, [parameter.Name]);
+          return this.Bad(syntax);
+        }
+        if (args.Length != 0) {
+          this.binder.Report(Descriptors.NewTypeParamNoArgs, syntax, []);
+          return this.Bad(syntax);
+        }
+        return this.At(new BoundObjectCreation(null, type, args, ImmutableArray<BoundMemberInit>.Empty), syntax);
+      }
+      if (!(type instanceof NamedTypeSymbol)) {
+        this.binder.Report(Descriptors.CannotInstantiate, syntax, [type.ToDisplayString()]);
+        return this.Bad(syntax);
+      }
+      const named = type as NamedTypeSymbol;
+      if (named.TypeKind == TypeKind.Interface || named.TypeKind == TypeKind.Enum || named.IsAbstract || named.IsStaticClass) {
+        this.binder.Report(Descriptors.CannotInstantiate, syntax, [type.ToDisplayString()]);
+        return this.Bad(syntax);
+      }
+      if (named.TypeKind == TypeKind.Delegate) {
+        if (args.Length == 1) return this.Convert(args[0], named, syntax);
+        this.binder.Report(Descriptors.CannotInstantiate, syntax, [named.ToDisplayString()]);
+        return this.Bad(syntax);
+      }
+      const constructors = this.binder.LookupConstructors(named);
+      if (named.TypeKind == TypeKind.Struct && args.Length == 0 && this.Constructor(named, 0) == null)
+        return this.At(new BoundObjectCreation(null, type, args, ImmutableArray<BoundMemberInit>.Empty), syntax);
+      if (constructors.IsDefaultOrEmpty) {
+        this.binder.Report(Descriptors.NoAccessibleConstructor, syntax, [type.ToDisplayString()]);
+        return this.Bad(syntax);
+      }
+      const resolved = this.binder.Overloads.ResolveOverloads(constructors, args, ImmutableArray<TypeSymbol>.Empty, syntax, named.Name, true);
+      return resolved == null ? this.Bad(syntax) :
+        this.At(new BoundObjectCreation(resolved.Method, type, resolved.Arguments, ImmutableArray<BoundMemberInit>.Empty), syntax);
+    }
+    private BindAwait(syntax: AwaitExpressionSyntax): BoundExpression {
+      const value = this.binder.BindValue(syntax.Operand);
+      if (!this.binder.IsAsync) {
+        this.binder.Report(Descriptors.AwaitOutsideAsync, syntax, []);
+        return this.Bad(syntax, value);
+      }
+      if (value.HasErrors || value.Type == null) return this.Bad(syntax, value);
+      const info = this.GetAwaitInfo(value.Type, syntax);
+      return info == null ? this.Bad(syntax, value) : this.At(new BoundAwait(value, info, info.GetResult.ReturnType), syntax);
+    }
+    GetAwaitInfo(type: TypeSymbol, at: SyntaxNode): AwaitInfo? {
+      type = type.StripNullable();
+      let getAwaiter: MethodSymbol? = null;
+      for (const method of this.Methods(this.binder.LookupMembers(type, "GetAwaiter")))
+        if (!method.IsStatic && method.Parameters.Length == 0) { getAwaiter = method; break; }
+      if (getAwaiter == null) for (const method of this.binder.LookupExtensionMethods("GetAwaiter")) {
+        if (method.Parameters.Length == 1 && this.binder.Classifier.ClassifyImplicit(null, type, method.Parameters[0].Type).Exists) {
+          getAwaiter = method;
+          break;
+        }
+      }
+      if (getAwaiter != null) {
+        const awaiter = getAwaiter.ReturnType;
+        let completed: PropertySymbol? = null;
+        let result: MethodSymbol? = null;
+        for (const member of this.binder.LookupMembers(awaiter, "IsCompleted"))
+          if (member instanceof PropertySymbol) { completed = member as PropertySymbol; break; }
+        for (const method of this.Methods(this.binder.LookupMembers(awaiter, "GetResult")))
+          if (method.Parameters.Length == 0) { result = method; break; }
+        if (completed != null && completed.GetMethod != null && result != null)
+          return new AwaitInfo(getAwaiter, completed, completed.GetMethod, result, awaiter);
+      }
+      this.binder.Report(Descriptors.NotAwaitable, at, [type.ToDisplayString()]);
+      return null;
+    }
+    private BinaryKind(kind: SyntaxKind): BinaryOperatorKind? {
+      switch (kind) {
+        case SyntaxKind.PlusToken: case SyntaxKind.PlusEqualsToken: return BinaryOperatorKind.Add;
+        case SyntaxKind.MinusToken: case SyntaxKind.MinusEqualsToken: return BinaryOperatorKind.Subtract;
+        case SyntaxKind.AsteriskToken: case SyntaxKind.AsteriskEqualsToken: return BinaryOperatorKind.Multiply;
+        case SyntaxKind.SlashToken: case SyntaxKind.SlashEqualsToken: return BinaryOperatorKind.Divide;
+        case SyntaxKind.PercentToken: case SyntaxKind.PercentEqualsToken: return BinaryOperatorKind.Remainder;
+        case SyntaxKind.LessThanLessThanToken: case SyntaxKind.LessThanLessThanEqualsToken: return BinaryOperatorKind.ShiftLeft;
+        case SyntaxKind.GreaterThanGreaterThanToken: case SyntaxKind.GreaterThanGreaterThanEqualsToken: return BinaryOperatorKind.ShiftRight;
+        case SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
+        case SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken: return BinaryOperatorKind.UnsignedShiftRight;
+        case SyntaxKind.AmpersandToken: case SyntaxKind.AmpersandEqualsToken: return BinaryOperatorKind.And;
+        case SyntaxKind.BarToken: case SyntaxKind.BarEqualsToken: return BinaryOperatorKind.Or;
+        case SyntaxKind.CaretToken: case SyntaxKind.CaretEqualsToken: return BinaryOperatorKind.Xor;
+        case SyntaxKind.EqualsEqualsToken: return BinaryOperatorKind.Equal;
+        case SyntaxKind.ExclamationEqualsToken: return BinaryOperatorKind.NotEqual;
+        case SyntaxKind.LessThanToken: return BinaryOperatorKind.LessThan;
+        case SyntaxKind.LessThanEqualsToken: return BinaryOperatorKind.LessThanOrEqual;
+        case SyntaxKind.GreaterThanToken: return BinaryOperatorKind.GreaterThan;
+        case SyntaxKind.GreaterThanEqualsToken: return BinaryOperatorKind.GreaterThanOrEqual;
+      }
+      return null;
+    }
+    private OperatorName(kind: BinaryOperatorKind): string {
+      switch (kind) {
+        case BinaryOperatorKind.Add: return "op_Addition";
+        case BinaryOperatorKind.Subtract: return "op_Subtraction";
+        case BinaryOperatorKind.Multiply: return "op_Multiply";
+        case BinaryOperatorKind.Divide: return "op_Division";
+        case BinaryOperatorKind.Remainder: return "op_Modulus";
+        case BinaryOperatorKind.ShiftLeft: return "op_LeftShift";
+        case BinaryOperatorKind.ShiftRight: return "op_RightShift";
+        case BinaryOperatorKind.UnsignedShiftRight: return "op_UnsignedRightShift";
+        case BinaryOperatorKind.And: return "op_BitwiseAnd";
+        case BinaryOperatorKind.Or: return "op_BitwiseOr";
+        case BinaryOperatorKind.Xor: return "op_ExclusiveOr";
+        case BinaryOperatorKind.Equal: return "op_Equality";
+        case BinaryOperatorKind.NotEqual: return "op_Inequality";
+        case BinaryOperatorKind.LessThan: return "op_LessThan";
+        case BinaryOperatorKind.LessThanOrEqual: return "op_LessThanOrEqual";
+        case BinaryOperatorKind.GreaterThan: return "op_GreaterThan";
+        case BinaryOperatorKind.GreaterThanOrEqual: return "op_GreaterThanOrEqual";
+      }
+      return "";
+    }
+    private BindBinary(syntax: BinaryExpressionSyntax, target: TypeSymbol?): BoundExpression {
+      const op = syntax.OperatorKind;
+      if (op == SyntaxKind.AmpersandAmpersandToken || op == SyntaxKind.BarBarToken) {
+        const left = this.binder.Conversions.ConvertToBool(this.binder.BindValue(syntax.Left), syntax.Left);
+        const saved = this.binder.Flow.SaveState();
+        const branches = FlowNarrowing.GetNarrowing(left);
+        let right: BoundExpression;
+        try {
+          this.binder.Flow.Apply(op == SyntaxKind.AmpersandAmpersandToken ? branches.WhenTrue : branches.WhenFalse);
+          right = this.binder.Conversions.ConvertToBool(this.binder.BindValue(syntax.Right), syntax.Right);
+        } finally { this.binder.Flow.RestoreState(saved); }
+        if (left.HasErrors || right.HasErrors) return this.Bad(syntax, left, right);
+        const logical = new BoundLogicalBinary(op == SyntaxKind.AmpersandAmpersandToken, left, right, this.binder.BoolType);
+        if (left.ConstantValue?.Value instanceof bool && right.ConstantValue?.Value instanceof bool) {
+          const l = left.ConstantValue!.Value as bool;
+          const r = right.ConstantValue!.Value as bool;
+          logical.Folded = new ConstantValue(logical.IsAnd ? l && r : l || r);
+        }
+        return this.At(logical, syntax);
+      }
+      if (op == SyntaxKind.QuestionQuestionToken) return this.BindCoalesce(syntax, target);
+      const left = this.binder.BindValue(syntax.Left);
+      const right = this.binder.BindValue(syntax.Right);
+      if (left.HasErrors || right.HasErrors) return this.Bad(syntax, left, right);
+      if (op == SyntaxKind.AsteriskAsteriskToken) return this.Power(syntax, left, right);
+      const kind = this.BinaryKind(op);
+      if (kind == null) return this.Bad(syntax, left, right);
+      return kind == BinaryOperatorKind.Equal || kind == BinaryOperatorKind.NotEqual ?
+        this.Equality(syntax, kind as BinaryOperatorKind, left, right) : this.Arithmetic(syntax, kind as BinaryOperatorKind, left, right);
+    }
+    private BindCoalesce(syntax: BinaryExpressionSyntax, target: TypeSymbol?): BoundExpression {
+      let left = this.binder.BindValue(syntax.Left);
+      const saved = this.binder.Flow.SaveState();
+      let right: BoundExpression;
+      try { right = this.binder.BindValue(syntax.Right, target ?? left.Type?.StripNullable()); }
+      finally { this.binder.Flow.RestoreState(saved); }
+      if (left.Type == null || left.HasErrors || right.HasErrors) return this.Bad(syntax, left, right);
+      const source = left.Type;
+      const underlying = source.StripNullable();
+      if (right instanceof BoundUnbound) right = this.Convert(right, underlying, syntax.Right);
+      if (right.Type == null) return this.Bad(syntax, left, right);
+      if (right.Type.IsNullType) return left;
+      let result: TypeSymbol?;
+      if (right.Type instanceof NullableTypeSymbol) {
+        result = this.BestCommonType(ImmutableArray.Create<BoundExpression>(left, right));
+        if (result != null && !(result instanceof NullableTypeSymbol)) result = new NullableTypeSymbol(result);
+        if (result != null) return this.At(new BoundCoalesce(this.Convert(left, result, syntax.Left),
+          this.Convert(right, result, syntax.Right), result), syntax);
+      } else {
+        result = this.binder.Classifier.ClassifyImplicit(right, right.Type, underlying).Exists ? underlying :
+          this.BestCommonType(ImmutableArray.Create<BoundExpression>(this.Unwrap(left), right));
+        if (result != null) {
+          if (!result.Equals(underlying))
+            left = this.Convert(left, source instanceof NullableTypeSymbol ? new NullableTypeSymbol(result) : result, syntax.Left);
+          if (!(source instanceof NullableTypeSymbol) && source.IsValueType)
+            this.binder.Report(Descriptors.CoalesceOnNonNullable, syntax.OperatorToken, [source.ToDisplayString()]);
+          return this.At(new BoundCoalesce(left, this.Convert(right, result, syntax.Right), result), syntax);
+        }
+      }
+      this.binder.Report(Descriptors.NoBestCommonType, syntax, [source.ToDisplayString(), right.Type!.ToDisplayString()]);
+      return this.Bad(syntax, left, right);
+    }
+    private Promote(type: SpecialType): SpecialType {
+      if (type == SpecialType.SByte || type == SpecialType.Byte || type == SpecialType.Int16 ||
+        type == SpecialType.UInt16 || type == SpecialType.Char) return SpecialType.Int32;
+      return type;
+    }
+    private Promotion(a: SpecialType, b: SpecialType, left: BoundExpression?, right: BoundExpression?): SpecialType {
+      if (!SpecialTypes.IsNumeric(a) || !SpecialTypes.IsNumeric(b)) return SpecialType.None;
+      if (a == SpecialType.Decimal || b == SpecialType.Decimal)
+        return SpecialTypes.IsFloating(a == SpecialType.Decimal ? b : a) ? SpecialType.None : SpecialType.Decimal;
+      if (a == SpecialType.Double || b == SpecialType.Double) return SpecialType.Double;
+      if (a == SpecialType.Single || b == SpecialType.Single) return SpecialType.Single;
+      if (a == SpecialType.IntPtr || b == SpecialType.IntPtr) return SpecialType.IntPtr;
+      if (a == SpecialType.UIntPtr || b == SpecialType.UIntPtr) return SpecialType.UIntPtr;
+      a = this.Promote(a); b = this.Promote(b);
+      if (a == SpecialType.UInt64 || b == SpecialType.UInt64) {
+        const other = a == SpecialType.UInt64 ? b : a;
+        const value = (a == SpecialType.UInt64 ? right : left)?.ConstantValue?.Value;
+        if (SpecialTypes.IsSignedIntegral(other))
+          return value != null && ConstantFolding.ConvertNumeric(value, SpecialType.UInt64) != null ? SpecialType.UInt64 : SpecialType.None;
+        return SpecialType.UInt64;
+      }
+      if (a == SpecialType.Int64 || b == SpecialType.Int64) return SpecialType.Int64;
+      if (a == SpecialType.UInt32 || b == SpecialType.UInt32) {
+        const other = a == SpecialType.UInt32 ? b : a;
+        const value = (a == SpecialType.UInt32 ? right : left)?.ConstantValue?.Value;
+        return other == SpecialType.Int32 ? (value instanceof int && (value as int) >= 0 ? SpecialType.UInt32 : SpecialType.Int64) : SpecialType.UInt32;
+      }
+      return SpecialType.Int32;
+    }
+    private Primitive(type: TypeSymbol): bool {
+      const special = type.SpecialType;
+      return special == SpecialType.Boolean || (SpecialTypes.IsNumeric(special) && special != SpecialType.Decimal &&
+        special != SpecialType.IntPtr && special != SpecialType.UIntPtr);
+    }
+    private MakeBinary(at: SyntaxNode, kind: BinaryOperatorKind, left: BoundExpression, right: BoundExpression,
+      result: TypeSymbol, operand: TypeSymbol): BoundExpression {
+      const binary = new BoundBinary(kind, left, right, result, operand);
+      const l = left.ConstantValue?.Value;
+      const r = right.ConstantValue?.Value;
+      if (l != null && r != null && operand.SpecialType != SpecialType.None) {
+        const folded = ConstantFolding.FoldBinary(kind, l, r, operand.SpecialType);
+        if (folded != null) binary.Folded = new ConstantValue(folded);
+      }
+      return this.At(binary, at);
+    }
+    private BadOperands(at: SyntaxNode, kind: BinaryOperatorKind, left: BoundExpression, right: BoundExpression): BoundExpression {
+      let text = kind.ToString();
+      if (at instanceof BinaryExpressionSyntax) text = (at as BinaryExpressionSyntax).OperatorToken.Text;
+      else if (at instanceof AssignmentExpressionSyntax) text = (at as AssignmentExpressionSyntax).OperatorToken.Text;
+      this.binder.Report(Descriptors.BadOperands, at, [text, left.Type?.ToDisplayString() ?? "?", right.Type?.ToDisplayString() ?? "?"]);
+      return this.Bad(at, left, right);
+    }
+    private UserBinary(name: string, left: BoundExpression, right: BoundExpression, at: SyntaxNode): BoundExpression? {
+      const methods = new List<MethodSymbol>();
+      this.CollectOperators(left.Type!, name, 2, methods);
+      this.CollectOperators(right.Type!, name, 2, methods);
+      if (methods.Count == 0) return null;
+      const resolved = this.binder.Overloads.ResolveOverloads(methods, ImmutableArray.Create<BoundExpression>(left, right),
+        ImmutableArray<TypeSymbol>.Empty, at, name, false);
+      return resolved == null ? null : this.At(new BoundCall(null, resolved.Method, resolved.Arguments), at);
+    }
+    private CollectOperators(type: TypeSymbol, name: string, arity: int, methods: List<MethodSymbol>): void {
+      for (let current: TypeSymbol? = type.StripNullable(); current != null; current = current.BaseType) {
+        for (const method of this.Methods(current.GetMembers(name)))
+          if (method.IsStatic && method.Parameters.Length == arity && this.binder.IsAccessible(method) && !methods.Contains(method)) methods.Add(method);
+      }
+    }
+    Arithmetic(at: SyntaxNode, kind: BinaryOperatorKind, left: BoundExpression, right: BoundExpression): BoundExpression {
+      const lt = left.Type;
+      const rt = right.Type;
+      if (lt == null || rt == null || lt.IsErrorType || rt.IsErrorType) return this.Bad(at, left, right);
+      const comparison = kind >= BinaryOperatorKind.LessThan && kind <= BinaryOperatorKind.GreaterThanOrEqual;
+      if (kind == BinaryOperatorKind.Add &&
+        (lt.StripNullable().SpecialType == SpecialType.String || rt.StripNullable().SpecialType == SpecialType.String)) {
+        if (lt.IsVoid || rt.IsVoid) return this.BadOperands(at, kind, left, right);
+        if ((lt instanceof NullableTypeSymbol && lt.StripNullable().SpecialType != SpecialType.String) ||
+          (rt instanceof NullableTypeSymbol && rt.StripNullable().SpecialType != SpecialType.String)) {
+          this.binder.Report(Descriptors.PossiblyNull, at, ["expression"]);
+          return this.Bad(at, left, right);
+        }
+        const parts = new List<BoundExpression>();
+        parts.Add(lt.IsNullType ? this.binder.Literal("", this.binder.StringType, at) : left);
+        parts.Add(rt.IsNullType ? this.binder.Literal("", this.binder.StringType, at) : right);
+        return this.BuildStringConcat(parts, at);
+      }
+      if (lt instanceof NullableTypeSymbol || rt instanceof NullableTypeSymbol) {
+        this.binder.Report(Descriptors.PossiblyNull, at, ["expression"]);
+        return this.Bad(at, left, right);
+      }
+      if (!this.Primitive(lt) || !this.Primitive(rt)) {
+        const user = this.UserBinary(this.OperatorName(kind), left, right, at);
+        if (user != null) return user;
+      }
+      if (lt.TypeKind == TypeKind.Enum || rt.TypeKind == TypeKind.Enum) {
+        if (lt.TypeKind == TypeKind.Enum && lt.Equals(rt)) {
+          const underlying = (lt as NamedTypeSymbol).EnumUnderlyingType!;
+          if (comparison || kind == BinaryOperatorKind.And || kind == BinaryOperatorKind.Or || kind == BinaryOperatorKind.Xor)
+            return this.MakeBinary(at, kind, left, right, comparison ? this.binder.BoolType : lt, underlying);
+          if (kind == BinaryOperatorKind.Subtract) return this.MakeBinary(at, kind, left, right, underlying, underlying);
+        }
+        if (lt.TypeKind == TypeKind.Enum && SpecialTypes.IsIntegral(rt.SpecialType) &&
+          (kind == BinaryOperatorKind.Add || kind == BinaryOperatorKind.Subtract)) {
+          const underlying = (lt as NamedTypeSymbol).EnumUnderlyingType!;
+          return this.MakeBinary(at, kind, left, this.Convert(right, underlying, at), lt, underlying);
+        }
+        if (rt.TypeKind == TypeKind.Enum && SpecialTypes.IsIntegral(lt.SpecialType) && kind == BinaryOperatorKind.Add) {
+          const underlying = (rt as NamedTypeSymbol).EnumUnderlyingType!;
+          return this.MakeBinary(at, kind, this.Convert(left, underlying, at), right, rt, underlying);
+        }
+        return this.BadOperands(at, kind, left, right);
+      }
+      if (kind == BinaryOperatorKind.ShiftLeft || kind == BinaryOperatorKind.ShiftRight || kind == BinaryOperatorKind.UnsignedShiftRight) {
+        const special = this.Promote(lt.SpecialType);
+        if (!SpecialTypes.IsIntegral(special)) return this.BadOperands(at, kind, left, right);
+        const operand = this.binder.Special(special);
+        return this.MakeBinary(at, kind, this.Convert(left, operand, at), this.Convert(right, this.binder.IntType, at), operand, operand);
+      }
+      const bitwise = kind == BinaryOperatorKind.And || kind == BinaryOperatorKind.Or || kind == BinaryOperatorKind.Xor;
+      if (bitwise && lt.SpecialType == SpecialType.Boolean && rt.SpecialType == SpecialType.Boolean)
+        return this.MakeBinary(at, kind, left, right, this.binder.BoolType, this.binder.BoolType);
+      if (comparison && lt.SpecialType == SpecialType.String && rt.SpecialType == SpecialType.String) {
+        for (const method of this.Methods(this.binder.StringType.GetMembers("CompareOrdinal"))) if (method.Parameters.Length == 2) {
+          const call = this.At(new BoundCall(null, method, ImmutableArray.Create<BoundExpression>(left, right)), at);
+          return this.MakeBinary(at, kind, call, this.binder.Literal(0, this.binder.IntType, at), this.binder.BoolType, this.binder.IntType);
+        }
+      }
+      const promotion = this.Promotion(lt.SpecialType, rt.SpecialType, left, right);
+      if (promotion == SpecialType.None || (bitwise && !SpecialTypes.IsIntegral(promotion))) return this.BadOperands(at, kind, left, right);
+      const operand = this.binder.Special(promotion);
+      return this.MakeBinary(at, kind, this.Convert(left, operand, at), this.Convert(right, operand, at),
+        comparison ? this.binder.BoolType : operand, operand);
+    }
+    Power(at: SyntaxNode, left: BoundExpression, right: BoundExpression): BoundExpression {
+      const lt = left.Type;
+      const rt = right.Type;
+      if (lt == null || rt == null) return this.Bad(at, left, right);
+      if (lt.SpecialType == SpecialType.BigInteger) {
+        for (const method of this.Methods(lt.GetMembers("Pow"))) if (method.Parameters.Length == 2)
+          return this.At(new BoundCall(null, method, ImmutableArray.Create<BoundExpression>(left,
+            rt.SpecialType == SpecialType.BigInteger ? this.binder.Conversions.ConvertExplicit(right, this.binder.IntType, at) :
+            this.Convert(right, this.binder.IntType, at))), at);
+      }
+      if (!SpecialTypes.IsNumeric(lt.SpecialType) || !SpecialTypes.IsNumeric(rt.SpecialType) || lt.SpecialType == SpecialType.Char)
+        return this.BadOperands(at, BinaryOperatorKind.Multiply, left, right);
+      const math = this.binder.Context.GetWellKnownType("System.Math");
+      if (math != null) for (const method of this.Methods(math.GetMembers("Pow"))) if (method.Parameters.Length == 2)
+        return this.At(new BoundCall(null, method, ImmutableArray.Create<BoundExpression>(
+          this.Convert(left, this.binder.DoubleType, at), this.Convert(right, this.binder.DoubleType, at))), at);
+      this.binder.Report(Descriptors.RuntimeMissing, at, ["System.Math.Pow"]);
+      return this.Bad(at, left, right);
+    }
+    private Equality(at: SyntaxNode, kind: BinaryOperatorKind, left: BoundExpression, right: BoundExpression): BoundExpression {
+      const lt = left.Type;
+      const rt = right.Type;
+      if (lt == null || rt == null || lt.IsErrorType || rt.IsErrorType) return this.Bad(at, left, right);
+      // Null-typed expressions can contain calls; only literal null is discardable.
+      const leftNull = left instanceof BoundLiteral && (left as BoundLiteral).Value.IsNull;
+      const rightNull = right instanceof BoundLiteral && (right as BoundLiteral).Value.IsNull;
+      if (leftNull && rightNull) return this.binder.Literal(kind == BinaryOperatorKind.Equal, this.binder.BoolType, at);
+      if (leftNull || rightNull) {
+        const other = leftNull ? right : left;
+        return this.MakeBinary(at, kind, other, this.binder.Literal(null, NullTypeSymbol.Instance, at), this.binder.BoolType, other.Type!);
+      }
+      if (!this.Primitive(lt) || !this.Primitive(rt)) {
+        const user = this.UserBinary(this.OperatorName(kind), left, right, at);
+        if (user != null) return user;
+      }
+      const lu = lt.StripNullable();
+      const ru = rt.StripNullable();
+      const nullableValue = (lt instanceof NullableTypeSymbol && lu.IsValueType) || (rt instanceof NullableTypeSymbol && ru.IsValueType);
+      if (!nullableValue) {
+        const special = this.Promotion(lu.SpecialType, ru.SpecialType, left, right);
+        if (special != SpecialType.None) {
+          const operand = this.binder.Special(special);
+          return this.MakeBinary(at, kind, this.Convert(left, operand, at), this.Convert(right, operand, at), this.binder.BoolType, operand);
+        }
+        if (lu.SpecialType == SpecialType.Boolean && ru.SpecialType == SpecialType.Boolean)
+          return this.MakeBinary(at, kind, left, right, this.binder.BoolType, this.binder.BoolType);
+        if (lu.TypeKind == TypeKind.Enum && lu.Equals(ru))
+          return this.MakeBinary(at, kind, left, right, this.binder.BoolType, (lu as NamedTypeSymbol).EnumUnderlyingType!);
+      }
+      if (lu.TypeKind == TypeKind.Enum && right.ConstantValue?.Value instanceof string)
+        return this.MakeBinary(at, kind, left, this.Convert(right, lu, at), this.binder.BoolType, (lu as NamedTypeSymbol).EnumUnderlyingType!);
+      if (ru.TypeKind == TypeKind.Enum && left.ConstantValue?.Value instanceof string)
+        return this.MakeBinary(at, kind, this.Convert(left, ru, at), right, this.binder.BoolType, (ru as NamedTypeSymbol).EnumUnderlyingType!);
+      if (lu.SpecialType == SpecialType.Char && right.ConstantValue?.Value instanceof string)
+        return this.MakeBinary(at, kind, left, this.Convert(right, lu, at), this.binder.BoolType, lu);
+      if (ru.SpecialType == SpecialType.Char && left.ConstantValue?.Value instanceof string)
+        return this.MakeBinary(at, kind, this.Convert(left, ru, at), right, this.binder.BoolType, ru);
+      const compatible = this.binder.Classifier.ClassifyImplicit(null, lu, ru).Exists ||
+        this.binder.Classifier.ClassifyImplicit(null, ru, lu).Exists;
+      if ((lu.IsReferenceType || lu instanceof TypeParameterSymbol) &&
+        (ru.IsReferenceType || ru instanceof TypeParameterSymbol) && !nullableValue &&
+        (compatible || this.binder.Classifier.ClassifyExplicit(null, lu, ru).Exists))
+        return this.MakeBinary(at, kind, left, right, this.binder.BoolType, this.binder.ObjectType);
+      if (compatible) {
+        if (nullableValue && SpecialTypes.IsNumeric(lu.SpecialType) && SpecialTypes.IsNumeric(ru.SpecialType) && !lu.Equals(ru)) {
+          const promotion = this.Promotion(lu.SpecialType, ru.SpecialType, null, null);
+          if (promotion != SpecialType.None) {
+            const lifted = new NullableTypeSymbol(this.binder.Special(promotion));
+            left = this.Convert(left, lifted, at); right = this.Convert(right, lifted, at);
+          }
+        }
+        for (const method of this.Methods(this.binder.ObjectType.GetMembers("Equals")))
+          if (method.IsStatic && method.Parameters.Length == 2) {
+            const call = this.At(new BoundCall(null, method, ImmutableArray.Create<BoundExpression>(
+              this.Box(left, at), this.Box(right, at))), at);
+            return kind == BinaryOperatorKind.Equal ? call : this.At(new BoundUnary(UnaryOperatorKind.Not, call, this.binder.BoolType), at);
+          }
+      }
+      this.binder.Report(Descriptors.NoOverlap, at, [lt.ToDisplayString(), rt.ToDisplayString()]);
+      return this.Bad(at, left, right);
+    }
+    private BindPrefix(syntax: PrefixUnaryExpressionSyntax): BoundExpression {
+      const op = syntax.OperatorToken.Kind;
+      if (op == SyntaxKind.PlusPlusToken || op == SyntaxKind.MinusMinusToken)
+        return this.Increment(syntax.Operand, op == SyntaxKind.PlusPlusToken, true, syntax);
+      const operand = this.binder.BindValue(syntax.Operand);
+      const type = operand.Type;
+      if (operand.HasErrors || type == null || type.IsErrorType) return this.Bad(syntax, operand);
+      if (op == SyntaxKind.VoidKeyword) return this.Bad(syntax, operand);
+      if (op == SyntaxKind.ExclamationToken) {
+        const value = this.binder.Conversions.ConvertToBool(operand, syntax.Operand);
+        const unary = new BoundUnary(UnaryOperatorKind.Not, value, this.binder.BoolType);
+        if (value.ConstantValue?.Value instanceof bool) unary.Folded = new ConstantValue(!(value.ConstantValue!.Value as bool));
+        return this.At(unary, syntax);
+      }
+      if (type instanceof NullableTypeSymbol) {
+        this.binder.Report(Descriptors.PossiblyNull, syntax, ["expression"]);
+        return this.Bad(syntax, operand);
+      }
+      const kind = op == SyntaxKind.MinusToken ? UnaryOperatorKind.Minus :
+        op == SyntaxKind.PlusToken ? UnaryOperatorKind.Plus : UnaryOperatorKind.BitwiseNot;
+      if (kind == UnaryOperatorKind.Minus && syntax.Operand instanceof LiteralExpressionSyntax) {
+        const value = operand.ConstantValue?.Value;
+        if (value instanceof long && (value as long) == 2147483648L) return this.binder.Literal(int.MinValue, this.binder.IntType, syntax);
+        if (value instanceof ulong && (value as ulong) == 9223372036854775808UL)
+          return this.binder.Literal(long.MinValue, this.binder.Special(SpecialType.Int64), syntax);
+      }
+      if (!SpecialTypes.IsNumeric(type.SpecialType) || !this.Primitive(type)) {
+        const name = kind == UnaryOperatorKind.Minus ? "op_UnaryNegation" : kind == UnaryOperatorKind.Plus ? "op_UnaryPlus" : "op_OnesComplement";
+        const candidates = new List<MethodSymbol>();
+        this.CollectOperators(type, name, 1, candidates);
+        const resolved = this.binder.Overloads.ResolveOverloads(candidates, ImmutableArray.Create<BoundExpression>(operand),
+          ImmutableArray<TypeSymbol>.Empty, syntax, name, false);
+        if (resolved != null) return this.At(new BoundCall(null, resolved.Method, resolved.Arguments), syntax);
+        if (type.TypeKind == TypeKind.Enum && kind == UnaryOperatorKind.BitwiseNot)
+          return this.At(new BoundUnary(kind, operand, type), syntax);
+        this.binder.Report(Descriptors.BadUnaryOperand, syntax.OperatorToken, [syntax.OperatorToken.Text, type.ToDisplayString()]);
+        return this.Bad(syntax, operand);
+      }
+      let promoted = this.Promote(type.SpecialType);
+      if (kind == UnaryOperatorKind.Minus && promoted == SpecialType.UInt32) promoted = SpecialType.Int64;
+      if ((kind == UnaryOperatorKind.Minus && promoted == SpecialType.UInt64) ||
+        (kind == UnaryOperatorKind.BitwiseNot && !SpecialTypes.IsIntegral(promoted))) {
+        this.binder.Report(Descriptors.BadUnaryOperand, syntax.OperatorToken, [syntax.OperatorToken.Text, type.ToDisplayString()]);
+        return this.Bad(syntax, operand);
+      }
+      const result = this.binder.Special(promoted);
+      const converted = this.Convert(operand, result, syntax);
+      const unary = new BoundUnary(kind, converted, result);
+      const value = converted.ConstantValue?.Value;
+      if (value != null) {
+        const folded = ConstantFolding.FoldUnary(kind, value, promoted);
+        if (folded != null) unary.Folded = new ConstantValue(folded);
+      }
+      return this.At(unary, syntax);
+    }
+    Box(value: BoundExpression, at: SyntaxNode): BoundExpression {
+      const type = value.Type!;
+      if (type.SpecialType == SpecialType.Object && !(type instanceof NullableTypeSymbol)) return value;
+      const underlying = type.StripNullable();
+      const kind = underlying.IsValueType || underlying instanceof TypeParameterSymbol ? ConversionKind.Boxing :
+        type instanceof NullableTypeSymbol ? ConversionKind.TypeOnly : ConversionKind.ImplicitReference;
+      return this.At(new BoundConversion(value, kind, this.binder.ObjectType), at);
+    }
+    BuildStringConcat(parts: List<BoundExpression>, at: SyntaxNode): BoundExpression {
+      const folded = new List<BoundExpression>();
+      for (const part of parts) {
+        const value = part.ConstantValue?.Value;
+        if (folded.Count > 0 && folded[folded.Count - 1].ConstantValue?.Value instanceof string && value != null &&
+          (value instanceof string || value instanceof int || value instanceof long || value instanceof bool || value instanceof char)) {
+          const prefix = folded[folded.Count - 1].ConstantValue!.Value as string;
+          let text = value.ToString() ?? "";
+          if (value instanceof bool) text = (value as bool) ? "True" : "False";
+          else if (value instanceof IFormattable) text = (value as IFormattable).ToString(null, CultureInfo.InvariantCulture);
+          folded[folded.Count - 1] = this.binder.Literal(prefix + text, this.binder.StringType, at);
+        } else folded.Add(part);
+      }
+      if (folded.Count == 0) return this.binder.Literal("", this.binder.StringType, at);
+      if (folded.Count == 1 && folded[0].Type?.SpecialType == SpecialType.String) return folded[0];
+      let allStrings = true;
+      for (const part of folded) if (part.Type?.SpecialType != SpecialType.String) allStrings = false;
+      const special = allStrings ? SpecialType.String : SpecialType.Object;
+      const args = ImmutableArray.CreateBuilder<BoundExpression>();
+      for (const part of folded) args.Add(allStrings ? part : this.Box(part, at));
+      for (const method of this.Methods(this.binder.StringType.GetMembers("Concat"))) {
+        if (method.Parameters.Length != folded.Count) continue;
+        let matches = true;
+        for (const parameter of method.Parameters)
+          if (parameter.IsParams || parameter.Type.StripNullable().SpecialType != special) matches = false;
+        if (matches) return this.At(new BoundCall(null, method, args.ToImmutable()), at);
+      }
+      for (const method of this.Methods(this.binder.StringType.GetMembers("Concat"))) {
+        if (method.Parameters.Length != 1 || !method.Parameters[0].IsParams) continue;
+        const type = method.Parameters[0].Type.StripNullable();
+        if (!(type instanceof ArrayTypeSymbol) || (type as ArrayTypeSymbol).ElementType.StripNullable().SpecialType != special) continue;
+        const array = this.At(new BoundArrayCreation(type as ArrayTypeSymbol,
+          this.binder.Literal(args.Count, this.binder.IntType, at), args.ToImmutable()), at);
+        return this.At(new BoundCall(null, method, ImmutableArray.Create<BoundExpression>(array)), at);
+      }
+      this.binder.Report(Descriptors.RuntimeMissing, at, ["System.String.Concat"]);
+      return this.Bad(at);
+    }
+    NamedOrNullable(type: NamedTypeSymbol): TypeSymbol {
+      const definition = type.OriginalDefinition;
+      return definition instanceof SourceUnionSymbol<TFile> && (definition as SourceUnionSymbol<TFile>).IncludesNull ?
+        new NullableTypeSymbol(type) : type;
+    }
+    IsLiteralEnum(type: TypeSymbol): bool {
+      const stripped = type.StripNullable();
+      return stripped instanceof NamedTypeSymbol && (stripped as NamedTypeSymbol).OriginalDefinition instanceof SourceLiteralEnumSymbol<TFile>;
+    }
+    private Unparenthesize(syntax: ExpressionSyntax): ExpressionSyntax {
+      while (syntax instanceof ParenthesizedExpressionSyntax) syntax = (syntax as ParenthesizedExpressionSyntax).Expression;
+      return syntax;
+    }
+    AssignmentTarget(syntax: ExpressionSyntax, compound: bool = false): BoundExpression {
+      syntax = this.Unparenthesize(syntax);
+      const saved = this.binder.AssignTargetSyntax;
+      let target: BoundExpression;
+      try {
+        this.binder.AssignTargetSyntax = syntax;
+        target = this.binder.BindValue(syntax);
+      } finally { this.binder.AssignTargetSyntax = saved; }
+      return this.CheckAssignable(target, syntax, compound);
+    }
+    CheckAssignable(target: BoundExpression, at: SyntaxNode, compound: bool): BoundExpression {
+      if (target.HasErrors) return target;
+      if (target instanceof BoundLocal) {
+        const local = (target as BoundLocal).Local;
+        if (local.IsConst) {
+          this.binder.Report(Descriptors.CannotAssignConst, at, [local.Name]);
+          return this.Bad(at, target);
+        }
+        local.IsReassigned = true;
+        return target;
+      }
+      if (target instanceof BoundParameter) {
+        (target as BoundParameter).Parameter.IsReassigned = true;
+        return target;
+      }
+      if (target instanceof BoundFieldAccess) {
+        const access = target as BoundFieldAccess;
+        const field = access.Field;
+        let constant = field.IsConst;
+        const source = field.OriginalDefinition;
+        if (source instanceof SourceFieldSymbol<TFile>) {
+          const declaration = source as SourceFieldSymbol<TFile>;
+          if (declaration.IsEnumMember || (declaration.IsConstDeclaration && declaration.IsModuleVariable)) constant = true;
+        }
+        if (constant) {
+          this.binder.Report(Descriptors.CannotAssignConst, at, [field.Name]);
+          return this.Bad(at, target);
+        }
+        const own = this.OwnMember(field);
+        const writable = own && (field.IsStatic ? this.binder.InStaticConstructor || this.binder.InInitializer :
+          (this.binder.InConstructor || this.binder.InInitializer) && (access.Receiver == null || access.Receiver instanceof BoundThis));
+        if (field.IsReadOnly && !writable) {
+          this.binder.Report(Descriptors.CannotAssignReadonly, at, [field.Name]);
+          return this.Bad(at, target);
+        }
+        if (!field.IsStatic && access.Receiver != null && access.Receiver.Type!.IsValueType && !this.IsVariable(access.Receiver)) {
+          this.binder.Report(Descriptors.ModifyValueTypeTemporary, at, [access.Receiver.Type!.ToDisplayString()]);
+          return this.Bad(at, target);
+        }
+        return target;
+      }
+      if (target instanceof BoundPropertyAccess) {
+        const access = target as BoundPropertyAccess;
+        const property = access.Property;
+        if (compound && property.GetMethod == null) {
+          this.binder.Report(Descriptors.PropertyWriteOnly, at, [property.Name]);
+          return this.Bad(at, target);
+        }
+        if (property.SetMethod == null) {
+          if (property.OriginalDefinition instanceof SourcePropertySymbol<TFile> && this.OwnMember(property) &&
+            (this.binder.InConstructor || this.binder.InStaticConstructor || this.binder.InInitializer)) {
+            const backing = (property.OriginalDefinition as SourcePropertySymbol<TFile>).BackingField;
+            if (backing != null) {
+              // Look up on the constructed owner so generic backing storage has substituted types.
+              if (property.ContainingType != null) for (const member of property.ContainingType.GetMembers(backing.Name))
+                if (member instanceof FieldSymbol) return this.At(new BoundFieldAccess(access.Receiver, member as FieldSymbol), at);
+              return this.At(new BoundFieldAccess(access.Receiver, backing), at);
+            }
+          }
+          this.binder.Report(Descriptors.CannotAssignReadonlyProperty, at, [property.Name]);
+          return this.Bad(at, target);
+        }
+        if (!this.binder.IsAccessible(property.SetMethod)) {
+          this.binder.Report(Descriptors.CannotAssignReadonlyProperty, at, [property.Name]);
+          return this.Bad(at, target);
+        }
+        if (property.SetMethod!.IsInitOnly && !(this.binder.InConstructor || this.binder.InStaticConstructor || this.binder.InInitializer)) {
+          this.binder.Report(Descriptors.CannotAssignInitOnly, at, [property.Name]);
+          return this.Bad(at, target);
+        }
+        return target;
+      }
+      if (target instanceof BoundArrayAccess) return target;
+      if (target instanceof BoundConversion) {
+        const converted = target as BoundConversion;
+        if (converted.Kind == ConversionKind.FromNullable || converted.Kind == ConversionKind.TypeOnly ||
+          converted.Kind == ConversionKind.ExplicitReference || converted.Kind == ConversionKind.UnionExtract)
+          return this.CheckAssignable(converted.Operand, at, compound);
+      }
+      this.binder.Report(Descriptors.InvalidAssignmentTarget, at, []);
+      return this.Bad(at, target);
+    }
+    private OwnMember(symbol: Symbol): bool {
+      const owner = symbol.ContainingType;
+      const current = this.binder.CurrentType;
+      return owner != null && current != null && Object.ReferenceEquals(owner.OriginalDefinition, current.OriginalDefinition);
+    }
+    private IsVariable(value: BoundExpression): bool {
+      if (value instanceof BoundPropertyAccess) return (value as BoundPropertyAccess).Property.GetMethod?.ReturnsByRef == true;
+      if (value instanceof BoundCall) return (value as BoundCall).Method.ReturnsByRef;
+      if (value instanceof BoundFieldAccess) {
+        const field = value as BoundFieldAccess;
+        if (!field.Field.IsStatic && field.Receiver != null && field.Receiver.Type!.IsValueType) return this.IsVariable(field.Receiver);
+      }
+      if (value instanceof BoundConversion) {
+        const converted = value as BoundConversion;
+        if (converted.Kind == ConversionKind.FromNullable || converted.Kind == ConversionKind.UnionExtract) return false;
+        if (converted.Kind == ConversionKind.TypeOnly || converted.Kind == ConversionKind.ExplicitReference || converted.Kind == ConversionKind.Identity)
+          return this.IsVariable(converted.Operand);
+      }
+      return true;
+    }
+    private BindAssignment(syntax: AssignmentExpressionSyntax): BoundExpression {
+      const op = syntax.OperatorToken.Kind;
+      const left = this.Unparenthesize(syntax.Left);
+      if (op == SyntaxKind.EqualsToken && (left instanceof ArrayLiteralExpressionSyntax || left instanceof ObjectLiteralExpressionSyntax))
+        return this.DestructureAssignment(syntax, left);
+      const target = this.AssignmentTarget(syntax.Left, op != SyntaxKind.EqualsToken);
+      if (target.HasErrors) {
+        this.binder.BindValue(syntax.Right);
+        return this.Bad(syntax, target);
+      }
+      const type = target.Type!;
+      if (op == SyntaxKind.EqualsToken) {
+        const raw = this.binder.BindValue(syntax.Right, type);
+        const value = this.Convert(raw, type, syntax.Right);
+        this.AfterAssignment(target, raw, type);
+        return this.At(new BoundAssignment(target, value), syntax);
+      }
+      if (op == SyntaxKind.QuestionQuestionEqualsToken) {
+        if (!(type instanceof NullableTypeSymbol)) {
+          this.binder.Report(Descriptors.CoalesceOnNonNullable, syntax.OperatorToken, [type.ToDisplayString()]);
+          this.binder.BindValue(syntax.Right);
+          return this.Bad(syntax, target);
+        }
+        const computation = new BinderAssignmentBinding<TFile>(this.binder, this, syntax, type, null, null);
+        return this.Compound(target, false, syntax, computation.Coalesce, true);
+      }
+      if (op == SyntaxKind.AmpersandAmpersandEqualsToken || op == SyntaxKind.BarBarEqualsToken) {
+        const computation = new BinderAssignmentBinding<TFile>(this.binder, this, syntax, type, null, null);
+        return this.Compound(target, false, syntax, computation.Logical, false);
+      }
+      const right = this.binder.BindValue(syntax.Right);
+      if (right.HasErrors) return this.Bad(syntax, target, right);
+      const kind = this.BinaryKind(op);
+      if (kind == null && op != SyntaxKind.AsteriskAsteriskEqualsToken) return this.Bad(syntax, target, right);
+      const computation = new BinderAssignmentBinding<TFile>(this.binder, this, syntax, type, right, kind);
+      return this.Compound(target, false, syntax, computation.Arithmetic, false);
+    }
+    AfterAssignment(target: BoundExpression, value: BoundExpression, declared: TypeSymbol): void {
+      this.binder.Flow.InvalidateNarrowing(target);
+      const path = FlowNarrowing.PathOf(target);
+      const type = value.Type;
+      if (path == null || type == null || type.IsNullType) return;
+      let narrowed = false;
+      if (declared instanceof NullableTypeSymbol && !(type instanceof NullableTypeSymbol) &&
+        this.binder.Classifier.ClassifyImplicit(null, type, declared.StripNullable()).Exists) narrowed = true;
+      if (declared instanceof NamedTypeSymbol && (declared as NamedTypeSymbol).IsUnionType)
+        for (const unionCase of (declared as NamedTypeSymbol).UnionCases) if (unionCase.Equals(type)) narrowed = true;
+      if (narrowed) this.binder.Flow.Apply(new Narrowings(ImmutableArray.Create<NarrowingFact>(new NarrowingFact(path, type))));
+    }
+    private Increment(syntax: ExpressionSyntax, increment: bool, prefix: bool, at: SyntaxNode): BoundExpression {
+      const target = this.AssignmentTarget(syntax, true);
+      if (target.HasErrors) return target;
+      const type = target.Type!;
+      const special = type.SpecialType;
+      if (type instanceof NullableTypeSymbol || (!SpecialTypes.IsNumeric(special) && special != SpecialType.BigInteger)) {
+        this.binder.Report(type instanceof NullableTypeSymbol ? Descriptors.PossiblyNull : Descriptors.BadUnaryOperand,
+          at, type instanceof NullableTypeSymbol ? ["expression"] : [increment ? "++" : "--", type.ToDisplayString()]);
+        return this.Bad(at, target);
+      }
+      const computation = new BinderIncrementBinding<TFile>(this.binder, this, type, special, increment, at);
+      return this.Compound(target, !prefix, at, computation.Compute, false);
+    }
+    private Simple(value: BoundExpression): bool {
+      if (value instanceof BoundLocal || value instanceof BoundParameter || value instanceof BoundThis ||
+        value instanceof BoundLiteral || value instanceof BoundDefaultValue) return true;
+      if (value instanceof BoundFieldAccess) return (value as BoundFieldAccess).Receiver == null;
+      if (value instanceof BoundConversion) {
+        const conversion = value as BoundConversion;
+        return (conversion.Kind == ConversionKind.ImplicitReference || conversion.Kind == ConversionKind.TypeOnly) && this.Simple(conversion.Operand);
+      }
+      return false;
+    }
+    private Stabilize(value: BoundExpression, locals: List<LocalSymbol>, effects: List<BoundStatement>, at: SyntaxNode): BoundExpression {
+      if (this.Simple(value)) return value;
+      const temp = this.Temp("<t" + locals.Count + ">", value.Type!);
+      locals.Add(temp);
+      effects.Add(this.At(new BoundLocalDeclaration(temp, value), at));
+      return this.At(new BoundLocal(temp), at);
+    }
+    private StabilizeReceiver(value: BoundExpression, locals: List<LocalSymbol>, effects: List<BoundStatement>, at: SyntaxNode): BoundExpression {
+      if (value.Type!.IsValueType) {
+        if (value instanceof BoundArrayAccess) {
+          const array = value as BoundArrayAccess;
+          return this.At(new BoundArrayAccess(this.Stabilize(array.Array, locals, effects, at),
+            this.Stabilize(array.Index, locals, effects, at), array.Type!), value.Syntax);
+        }
+        if (value instanceof BoundFieldAccess) {
+          const field = value as BoundFieldAccess;
+          if (!field.Field.IsStatic && field.Receiver != null) return this.At(new BoundFieldAccess(
+            this.StabilizeReceiver(field.Receiver, locals, effects, at), field.Field), value.Syntax);
+        }
+      }
+      return this.Stabilize(value, locals, effects, at);
+    }
+    private Compound(target: BoundExpression, returnOld: bool, at: SyntaxNode,
+      compute: Func<BoundExpression, BoundExpression>, coalesce: bool): BoundExpression {
+      const locals = new List<LocalSymbol>();
+      const effects = new List<BoundStatement>();
+      let stable = target;
+      if (target instanceof BoundFieldAccess) {
+        const field = target as BoundFieldAccess;
+        if (field.Receiver != null) stable = this.At(new BoundFieldAccess(
+          this.StabilizeReceiver(field.Receiver, locals, effects, at), field.Field), at);
+      } else if (target instanceof BoundPropertyAccess) {
+        const property = target as BoundPropertyAccess;
+        const receiver = property.Receiver == null ? null : this.StabilizeReceiver(property.Receiver, locals, effects, at);
+        const args = ImmutableArray.CreateBuilder<BoundExpression>();
+        for (const argument of property.Arguments) args.Add(this.Stabilize(argument, locals, effects, at));
+        const access = new BoundPropertyAccess(receiver, property.Property, args.ToImmutable());
+        access.IsBaseAccess = property.IsBaseAccess;
+        stable = this.At(access, at);
+      } else if (target instanceof BoundArrayAccess) {
+        const array = target as BoundArrayAccess;
+        stable = this.At(new BoundArrayAccess(this.Stabilize(array.Array, locals, effects, at),
+          this.Stabilize(array.Index, locals, effects, at), array.Type!), at);
+      }
+      let result: BoundExpression;
+      if (returnOld) {
+        const old = this.Temp("<old>", target.Type!);
+        locals.Add(old);
+        effects.Add(this.At(new BoundLocalDeclaration(old, stable), at));
+        const value = compute.Invoke(new BoundLocal(old));
+        if (value.HasErrors) return this.Bad(at, target, value);
+        const assignment = this.At(new BoundAssignment(stable, value), at);
+        assignment.IsDiscarded = true;
+        effects.Add(this.At(new BoundExpressionStatement(assignment), at));
+        result = new BoundLocal(old);
+      } else if (coalesce) {
+        const value = compute.Invoke(stable) as BoundCoalesce;
+        result = this.At(new BoundCoalesce(stable, this.At(new BoundAssignment(stable, value.Right), at), value.Type!), at);
+      } else {
+        const value = compute.Invoke(stable);
+        if (value.HasErrors) return this.Bad(at, target, value);
+        result = this.At(new BoundAssignment(stable, value), at);
+      }
+      this.binder.Flow.InvalidateNarrowing(target);
+      return locals.Count == 0 ? result : this.At(new BoundSequence(ImmutableArray.CreateRange<LocalSymbol>(locals),
+        ImmutableArray.CreateRange<BoundStatement>(effects), result), at);
+    }
+    private DestructureAssignment(syntax: AssignmentExpressionSyntax, pattern: ExpressionSyntax): BoundExpression {
+      const rhs = this.Natural(this.binder.BindValue(syntax.Right), syntax.Right);
+      if (rhs.HasErrors || rhs.Type == null) return this.Bad(syntax, rhs);
+      const temp = this.Temp("<da>", rhs.Type);
+      const locals = new List<LocalSymbol>();
+      locals.Add(temp);
+      const effects = new List<BoundStatement>();
+      effects.Add(this.At(new BoundLocalDeclaration(temp, rhs), syntax));
+      let source: BoundExpression = new BoundLocal(temp);
+      const type = rhs.Type!.StripNullable();
+      if (rhs.Type instanceof NullableTypeSymbol) {
+        this.binder.Report(Descriptors.PossiblyNull, syntax.Right, ["destructured value"]);
+        source = this.Unwrap(source);
+      }
+      const literals = new BinderExpressionLiterals<TFile>(this.binder, this);
+      if (pattern instanceof ArrayLiteralExpressionSyntax) {
+        let index = 0;
+        for (const element of (pattern as ArrayLiteralExpressionSyntax).Elements) {
+          const current = index++;
+          if (element instanceof MissingExpressionSyntax) continue;
+          const value = element instanceof SpreadElementSyntax ? literals.Rest(source, type, current, element) :
+            literals.Element(source, type, current, element);
+          if (value != null) this.DestructureStore(element instanceof SpreadElementSyntax ?
+            (element as SpreadElementSyntax).Expression : element, value, locals, effects, syntax);
+        }
+      } else if (pattern instanceof ObjectLiteralExpressionSyntax) {
+        for (const member of (pattern as ObjectLiteralExpressionSyntax).Members) {
+          if (member instanceof PropertyAssignmentSyntax) {
+            const property = member as PropertyAssignmentSyntax;
+            const value = literals.Member(source, type, property.NameToken.ValueText, member);
+            if (value != null) this.DestructureStore(property.Value, value, locals, effects, syntax);
+          } else if (member instanceof ShorthandPropertyAssignmentSyntax) {
+            const shorthand = member as ShorthandPropertyAssignmentSyntax;
+            const value = literals.Member(source, type, shorthand.NameToken.Text, member);
+            if (value != null) {
+              const target = this.CheckAssignable(this.BindName(shorthand.NameToken.Text, ImmutableArray<TypeSymbol>.Empty, member), member, false);
+              this.DestructureStoreBound(target, value, effects, syntax);
+            }
+          } else this.binder.Report(Descriptors.InvalidAssignmentTarget, member, []);
+        }
+      }
+      return this.At(new BoundSequence(ImmutableArray.CreateRange<LocalSymbol>(locals),
+        ImmutableArray.CreateRange<BoundStatement>(effects), new BoundLocal(temp)), syntax);
+    }
+    private DestructureStore(syntax: ExpressionSyntax, value: BoundExpression, locals: List<LocalSymbol>,
+      effects: List<BoundStatement>, at: SyntaxNode): void {
+      if (syntax instanceof ArrayLiteralExpressionSyntax || syntax instanceof ObjectLiteralExpressionSyntax) {
+        // Nested patterns use the same accessors, without rebinding the source expression.
+        const temp = this.Temp("<nested>", value.Type!);
+        locals.Add(temp);
+        effects.Add(this.At(new BoundLocalDeclaration(temp, value), at));
+        const literals = new BinderExpressionLiterals<TFile>(this.binder, this);
+        let source: BoundExpression = new BoundLocal(temp);
+        const sourceType = value.Type!.StripNullable();
+        if (value.Type instanceof NullableTypeSymbol) {
+          this.binder.Report(Descriptors.PossiblyNull, syntax, ["destructured value"]);
+          source = this.Unwrap(source);
+        }
+        if (syntax instanceof ArrayLiteralExpressionSyntax) {
+          let index = 0;
+          for (const element of (syntax as ArrayLiteralExpressionSyntax).Elements) {
+            const current = index++;
+            if (element instanceof MissingExpressionSyntax) continue;
+            const child = element instanceof SpreadElementSyntax ? literals.Rest(source, sourceType, current, element) :
+              literals.Element(source, sourceType, current, element);
+            if (child != null) this.DestructureStore(element instanceof SpreadElementSyntax ?
+              (element as SpreadElementSyntax).Expression : element, child, locals, effects, at);
+          }
+        } else for (const member of (syntax as ObjectLiteralExpressionSyntax).Members) {
+          if (member instanceof PropertyAssignmentSyntax) {
+            const property = member as PropertyAssignmentSyntax;
+            const child = literals.Member(source, sourceType, property.NameToken.ValueText, member);
+            if (child != null) this.DestructureStore(property.Value, child, locals, effects, at);
+          } else if (member instanceof ShorthandPropertyAssignmentSyntax) {
+            const shorthand = member as ShorthandPropertyAssignmentSyntax;
+            const child = literals.Member(source, sourceType, shorthand.NameToken.Text, member);
+            if (child != null) {
+              const target = this.CheckAssignable(this.BindName(shorthand.NameToken.Text,
+                ImmutableArray<TypeSymbol>.Empty, member), member, false);
+              this.DestructureStoreBound(target, child, effects, at);
+            }
+          } else {
+            this.binder.Report(Descriptors.InvalidAssignmentTarget, member, []);
+          }
+        }
+        return;
+      }
+      this.DestructureStoreBound(this.AssignmentTarget(syntax), value, effects, at);
+    }
+    private DestructureStoreBound(target: BoundExpression, value: BoundExpression, effects: List<BoundStatement>, at: SyntaxNode): void {
+      if (target.HasErrors) return;
+      const assignment = this.At(new BoundAssignment(target, this.Convert(value, target.Type!, at)), at);
+      assignment.IsDiscarded = true;
+      effects.Add(this.At(new BoundExpressionStatement(assignment), at));
+      this.binder.Flow.InvalidateNarrowing(target);
+    }
+    ConvertMethodGroup(group: BoundMethodGroup, target: TypeSymbol, syntax: SyntaxNode?, report: bool): BoundExpression {
+      const stripped = target.StripNullable();
+      if (!(stripped instanceof NamedTypeSymbol) || stripped.TypeKind != TypeKind.Delegate) {
+        if (report && !target.IsErrorType) this.binder.Report(Descriptors.MethodGroupNeedsDelegate, syntax, [group.Name, target.ToDisplayString()]);
+        return this.Bad(syntax, group);
+      }
+      const delegateType = stripped as NamedTypeSymbol;
+      const method = this.binder.Overloads.ResolveMethodGroupForDelegate(group, delegateType);
+      if (method == null) {
+        if (report) this.binder.Report(Descriptors.MethodGroupNotConvertible, syntax, [group.Name, target.ToDisplayString()]);
+        return this.Bad(syntax, group);
+      }
+      let extension = method.IsExtensionMethod && group.Receiver != null && group.Receiver.Type != null;
+      for (const candidate of group.Candidates)
+        if (Object.ReferenceEquals(candidate.OriginalDefinition, method.OriginalDefinition)) extension = false;
+      let receiver: BoundExpression? = null;
+      if (extension) receiver = group.Receiver;
+      else if (!method.IsStatic) receiver = group.Receiver ?? this.ImplicitThis(syntax ?? group.Syntax!);
+      const created = this.At(new BoundDelegateCreation(receiver, method, delegateType), syntax ?? group.Syntax);
+      return target instanceof NullableTypeSymbol ?
+        this.At(new BoundConversion(created, ConversionKind.ToNullable, target), syntax) : created;
+    }
+  Bad(syntax: SyntaxNode?): BoundBadExpression {
+    return this.binder.Bad(syntax, ImmutableArray<BoundNode>.Empty);
+  }
+  Bad(syntax: SyntaxNode?, child: BoundNode): BoundBadExpression {
+    return this.binder.Bad(syntax, ImmutableArray.Create<BoundNode>(child));
+  }
+  Bad(syntax: SyntaxNode?, left: BoundNode, right: BoundNode): BoundBadExpression {
+    return this.binder.Bad(syntax, ImmutableArray.Create<BoundNode>(left, right));
+  }
+  Convert(value: BoundExpression, type: TypeSymbol, at: SyntaxNode?): BoundExpression {
+    return this.binder.Conversions.ConvertImplicit(value, type, at);
+  }
+  Natural(value: BoundExpression, at: SyntaxNode): BoundExpression {
+    if (!(value instanceof BoundUnbound)) return value;
+    const bound = (value as BoundUnbound).BindToType.Invoke(null);
+    if (!(bound instanceof BoundUnbound)) return bound;
+    this.binder.Report(Descriptors.CannotInferType, at, []);
+    return this.Bad(at, value);
+  }
+  private Narrow(value: BoundExpression, syntax: SyntaxNode): BoundExpression {
+    value.Syntax = syntax;
+    return Object.ReferenceEquals(syntax, this.binder.AssignTargetSyntax) ? value : this.binder.Flow.ApplyNarrowing(value);
+  }
+  BindTypeArguments(list: TypeArgumentListSyntax?): ImmutableArray<TypeSymbol> {
+    const result = ImmutableArray.CreateBuilder<TypeSymbol>();
+    if (list != null) for (const syntax of list.Arguments) result.Add(this.binder.BindType(syntax));
+    return result.ToImmutable();
+  }
+  Methods(symbols: IEnumerable<Symbol>): ImmutableArray<MethodSymbol> {
+    const result = ImmutableArray.CreateBuilder<MethodSymbol>();
+    for (const symbol of symbols) if (symbol instanceof MethodSymbol) result.Add(symbol as MethodSymbol);
+    return result.ToImmutable();
+  }
+
+  private BindLiteral(syntax: LiteralExpressionSyntax): BoundExpression {
+    const value = syntax.Token.Value;
+    switch (syntax.Kind) {
+      case SyntaxKind.TrueLiteralExpression: return this.binder.Literal(true, this.binder.BoolType, syntax);
+      case SyntaxKind.FalseLiteralExpression: return this.binder.Literal(false, this.binder.BoolType, syntax);
+      case SyntaxKind.NullLiteralExpression: return this.binder.Literal(null, NullTypeSymbol.Instance, syntax);
+      case SyntaxKind.StringLiteralExpression:
+      case SyntaxKind.NoSubstitutionTemplateExpression:
+        return this.binder.Literal(value as string ?? "", this.binder.StringType, syntax);
+      case SyntaxKind.BigIntLiteralExpression:
+        return this.binder.Literal(value ?? BigInteger.Zero, this.binder.Special(SpecialType.BigInteger), syntax);
+    }
+    let special = SpecialType.Int32;
+    if (value instanceof long) special = SpecialType.Int64;
+    else if (value instanceof uint) special = SpecialType.UInt32;
+    else if (value instanceof ulong) special = SpecialType.UInt64;
+    else if (value instanceof double) special = SpecialType.Double;
+    else if (value instanceof float) special = SpecialType.Single;
+    else if (value instanceof decimal) special = SpecialType.Decimal;
+    return this.binder.Literal(value ?? 0, this.binder.Special(special), syntax);
+  }
+  private BindTemplate(syntax: TemplateExpressionSyntax): BoundExpression {
+    const parts = new List<BoundExpression>();
+    const head = syntax.Head.Value as string ?? "";
+    if (head.Length > 0) parts.Add(this.binder.Literal(head, this.binder.StringType, syntax));
+    for (const span of syntax.Spans) {
+      parts.Add(this.binder.BindRValue(span.Expression));
+      const text = span.Literal.Value as string ?? "";
+      if (text.Length > 0) parts.Add(this.binder.Literal(text, this.binder.StringType, syntax));
+    }
+    return this.BuildStringConcat(parts, syntax);
+  }
+
+  BindName(name: string, typeArgs: ImmutableArray<TypeSymbol>, syntax: SyntaxNode): BoundExpression {
+    const local = this.binder.LookupLocal(name);
+    if (local != null) {
+      if (!typeArgs.IsDefaultOrEmpty && !(local instanceof MethodSymbol)) {
+        this.binder.Report(Descriptors.NotGeneric, syntax, [name]);
+        return this.Bad(syntax);
+      }
+      this.binder.Record(syntax, local);
+      return this.SymbolExpression(local, syntax, typeArgs);
+    }
+    if (typeArgs.IsDefaultOrEmpty) for (let owner = this.binder.ContainingSymbol; owner != null; owner = owner.ContainingSymbol) {
+      if (owner instanceof MethodSymbol) for (const parameter of (owner as MethodSymbol).TypeParameters)
+        if (parameter.Name == name) return this.At(new BoundTypeExpression(parameter), syntax);
+      if (owner instanceof NamedTypeSymbol) for (const parameter of (owner as NamedTypeSymbol).TypeParameters)
+        if (parameter.Name == name) return this.At(new BoundTypeExpression(parameter), syntax);
+    }
+    const candidates = this.binder.Context.GetScope(this.binder.File).Lookup(name);
+    if (!candidates.IsDefaultOrEmpty) return this.BindSymbols(candidates, name, typeArgs, syntax);
+    if (typeArgs.IsDefaultOrEmpty) {
+      if (name == "never") return this.At(new BoundTypeExpression(NeverTypeSymbol.Instance), syntax);
+      for (let index = SpecialType.Object as int; index <= (SpecialType.BigInteger as int); index++) {
+        const special = index as SpecialType;
+        if (SpecialTypes.Keyword(special) == name) return this.At(new BoundTypeExpression(this.binder.Special(special)), syntax);
+      }
+      if (name == "undefined") this.binder.Report(Descriptors.UndefinedNotAllowed, syntax, []);
+      else if (name == "any") this.binder.Report(Descriptors.AnyNotAllowed, syntax, []);
+      else if (name == "NaN" || name == "Infinity")
+        this.binder.Report(Descriptors.NotSupportedUseInstead, syntax, [name, name == "NaN" ? "double.NaN" : "double.PositiveInfinity"]);
+      else this.binder.Report(Descriptors.NameNotFound, syntax, [name]);
+    } else this.binder.Report(Descriptors.NameNotFound, syntax, [name]);
+    return this.Bad(syntax);
+  }
+  private BindSymbols(candidates: IEnumerable<Symbol>, name: string, types: ImmutableArray<TypeSymbol>, at: SyntaxNode): BoundExpression {
+    const all = ImmutableArray.CreateRange<Symbol>(candidates);
+    const methods = this.Methods(all);
+    if (!methods.IsDefaultOrEmpty) {
+      this.binder.Record(at, methods[0]);
+      return this.At(new BoundMethodGroup(null, name, methods, types), at);
+    }
+    for (const symbol of all) {
+      if (symbol instanceof FieldSymbol || (symbol instanceof PropertySymbol && symbol.IsStatic))
+        return this.SymbolExpression(symbol, at, types);
+    }
+    for (const symbol of all) {
+      if (symbol instanceof NamedTypeSymbol && (symbol as NamedTypeSymbol).OwnArity == types.Length) {
+        const named = symbol as NamedTypeSymbol;
+        this.binder.Record(at, named);
+        return this.At(new BoundTypeExpression(this.NamedOrNullable(types.Length == 0 ? named : named.Construct(types))), at);
+      }
+      if (symbol instanceof TypeAliasSymbol<TFile>) {
+        const alias = symbol as TypeAliasSymbol<TFile>;
+        if (alias.TypeParameters.Length == types.Length) {
+          this.binder.Record(at, alias);
+          const expanded = types.Length == 0 ? alias.Target : new TypeMap(alias.TypeParameters, types).Substitute(alias.Target);
+          return this.At(new BoundTypeExpression(expanded), at);
+        }
+      }
+      if (symbol instanceof TypeParameterSymbol && types.Length == 0)
+        return this.At(new BoundTypeExpression(symbol as TypeParameterSymbol), at);
+    }
+    for (const symbol of all) {
+      if (symbol instanceof NamespaceSymbol) return this.At(new BoundNamespaceExpression(symbol as NamespaceSymbol), at);
+      if (symbol instanceof FileModuleSymbol<TFile>)
+        return this.At(new BinderExpressionModule<TFile>((symbol as FileModuleSymbol<TFile>).File), at);
+    }
+    for (const symbol of all) if (symbol instanceof NamedTypeSymbol) {
+      this.binder.Report(types.Length == 0 ? Descriptors.TypeRequiresArguments : Descriptors.TypeNotGeneric,
+        at, [name, types.Length == 0 ? (symbol as NamedTypeSymbol).OwnArity : types.Length]);
+      return this.Bad(at);
+    }
+    this.binder.Report(Descriptors.NameNotFound, at, [name]);
+    return this.Bad(at);
+  }
+  SymbolExpression(symbol: Symbol, at: SyntaxNode, types: ImmutableArray<TypeSymbol>): BoundExpression {
+    this.binder.Record(at, symbol);
+    if (symbol instanceof LocalSymbol) return this.Narrow(new BoundLocal(symbol as LocalSymbol), at);
+    if (symbol instanceof ParameterSymbol) return this.Narrow(new BoundParameter(symbol as ParameterSymbol), at);
+    if (symbol instanceof FieldSymbol) return this.Narrow(new BoundFieldAccess(null, symbol as FieldSymbol), at);
+    if (symbol instanceof PropertySymbol)
+      return this.Narrow(new BoundPropertyAccess(null, symbol as PropertySymbol, ImmutableArray<BoundExpression>.Empty), at);
+    if (symbol instanceof MethodSymbol)
+      return this.At(new BoundMethodGroup(null, symbol.Name, ImmutableArray.Create<MethodSymbol>(symbol as MethodSymbol), types), at);
+    if (symbol instanceof TypeSymbol) return this.At(new BoundTypeExpression(symbol as TypeSymbol), at);
+    return this.Bad(at);
+  }
+  private get StaticContext(): bool {
+    for (let owner = this.binder.ContainingSymbol; owner != null; owner = owner.ContainingSymbol) {
+      if (owner instanceof MethodSymbol && (owner as MethodSymbol).MethodKind == MethodKind.LambdaMethod) continue;
+      if (owner instanceof MethodSymbol || owner instanceof FieldSymbol || owner instanceof PropertySymbol) return owner.IsStatic;
+    }
+    return false;
+  }
+  ImplicitThis(at: SyntaxNode): BoundExpression {
+    let type = this.binder.CurrentType;
+    if (type == null || this.StaticContext) {
+      this.binder.Report(Descriptors.ThisNotAvailable, at, []);
+      return this.Bad(at);
+    }
+    if (type.IsGenericType) {
+      const args = ImmutableArray.CreateBuilder<TypeSymbol>();
+      for (const parameter of type.TypeParameters) args.Add(parameter);
+      type = type.Construct(args.ToImmutable());
+    }
+    this.UsesThis = true;
+    return this.At(new BoundThis(type), at);
+  }
+
+  private BindInstanceOf(syntax: InstanceOfExpressionSyntax): BoundExpression {
+    const target = this.binder.BindType(syntax.Type);
+    const value = this.binder.BindValue(syntax.Expression);
+    if (target.IsErrorType || value.HasErrors) return this.binder.Literal(false, this.binder.BoolType, syntax);
+    if (value.Type == null) return this.Bad(syntax, value);
+    const source = value.Type;
+    const actual = target.StripNullable();
+    const stripped = source.StripNullable();
+    if (stripped instanceof NamedTypeSymbol && (stripped as NamedTypeSymbol).IsUnionType) {
+      const cases = (stripped as NamedTypeSymbol).UnionCases;
+      for (let i = 0; i < cases.Length; i++) if (cases[i].Equals(actual)) {
+        const test = new BoundTypeTest(this.Unwrap(value), actual, this.binder.BoolType, TypeTestKind.UnionCase, i);
+        test.OperandWasNullable = source instanceof NullableTypeSymbol;
+        return this.At(test, syntax);
+      }
+    }
+    if (!this.binder.Classifier.ClassifyExplicit(null, stripped, actual).Exists) {
+      this.binder.Report(Descriptors.InstanceOfImpossible, syntax, [source.ToDisplayString(), target.ToDisplayString()]);
+      return this.binder.Literal(false, this.binder.BoolType, syntax);
+    }
+    return this.At(new BoundTypeTest(value, actual, this.binder.BoolType), syntax);
+  }
+  Unwrap(value: BoundExpression): BoundExpression {
+    return value.Type instanceof NullableTypeSymbol ?
+      this.At(new BoundConversion(value, ConversionKind.FromNullable, (value.Type as NullableTypeSymbol).Underlying), value.Syntax) : value;
+  }
+  private BindConditional(syntax: ConditionalExpressionSyntax, target: TypeSymbol?): BoundExpression {
+    const condition = this.binder.Conversions.ConvertToBool(this.binder.BindValue(syntax.Condition), syntax.Condition);
+    const branches = FlowNarrowing.GetNarrowing(condition);
+    const saved = this.binder.Flow.SaveState();
+    let left: BoundExpression;
+    let right: BoundExpression;
+    try {
+      this.binder.Flow.Apply(branches.WhenTrue);
+      left = this.binder.BindValue(syntax.WhenTrue, target);
+      this.binder.Flow.RestoreState(saved);
+      this.binder.Flow.Apply(branches.WhenFalse);
+      right = this.binder.BindValue(syntax.WhenFalse, target);
+    } finally { this.binder.Flow.RestoreState(saved); }
+    if (target == null) {
+      if (left instanceof BoundUnbound && right.Type != null) left = this.Convert(left, right.Type, syntax.WhenTrue);
+      if (right instanceof BoundUnbound && left.Type != null) right = this.Convert(right, left.Type, syntax.WhenFalse);
+      target = this.BestCommonType(ImmutableArray.Create<BoundExpression>(left, right));
+    }
+    if (target == null) {
+      this.binder.Report(Descriptors.NoBestCommonType, syntax, [left.Type?.ToDisplayString() ?? "?", right.Type?.ToDisplayString() ?? "?"]);
+      return this.Bad(syntax, left, right);
+    }
+    return this.At(new BoundConditional(condition, this.Convert(left, target, syntax.WhenTrue),
+      this.Convert(right, target, syntax.WhenFalse), target), syntax);
+  }
+  BestCommonType(expressions: IEnumerable<BoundExpression>): TypeSymbol? {
+    const all = ImmutableArray.CreateRange<BoundExpression>(expressions);
+    const candidates = new List<TypeSymbol>();
+    let hasNull = false;
+    for (const expression of all) {
+      const type = expression.Type;
+      if (type == null || type.IsNeverType) continue;
+      if (type.IsErrorType) return this.binder.ErrorType;
+      if (type.IsNullType) { hasNull = true; continue; }
+      if (type instanceof NullableTypeSymbol) hasNull = true;
+      let found = false;
+      for (const candidate of candidates) if (candidate.Equals(type)) found = true;
+      if (!found) candidates.Add(type!);
+    }
+    if (candidates.Count == 0) return hasNull ? NullTypeSymbol.Instance : null;
+    for (let pass = 0; pass < 2; pass++) for (const candidate of candidates) {
+      const type = pass == 0 ? candidate : candidate.StripNullable();
+      let applicable = true;
+      for (const expression of all) {
+        const source = expression.Type;
+        if (source == null || source.IsNullType || source.IsNeverType) continue;
+        if (!this.binder.Classifier.ClassifyImplicit(expression, pass == 0 ? source : source.StripNullable(), type).Exists) {
+          applicable = false;
+          break;
+        }
+      }
+      if (applicable) return hasNull && !(type instanceof NullableTypeSymbol) ? new NullableTypeSymbol(type) : type;
+    }
+    return null;
+  }
+}

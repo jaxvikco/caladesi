@@ -1,0 +1,145 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { OutputKind, SourceFile } from "Caladesi.Compiler";
+import { SemanticModel, SemanticTokenType } from "Caladesi.Compiler.Semantics";
+import { SyntaxTree } from "Caladesi.Compiler.Syntax";
+import { Formatter } from "Caladesi.Compiler.Formatting";
+import { NativeCorpusHarness } from "./NativeCorpusHarness";
+
+class NativeCorpusSemanticCase {
+  readonly Position: int;
+  readonly Text: string;
+  readonly Model: SemanticModel<SourceFile>;
+  constructor(marked: string) {
+    this.Position = marked.IndexOf("|", StringComparison.Ordinal);
+    this.Text = marked.Remove(this.Position, 1);
+    const compilation = NativeCorpusHarness.Create(this.Text, OutputKind.ConsoleApplication, true);
+    this.Model = compilation.GetSemanticModel(compilation.SyntaxTrees[0]);
+  }
+}
+
+@TestClass
+export class NativeCorpusSemanticsTests {
+  private static Completion(marked: string, required: string[], forbidden: string[]): void {
+    const test = new NativeCorpusSemanticCase(marked);
+    const entries = test.Model.GetCompletions(test.Position);
+    for (const name of required) {
+      let found = false;
+      for (const entry of entries) if (entry.Label == name) found = true;
+      if (!found) throw new Exception("Missing completion " + name + "\n" + marked);
+    }
+    for (const name of forbidden)
+      for (const entry of entries)
+        if (entry.Label == name) throw new Exception("Forbidden completion " + name + "\n" + marked);
+  }
+  @TestMethod
+  HoverOnFunctionCallShowsSignature(): void {
+    const test = new NativeCorpusSemanticCase("function add(a: int, b: int): int { return a + b; }\nconst r = ad|d(1, 2);\nConsole.WriteLine(r);");
+    if (test.Model.GetHover(test.Position) != "function add(a: int, b: int): int") throw new Exception("Function hover");
+  }
+  @TestMethod
+  HoverOnLocalAndParameter(): void {
+    const test = new NativeCorpusSemanticCase("function f(count: int): void {\n  const total = count * 2;\n  Console.WriteLine(tot|al);\n}\nf(1);");
+    if (test.Model.GetHover(test.Position) != "(constant) total: int") throw new Exception("Local hover");
+    if (test.Model.GetHover(test.Text.IndexOf("count * 2", StringComparison.Ordinal) + 2) != "(parameter) count: int") throw new Exception("Parameter hover");
+  }
+  @TestMethod
+  DefinitionAndReferences(): void {
+    const test = new NativeCorpusSemanticCase("function square(x: int): int { return x * x; }\nconst a = squ|are(2);\nconst b = square(3);\nConsole.WriteLine(a + b);");
+    const symbol = test.Model.GetSymbolAt(test.Position);
+    if (symbol == null) throw new Exception("Missing call symbol");
+    const definition = test.Model.GetDefinition(symbol.Symbol);
+    if (definition == null || definition.Value.Span.Start != test.Text.IndexOf("square", StringComparison.Ordinal)) throw new Exception("Definition location");
+    const references = test.Model.FindReferences(symbol.Symbol);
+    if (references.Count != 3) throw new Exception("Expected three references");
+    let declaration = false;
+    for (const reference of references) if (reference.IsDeclaration) declaration = true;
+    if (!declaration) throw new Exception("References must include declaration");
+  }
+  @TestMethod
+  ReferencesIncludeImportSpecifiers(): void {
+    const text = "import { twice } from \"./lib\";\nConsole.WriteLine(twice(21));";
+    const compilation = NativeCorpusHarness.CreateFiles([
+      SyntaxTree.ParseText(text, "/proj/main.cala"),
+      SyntaxTree.ParseText("export function twice(x: int): int { return x * 2; }", "/proj/lib.cala")
+    ], OutputKind.ConsoleApplication, true);
+    const model = compilation.GetSemanticModel(compilation.SyntaxTrees[0]);
+    const symbol = model.GetSymbolAt(text.LastIndexOf("twice", StringComparison.Ordinal) + 1);
+    if (symbol == null) throw new Exception("Missing imported call symbol");
+    const references = model.FindReferences(symbol.Symbol);
+    if (references.Count != 3) throw new Exception("Imported function references");
+    let importReference = false;
+    for (const reference of references)
+      if (reference.Span.Start == text.IndexOf("twice", StringComparison.Ordinal) && !reference.IsDeclaration) importReference = true;
+    if (!importReference) throw new Exception("Import specifier reference missing");
+    NativeCorpusHarness.Execute(compilation, "42\n", 0);
+  }
+  @TestMethod
+  MemberCompletionOnString(): void {
+    NativeCorpusSemanticsTests.Completion("const s = \"hi\";\nConsole.WriteLine(s.|);", ["Length", "ToUpper"], ["let"]);
+  }
+  @TestMethod
+  MemberCompletionOnClassInstanceAndStatic(): void {
+    NativeCorpusSemanticsTests.Completion("class Dog { name = \"d\"; static count = 0; bark(): string { return \"woof\"; } }\nconst d = new Dog();\nd.|", ["name", "bark"], ["count"]);
+    NativeCorpusSemanticsTests.Completion("class Dog { name = \"d\"; static count = 0; }\nDog.|", ["count"], ["name"]);
+  }
+  @TestMethod
+  NamespaceCompletion(): void {
+    NativeCorpusSemanticsTests.Completion("import * as IO from \"System.IO\";\nIO.|", ["Path", "File"], []);
+  }
+  @TestMethod
+  ArrayCompletionIncludesExtensionsButOmitsExplicitInterfaceMembers(): void {
+    NativeCorpusSemanticsTests.Completion("const xs = [1, 2, 3];\nxs.|", ["Length", "Select"], ["Add", "Clear", "Remove"]);
+  }
+  @TestMethod
+  InterfaceCompletionIncludesInheritedInterfaceMembers(): void {
+    NativeCorpusSemanticsTests.Completion("interface Base { baseMember(): void; }\ninterface Derived extends Base { derivedMember(): void; }\nfunction use(value: Derived): void { value.| }", ["baseMember", "derivedMember"], []);
+  }
+  @TestMethod
+  TypeParameterCompletionIncludesConstraintMembers(): void {
+    NativeCorpusSemanticsTests.Completion("interface HasValue { getValue(): int; }\nfunction use<T extends HasValue>(value: T): int { return value.| }", ["getValue"], []);
+  }
+  @TestMethod
+  ListCompletionIncludesAdd(): void {
+    NativeCorpusSemanticsTests.Completion("const xs: List<int> = [1, 2, 3];\nxs.|", ["Add"], []);
+  }
+  @TestMethod
+  ScopeCompletionSeesLocalsAndKeywords(): void {
+    NativeCorpusSemanticsTests.Completion("function f(alpha: int): void {\n  const beta = 1;\n  al|\n}", ["alpha", "beta", "function", "Console"], []);
+  }
+  @TestMethod
+  SignatureHelpTracksActiveParameter(): void {
+    const test = new NativeCorpusSemanticCase("function add(a: int, b: int): int { return a + b; }\nadd(1, |);");
+    const help = test.Model.GetSignatureHelp(test.Position);
+    if (help == null || help.ActiveParameter != 1 || help.Signatures[0].Label != "add(a: int, b: int): int")
+      throw new Exception("Signature help active parameter/signature");
+  }
+  @TestMethod
+  DocumentSymbolsOutline(): void {
+    const compilation = NativeCorpusHarness.Create("class A { x = 1; m(): void {} }\nfunction f() {}\nconst c = 1;\nenum E { P, Q }\ntype T = { a: int };", OutputKind.ConsoleApplication, true);
+    const symbols = compilation.GetSemanticModel(compilation.SyntaxTrees[0]).GetDocumentSymbols();
+    const expected = ["A", "f", "c", "E", "T"];
+    if (symbols.Count != expected.Length) throw new Exception("Outline count");
+    for (let i = 0; i < expected.Length; i++)
+      if (symbols[i].Name != expected[i]) throw new Exception("Outline ordering");
+    if (symbols[0].Children.Count != 2 || symbols[0].Children[0].Name != "x" || symbols[0].Children[1].Name != "m") throw new Exception("Class outline");
+    if (symbols[3].Children.Count != 2 || symbols[3].Children[0].Name != "P" || symbols[3].Children[1].Name != "Q") throw new Exception("Enum outline");
+  }
+  @TestMethod
+  SemanticTokensClassifyNames(): void {
+    const compilation = NativeCorpusHarness.Create("class A { m(): void {} }\nfunction f(p: int) { const v = p; new A().m(); }\nf(1);", OutputKind.ConsoleApplication, true);
+    const tokens = compilation.GetSemanticModel(compilation.SyntaxTrees[0]).GetSemanticTokens();
+    for (const kind of [SemanticTokenType.Class, SemanticTokenType.Method, SemanticTokenType.Function, SemanticTokenType.Parameter, SemanticTokenType.Variable]) {
+      let found = false;
+      for (const token of tokens) if (token.Type == kind) found = true;
+      if (!found) throw new Exception("Missing semantic token kind " + kind);
+    }
+  }
+  @TestMethod
+  FormatterReindentsAndIsIdempotent(): void {
+    const source = "function f(a: int): int {\nif (a > 0) {\n      return a;   \n}\n\n\n\nreturn -a;\n}\nconst t = `x\n  y`;";
+    const once = Formatter.Format(SyntaxTree.ParseText(source));
+    if (once != "function f(a: int): int {\n  if (a > 0) {\n    return a;\n  }\n\n  return -a;\n}\nconst t = `x\n  y`;\n")
+      throw new Exception("Formatter expected output");
+    if (Formatter.Format(SyntaxTree.ParseText(once)) != once) throw new Exception("Formatter idempotence");
+  }
+}

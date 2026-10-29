@@ -4,10 +4,14 @@
   <PropertyGroup>
     <OutputType>Library</OutputType>
     <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>Caladesi.Build.Tasks.SelfHost</AssemblyName>
+    <AssemblyName Condition="'$(SelfHostReleaseIdentity)' == 'true'">Caladesi.Build.Tasks</AssemblyName>
     <RootNamespace>Caladesi.Build.Tasks</RootNamespace>
     <IsPackable>false</IsPackable>
     <CaladesiCompilerPath>$(CaladesiRepoRoot)src/Caladesi.Cli/bin/$(Configuration)/net10.0/calac.dll</CaladesiCompilerPath>
     <CaladesiTasksAssembly>$(CaladesiRepoRoot)src/Caladesi.Build.Tasks/bin/$(Configuration)/net10.0/Caladesi.Build.Tasks.dll</CaladesiTasksAssembly>
+    <CaladesiCompilerPath Condition="'$(UseArtifactsOutput)' == 'true'">$(ArtifactsPath)/bin/Caladesi.Cli/$(Configuration.ToLowerInvariant())/calac.dll</CaladesiCompilerPath>
+    <CaladesiTasksAssembly Condition="'$(UseArtifactsOutput)' == 'true'">$(ArtifactsPath)/bin/Caladesi.Build.Tasks/$(Configuration.ToLowerInvariant())/Caladesi.Build.Tasks.dll</CaladesiTasksAssembly>
     <CaladesiImplicitRuntimeReference>false</CaladesiImplicitRuntimeReference>
     <NoWarn>$(NoWarn);NU1903</NoWarn>
     <GenerateDependencyFile>false</GenerateDependencyFile>
@@ -19,7 +23,7 @@
     <ProjectReference Include="../Caladesi.Cli/Caladesi.Cli.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../Caladesi.Build.Tasks/Caladesi.Build.Tasks.csproj" ReferenceOutputAssembly="false" />
     <PackageReference Include="Microsoft.Build.Utilities.Core" PrivateAssets="all" ExcludeAssets="runtime" />
-    <CustomAdditionalCompileInputs Include="$(CaladesiRepoRoot)src/Caladesi.Cli/bin/$(Configuration)/net10.0/*.dll" />
+    <CustomAdditionalCompileInputs Include="$([System.IO.Path]::GetDirectoryName('$(CaladesiCompilerPath)'))/*.dll" />
   </ItemGroup>
 
   <Import Project="../Caladesi.Sdk/Sdk/Sdk.targets" />

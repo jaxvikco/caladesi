@@ -1,0 +1,545 @@
+import { List, Dictionary, IEnumerable } from "System.Collections.Generic";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { MemoryStream, Stream } from "System.IO";
+import { AssemblyHashAlgorithm, AssemblyFlags, TypeAttributes, FieldAttributes, MethodAttributes,
+  MethodImplAttributes, PropertyAttributes, ParameterAttributes, GenericParameterAttributes, MethodSemanticsAttributes } from "System.Reflection";
+import { Blob, BlobBuilder, BlobWriter, BlobContentId, BlobHandle, EntityHandle, GuidHandle, StringHandle,
+  TypeDefinitionHandle, MethodDefinitionHandle, FieldDefinitionHandle, PropertyDefinitionHandle,
+  StandaloneSignatureHandle, ILOpCode } from "System.Reflection.Metadata";
+import { MetadataTokens, MetadataRootBuilder, MethodBodyStreamEncoder, MethodBodyAttributes, BlobEncoder, CodedIndex } from "System.Reflection.Metadata.Ecma335";
+import { PEHeaderBuilder, ManagedPEBuilder, DebugDirectoryBuilder, CorFlags } from "System.Reflection.PortableExecutable";
+import { SHA256 } from "System.Security.Cryptography";
+import { OutputKind } from "../CompilationOptions";
+import { Diagnostic, DiagnosticSeverity } from "../Diagnostics/Diagnostic";
+import { Descriptors } from "../Diagnostics/Descriptors";
+import { DeclarationChecker } from "../DeclarationChecker";
+import { BoundAttribute } from "../BoundAttribute";
+import { TextSpan } from "../Text/TextSpan";
+import { SourceText } from "../Text/SourceText";
+import { Symbol, Accessibility, RefKind } from "../Symbols/Symbol";
+import { NamespaceSymbol } from "../Symbols/NamespaceSymbol";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { TypeParameterSymbol, TypeKind, VarianceKind } from "../Symbols/TypeSymbols";
+import { MethodSymbol, MethodKind, FieldSymbol, PropertySymbol } from "../Symbols/MemberSymbols";
+import { SourceNamedType } from "../Symbols/Source/SourceTypes";
+import { SourceUnionSymbol } from "../Symbols/Source/SourceTypeAliasTypes";
+import { SourceMethodSymbol, SourceFieldSymbol, SourcePropertySymbol } from "../Symbols/Source/SourceMembers";
+import { SynthesizedNamedType, SynthesizedMethodSymbol } from "../Symbols/Source/Synthesized";
+import { SynthesizedBodyKind } from "../Symbols/Source/SynthesizedBodyKind";
+import { DecoratorSyntax, FunctionDeclarationSyntax, ClassDeclarationSyntax, InterfaceDeclarationSyntax,
+  EnumDeclarationSyntax, TypeAliasDeclarationSyntax, PropertyDeclarationSyntax, MethodDeclarationSyntax,
+  ConstructorDeclarationSyntax, AccessorDeclarationSyntax, ParameterSyntax, VariableStatementSyntax } from "../Syntax/Nodes.Core";
+import { SyntaxNode } from "../Syntax/SyntaxElement";
+import { EmissionContext, EmitResult } from "./EmissionContext";
+import { Lowerer } from "./Lowerer";
+import { LoweredProgram } from "./LoweredProgram";
+import { MetadataEmitter } from "./MetadataEmitter";
+import { MethodBodyEmitter } from "./MethodBodyEmitter";
+import { SynthesizedBodyEmitter } from "./SynthesizedBodyEmitter";
+import { ILBuilder, SequencePoint } from "./ILBuilder";
+import { PortableDebugEmitter, MethodDebugInfo } from "./PortableDebugEmitter";
+import { AttributeBinder } from "./AttributeBinder";
+import { LoweringNotSupportedException } from "./Lowering/SuspensionSpiller";
+
+sealed class EmissionRows {
+  constructor(readonly Field: int, readonly Method: int, readonly Property: int) {}
+}
+sealed class EmissionAttribute {
+  constructor(readonly Parent: EntityHandle, readonly Constructor: EntityHandle, readonly Value: BlobHandle) {}
+}
+sealed class EmissionGenericParameter {
+  constructor(readonly Owner: EntityHandle, readonly Attributes: GenericParameterAttributes,
+    readonly Symbol: TypeParameterSymbol) {}
+}
+sealed class EmissionAttributeBinding<TSourceFile> {
+  constructor(private readonly bind: Func<TSourceFile, DecoratorSyntax, Symbol?, BoundAttribute?>,
+    private readonly file: TSourceFile) {}
+  Bind(decorator: DecoratorSyntax, context: Symbol?): BoundAttribute? {
+    return this.bind(this.file, decorator, context);
+  }
+}
+
+export sealed class AssemblyEmitter<TSourceFile> {
+  readonly Metadata: MetadataEmitter;
+  private readonly ilStream: BlobBuilder = new BlobBuilder();
+  private readonly bodies: MethodBodyStreamEncoder;
+  private program: LoweredProgram<TSourceFile>;
+  private readonly typeDefs: Dictionary<NamedTypeSymbol, TypeDefinitionHandle> = new Dictionary<NamedTypeSymbol, TypeDefinitionHandle>();
+  private readonly methodDefs: Dictionary<MethodSymbol, MethodDefinitionHandle> = new Dictionary<MethodSymbol, MethodDefinitionHandle>();
+  private readonly fieldDefs: Dictionary<FieldSymbol, FieldDefinitionHandle> = new Dictionary<FieldSymbol, FieldDefinitionHandle>();
+  private readonly propertyDefs: Dictionary<PropertySymbol, PropertyDefinitionHandle> = new Dictionary<PropertySymbol, PropertyDefinitionHandle>();
+  private readonly firstRows: Dictionary<NamedTypeSymbol, EmissionRows> = new Dictionary<NamedTypeSymbol, EmissionRows>();
+  private readonly members: Dictionary<NamedTypeSymbol, List<Symbol>> = new Dictionary<NamedTypeSymbol, List<Symbol>>();
+  private readonly attributes: List<EmissionAttribute> = new List<EmissionAttribute>();
+  private readonly genericParameters: List<EmissionGenericParameter> = new List<EmissionGenericParameter>();
+  private readonly methodDebug: Dictionary<MethodDefinitionHandle, MethodDebugInfo<TSourceFile>> =
+    new Dictionary<MethodDefinitionHandle, MethodDebugInfo<TSourceFile>>();
+  private readonly sequencePoints: Dictionary<MethodDefinitionHandle, List<SequencePoint>> =
+    new Dictionary<MethodDefinitionHandle, List<SequencePoint>>();
+  private entryPoint: MethodDefinitionHandle = new MethodDefinitionHandle();
+  private paramRow: int = 1;
+  private emitted: bool = false;
+
+  constructor(private readonly context: EmissionContext<TSourceFile>) {
+    this.Metadata = new MetadataEmitter(context.GetSpecialType, context.GetWellKnownType);
+    this.bodies = new MethodBodyStreamEncoder(this.ilStream);
+  }
+  get EntryPoint(): MethodDefinitionHandle { return this.entryPoint; }
+
+  Emit(peStream: Stream): EmitResult { return this.Emit(peStream, null, null); }
+  Emit(peStream: Stream, pdbStream: Stream?): EmitResult { return this.Emit(peStream, pdbStream, null); }
+  Emit(peStream: Stream, pdbStream: Stream?, pdbFileName: string?): EmitResult {
+    if (this.emitted) throw new InvalidOperationException("An assembly emitter can only emit once.");
+    this.emitted = true;
+    let diagnostics = this.context.GetDiagnostics();
+    if (AssemblyEmitter<TSourceFile>.HasErrors(diagnostics)) return new EmitResult(false, diagnostics);
+    try { this.program = Lowerer<TSourceFile>.Lower(this.context); }
+    catch (ex: LoweringNotSupportedException) {
+      const syntax = ex.Syntax;
+      const file = syntax == null || syntax.SyntaxTree == null ? null : syntax.SyntaxTree.FilePath;
+      const span = syntax == null ? new TextSpan() : syntax.Span;
+      return new EmitResult(false, this.context.GetDiagnostics().Add(
+        Diagnostic.Create(Descriptors.UnsupportedConstruct, file, span, ex.Message)));
+    }
+    diagnostics = this.context.GetDiagnostics();
+    if (AssemblyEmitter<TSourceFile>.HasErrors(diagnostics)) return new EmitResult(false, diagnostics);
+    const metadata = this.Metadata.Metadata;
+    const options = this.context.Options;
+    const mvid = metadata.ReserveGuid();
+    const moduleName = options.AssemblyName + (options.OutputKind == OutputKind.ConsoleApplication ? ".exe" : ".dll");
+    metadata.AddAssembly(metadata.GetOrAddString(options.AssemblyName), options.AssemblyVersion,
+      new StringHandle(), new BlobHandle(), 0 as AssemblyFlags, AssemblyHashAlgorithm.Sha1);
+    metadata.AddModule(0, metadata.GetOrAddString(moduleName), mvid.Handle, new GuidHandle(), new GuidHandle());
+    metadata.AddTypeDefinition(0 as TypeAttributes, new StringHandle(), metadata.GetOrAddString("<Module>"),
+      new EntityHandle(), MetadataTokens.FieldDefinitionHandle(1), MetadataTokens.MethodDefinitionHandle(1));
+    this.AssignHandles();
+    this.EmitTypes();
+    this.EmitAssemblyAttributes();
+    this.FlushAttributesAndGenericParameters();
+    diagnostics = this.context.GetDiagnostics();
+    if (AssemblyEmitter<TSourceFile>.HasErrors(diagnostics)) return new EmitResult(false, diagnostics);
+    if (this.program.EntryPoint != null && this.methodDefs.ContainsKey(this.program.EntryPoint))
+      this.entryPoint = this.methodDefs[this.program.EntryPoint];
+    const root = new MetadataRootBuilder(metadata, "v4.0.30319", false);
+    const debugDirectory = new DebugDirectoryBuilder();
+    if (pdbStream != null)
+      new PortableDebugEmitter<TSourceFile>(metadata, this.context.Documents, this.methodDebug, this.sequencePoints,
+        this.entryPoint).Emit(debugDirectory, pdbStream, pdbFileName ?? (options.AssemblyName + ".pdb"), root);
+    const header = options.OutputKind == OutputKind.ConsoleApplication ?
+      PEHeaderBuilder.CreateExecutableHeader() : PEHeaderBuilder.CreateLibraryHeader();
+    const builder = new ManagedPEBuilder(header, root, this.ilStream, null, null, null, debugDirectory, 128,
+      this.entryPoint, CorFlags.ILOnly, content => AssemblyEmitter<TSourceFile>.ContentId(content));
+    const image = new BlobBuilder();
+    const id = builder.Serialize(image);
+    new BlobWriter(mvid.Content).WriteGuid(id.Guid);
+    image.WriteContentTo(peStream);
+    return new EmitResult(true, diagnostics);
+  }
+  private static HasErrors(diagnostics: ImmutableArray<Diagnostic>): bool {
+    for (const diagnostic of diagnostics)
+      if (diagnostic.EffectiveSeverity == DiagnosticSeverity.Error) return true;
+    return false;
+  }
+  private static ContentId(blobs: IEnumerable<Blob>): BlobContentId {
+    const stream = new MemoryStream();
+    try {
+      for (const blob of blobs) {
+        const segment = blob.GetBytes();
+        stream.Write(segment.Array!, segment.Offset, segment.Count);
+      }
+      const hash = SHA256.HashData(stream.ToArray());
+      const prefix: byte[] = new byte[20];
+      Array.Copy(hash, prefix, 20);
+      return BlobContentId.FromHash(prefix);
+    } finally { stream.Dispose(); }
+  }
+  private AssignHandles(): void {
+    let nextType = 2;
+    let nextField = 1;
+    let nextMethod = 1;
+    let nextProperty = 1;
+    for (const type of this.program.Types) {
+      const handle = MetadataTokens.TypeDefinitionHandle(nextType++);
+      this.typeDefs[type] = handle;
+      this.Metadata.RegisterTypeDefinition(type, handle);
+      const members = new List<Symbol>();
+      for (const member of this.program.MembersOf(type))
+        if (member instanceof FieldSymbol || member instanceof MethodSymbol || member instanceof PropertySymbol) members.Add(member);
+      this.members[type] = members;
+      this.firstRows[type] = new EmissionRows(nextField, nextMethod, nextProperty);
+      if (type.TypeKind == TypeKind.Enum) nextField++;
+      for (const member of members) {
+        if (member instanceof FieldSymbol) {
+          const field = member as FieldSymbol;
+          const fieldHandle = MetadataTokens.FieldDefinitionHandle(nextField++);
+          this.fieldDefs[field.OriginalDefinition] = fieldHandle;
+          this.Metadata.RegisterField(field.OriginalDefinition, fieldHandle);
+        } else if (member instanceof MethodSymbol) {
+          const method = member as MethodSymbol;
+          const methodHandle = MetadataTokens.MethodDefinitionHandle(nextMethod++);
+          this.methodDefs[method.OriginalDefinition] = methodHandle;
+          this.Metadata.RegisterMethod(method.OriginalDefinition, methodHandle);
+        } else if (member instanceof PropertySymbol) {
+          const property = member as PropertySymbol;
+          const propertyHandle = MetadataTokens.PropertyDefinitionHandle(nextProperty++);
+          this.propertyDefs[property.OriginalDefinition] = propertyHandle;
+          this.Metadata.RegisterProperty(property.OriginalDefinition, propertyHandle);
+        }
+      }
+    }
+  }
+  private static NamespaceOf(type: NamedTypeSymbol): string {
+    return type.ContainingSymbol instanceof NamespaceSymbol ? (type.ContainingSymbol as NamespaceSymbol).ToDisplayString() : "";
+  }
+  private static TypeVisibility(type: NamedTypeSymbol, nested: bool): TypeAttributes {
+    switch (type.DeclaredAccessibility) {
+      case Accessibility.Public: return nested ? TypeAttributes.NestedPublic : TypeAttributes.Public;
+      case Accessibility.Private: return nested ? TypeAttributes.NestedPrivate : TypeAttributes.NotPublic;
+      case Accessibility.Protected: return nested ? TypeAttributes.NestedFamily : TypeAttributes.NotPublic;
+      case Accessibility.ProtectedAndInternal: return nested ? TypeAttributes.NestedFamANDAssem : TypeAttributes.NotPublic;
+      case Accessibility.ProtectedOrInternal: return nested ? TypeAttributes.NestedFamORAssem : TypeAttributes.NotPublic;
+      default: return nested ? TypeAttributes.NestedAssembly : TypeAttributes.NotPublic;
+    }
+  }
+  private EmitTypes(): void {
+    const metadata = this.Metadata.Metadata;
+    for (const type of this.program.Types) {
+      const handle = this.typeDefs[type];
+      this.Metadata.SetClassTypeParameterMap(type instanceof SynthesizedNamedType ?
+        (type as SynthesizedNamedType).MethodTypeParameterMap : null);
+      const members = this.members[type];
+      const rows = this.firstRows[type];
+      let flags = AssemblyEmitter<TSourceFile>.TypeVisibility(type, type.ContainingSymbol instanceof NamedTypeSymbol);
+      switch (type.TypeKind) {
+        case TypeKind.Interface: flags |= TypeAttributes.Interface | TypeAttributes.Abstract; break;
+        case TypeKind.Struct: flags |= TypeAttributes.Sealed | TypeAttributes.SequentialLayout; break;
+        case TypeKind.Enum: flags |= TypeAttributes.Sealed; break;
+        default:
+          if (type.IsStatic) flags |= TypeAttributes.Abstract | TypeAttributes.Sealed;
+          else {
+            if (type.IsAbstract) flags |= TypeAttributes.Abstract;
+            if (type.IsSealed) flags |= TypeAttributes.Sealed;
+          }
+          break;
+      }
+      let staticConstructor = false;
+      for (const member of members)
+        if (member instanceof MethodSymbol && (member as MethodSymbol).MethodKind == MethodKind.StaticConstructor) staticConstructor = true;
+      if (!staticConstructor && type.TypeKind != TypeKind.Interface) flags |= TypeAttributes.BeforeFieldInit;
+      const baseType = type.TypeKind != TypeKind.Interface && type.BaseType != null ?
+        this.Metadata.GetTypeEntity(type.BaseType) : new EntityHandle();
+      const ns = AssemblyEmitter<TSourceFile>.NamespaceOf(type);
+      const emitted = metadata.AddTypeDefinition(flags, String.IsNullOrEmpty(ns) ? new StringHandle() : metadata.GetOrAddString(ns),
+        metadata.GetOrAddString(type.MetadataName), baseType, MetadataTokens.FieldDefinitionHandle(rows.Field),
+        MetadataTokens.MethodDefinitionHandle(rows.Method));
+      if (!emitted.Equals(handle)) throw new InvalidOperationException("Type row mismatch for " + type.Name);
+      if (type.ContainingSymbol instanceof NamedTypeSymbol && this.typeDefs.ContainsKey(type.ContainingSymbol as NamedTypeSymbol))
+        metadata.AddNestedType(handle, this.typeDefs[type.ContainingSymbol as NamedTypeSymbol]);
+      for (const parameter of type.TypeParameters) this.AddGenericParameter(handle, parameter);
+      for (const iface of type.Interfaces) metadata.AddInterfaceImplementation(handle, this.Metadata.GetTypeEntity(iface));
+      this.EmitTypeAttributes(type, handle);
+      if (type.TypeKind == TypeKind.Enum)
+        metadata.AddFieldDefinition(FieldAttributes.Public | FieldAttributes.SpecialName | FieldAttributes.RTSpecialName,
+          metadata.GetOrAddString("value__"), this.Metadata.EncodeFieldSignature(type.EnumUnderlyingType!));
+      for (const member of members) if (member instanceof FieldSymbol) this.EmitField(member as FieldSymbol);
+      for (const member of members) if (member instanceof MethodSymbol) this.EmitMethod(type, member as MethodSymbol);
+      let propertyMap = false;
+      for (const member of members) {
+        if (!(member instanceof PropertySymbol)) continue;
+        if (!propertyMap) {
+          metadata.AddPropertyMap(handle, MetadataTokens.PropertyDefinitionHandle(rows.Property));
+          propertyMap = true;
+        }
+        this.EmitProperty(member as PropertySymbol);
+      }
+      this.EmitMethodImplementations(type, handle);
+      this.Metadata.SetClassTypeParameterMap(null);
+    }
+  }
+  private EmitMethodImplementations(type: NamedTypeSymbol, handle: TypeDefinitionHandle): void {
+    const metadata = this.Metadata.Metadata;
+    for (const member of this.members[type]) {
+      if (!(member instanceof MethodSymbol)) continue;
+      const method = member as MethodSymbol;
+      for (const implementation of method.ExplicitInterfaceImplementations)
+        metadata.AddMethodImplementation(handle, this.methodDefs[method.OriginalDefinition], this.Metadata.GetMethodEntity(implementation));
+    }
+    if (type.TypeKind != TypeKind.Class && type.TypeKind != TypeKind.Struct) return;
+    for (const iface of type.AllInterfaces) {
+      for (const member of iface.GetMembers()) {
+        if (!(member instanceof MethodSymbol)) continue;
+        const method = member as MethodSymbol;
+        if (method.IsStatic || method.MethodKind == MethodKind.Constructor || method.MethodKind == MethodKind.StaticConstructor) continue;
+        const implementation = DeclarationChecker<TSourceFile>.FindImplementation(type, method, false);
+        if (implementation == null || !this.methodDefs.ContainsKey(implementation.OriginalDefinition) ||
+            implementation.MetadataName == method.MetadataName) continue;
+        metadata.AddMethodImplementation(handle, this.methodDefs[implementation.OriginalDefinition], this.Metadata.GetMethodEntity(method));
+      }
+    }
+  }
+  private AddGenericParameter(owner: EntityHandle, parameter: TypeParameterSymbol): void {
+    let flags = GenericParameterAttributes.None;
+    if (parameter.Variance == VarianceKind.In) flags |= GenericParameterAttributes.Contravariant;
+    if (parameter.Variance == VarianceKind.Out) flags |= GenericParameterAttributes.Covariant;
+    if (parameter.HasReferenceTypeConstraint) flags |= GenericParameterAttributes.ReferenceTypeConstraint;
+    if (parameter.HasValueTypeConstraint) flags |= GenericParameterAttributes.NotNullableValueTypeConstraint;
+    if (parameter.HasConstructorConstraint) flags |= GenericParameterAttributes.DefaultConstructorConstraint;
+    this.genericParameters.Add(new EmissionGenericParameter(owner, flags, parameter));
+  }
+  private EmitField(field: FieldSymbol): void {
+    const metadata = this.Metadata.Metadata;
+    let flags = FieldAttributes.Private;
+    switch (field.DeclaredAccessibility) {
+      case Accessibility.Public: flags = FieldAttributes.Public; break;
+      case Accessibility.Protected: flags = FieldAttributes.Family; break;
+      case Accessibility.ProtectedAndInternal: flags = FieldAttributes.FamANDAssem; break;
+      case Accessibility.ProtectedOrInternal: flags = FieldAttributes.FamORAssem; break;
+      case Accessibility.Internal: flags = FieldAttributes.Assembly; break;
+    }
+    if (field.IsStatic) flags |= FieldAttributes.Static;
+    if (field.IsConst) flags |= FieldAttributes.Static | FieldAttributes.Literal | FieldAttributes.HasDefault;
+    else if (field.IsReadOnly) flags |= FieldAttributes.InitOnly;
+    const handle = metadata.AddFieldDefinition(flags, metadata.GetOrAddString(field.Name), this.Metadata.EncodeFieldSignature(field.Type));
+    if (!handle.Equals(this.fieldDefs[field.OriginalDefinition])) throw new InvalidOperationException("Field row mismatch for " + field.Name);
+    if (field.IsConst) {
+      let value: object? = field.ConstantValue == null ? null : field.ConstantValue.Value;
+      if (field.Type.TypeKind == TypeKind.Enum && value != null) value = Convert.ToInt32(value);
+      metadata.AddConstant(handle, value);
+    }
+    if (field instanceof SourceFieldSymbol<TSourceFile>) {
+      const source = field as SourceFieldSymbol<TSourceFile>;
+      if (!source.IsBackingField && source.Declaration != null)
+        this.EmitDecorators(AssemblyEmitter<TSourceFile>.Decorators(source.Declaration), handle, source.File, field.ContainingSymbol);
+    }
+  }
+  private EmitProperty(property: PropertySymbol): void {
+    const metadata = this.Metadata.Metadata;
+    const handle = metadata.AddProperty(PropertyAttributes.None, metadata.GetOrAddString(property.Name), this.Metadata.EncodePropertySignature(property));
+    if (!handle.Equals(this.propertyDefs[property.OriginalDefinition])) throw new InvalidOperationException("Property row mismatch for " + property.Name);
+    if (property.GetMethod != null && this.methodDefs.ContainsKey(property.GetMethod.OriginalDefinition))
+      metadata.AddMethodSemantics(handle, MethodSemanticsAttributes.Getter, this.methodDefs[property.GetMethod.OriginalDefinition]);
+    if (property.SetMethod != null && this.methodDefs.ContainsKey(property.SetMethod.OriginalDefinition))
+      metadata.AddMethodSemantics(handle, MethodSemanticsAttributes.Setter, this.methodDefs[property.SetMethod.OriginalDefinition]);
+    if (property instanceof SourcePropertySymbol<TSourceFile>) {
+      const source = property as SourcePropertySymbol<TSourceFile>;
+      if (source.Declaration != null)
+        this.EmitDecorators(AssemblyEmitter<TSourceFile>.Decorators(source.Declaration), handle, source.File, property.ContainingSymbol);
+    }
+  }
+  private static MethodFlags(type: NamedTypeSymbol, method: MethodSymbol): MethodAttributes {
+    let flags = MethodAttributes.Private;
+    switch (method.DeclaredAccessibility) {
+      case Accessibility.Public: flags = MethodAttributes.Public; break;
+      case Accessibility.Protected: flags = MethodAttributes.Family; break;
+      case Accessibility.ProtectedAndInternal: flags = MethodAttributes.FamANDAssem; break;
+      case Accessibility.ProtectedOrInternal: flags = MethodAttributes.FamORAssem; break;
+      case Accessibility.Internal: flags = MethodAttributes.Assembly; break;
+    }
+    flags |= MethodAttributes.HideBySig;
+    if (method.IsStatic) flags |= MethodAttributes.Static;
+    if (method.MethodKind == MethodKind.Constructor || method.MethodKind == MethodKind.StaticConstructor)
+      return flags | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName;
+    if (method.MethodKind == MethodKind.PropertyGet || method.MethodKind == MethodKind.PropertySet ||
+        method.MethodKind == MethodKind.UserDefinedOperator || method.MethodKind == MethodKind.Conversion)
+      flags |= MethodAttributes.SpecialName;
+    const isInterface = type.TypeKind == TypeKind.Interface;
+    if (!method.IsStatic) {
+      if (method.ExplicitInterfaceImplementations.Length > 0)
+        return (flags & ~MethodAttributes.MemberAccessMask) | MethodAttributes.Private | MethodAttributes.Virtual |
+          MethodAttributes.Final | MethodAttributes.NewSlot;
+      const virtualMethod = method.IsVirtual || method.IsAbstract || method.IsOverride || isInterface;
+      const implementsInterface = !isInterface && type.TypeKind != TypeKind.Enum && type.AllInterfaces.Length > 0 &&
+        method.DeclaredAccessibility == Accessibility.Public && !virtualMethod &&
+        (method.MethodKind == MethodKind.Ordinary || method.MethodKind == MethodKind.PropertyGet || method.MethodKind == MethodKind.PropertySet);
+      if (virtualMethod || implementsInterface) {
+        flags |= MethodAttributes.Virtual;
+        if (!method.IsOverride) flags |= MethodAttributes.NewSlot;
+        if (method.IsAbstract) flags |= MethodAttributes.Abstract;
+        if ((method.IsSealed && method.IsOverride) || implementsInterface) flags |= MethodAttributes.Final;
+      }
+    }
+    if (isInterface && method.IsAbstract) flags |= MethodAttributes.Abstract;
+    return flags;
+  }
+  private EmitMethod(type: NamedTypeSymbol, method: MethodSymbol): void {
+    const metadata = this.Metadata.Metadata;
+    const flags = AssemblyEmitter<TSourceFile>.MethodFlags(type, method);
+    let offset = -1;
+    let localSignature = new StandaloneSignatureHandle();
+    let il: ILBuilder? = null;
+    const [hasFile, sourceFile] = this.program.MethodFiles.TryGetValue(method);
+    if ((flags & MethodAttributes.Abstract) == (0 as MethodAttributes)) {
+      il = new ILBuilder();
+      let source: SourceText? = null;
+      if (hasFile && this.context.SourceTexts.ContainsKey(sourceFile)) source = this.context.SourceTexts[sourceFile];
+      this.EmitBody(type, method, il, source);
+      localSignature = this.LocalSignature(il);
+      offset = this.bodies.AddMethodBody(il.Encoder, il.MaxStack, localSignature,
+        il.Locals.Count > 0 ? MethodBodyAttributes.InitLocals : MethodBodyAttributes.None);
+    }
+    const handle = metadata.AddMethodDefinition(flags, MethodImplAttributes.IL | MethodImplAttributes.Managed,
+      metadata.GetOrAddString(method.MetadataName), this.Metadata.EncodeMethodSignature(method), offset, MetadataTokens.ParameterHandle(this.paramRow));
+    if (!handle.Equals(this.methodDefs[method.OriginalDefinition])) throw new InvalidOperationException("Method row mismatch for " + method.Name);
+    if (method instanceof SourceMethodSymbol<TSourceFile>) {
+      const source = method as SourceMethodSymbol<TSourceFile>;
+      if (source.Declaration != null)
+        this.EmitDecorators(AssemblyEmitter<TSourceFile>.Decorators(source.Declaration), handle, source.File, type);
+    }
+    for (const parameter of method.Parameters) {
+      let parameterFlags = ParameterAttributes.None;
+      if (parameter.RefKind == RefKind.Out) parameterFlags |= ParameterAttributes.Out;
+      if (parameter.RefKind == RefKind.In) parameterFlags |= ParameterAttributes.In;
+      if (parameter.IsOptional) parameterFlags |= ParameterAttributes.Optional;
+      if (parameter.DefaultValue != null) parameterFlags |= ParameterAttributes.HasDefault;
+      const parameterHandle = metadata.AddParameter(parameterFlags, metadata.GetOrAddString(parameter.Name), parameter.Ordinal + 1);
+      this.paramRow++;
+      if (parameter.DefaultValue != null) {
+        let value: object? = parameter.DefaultValue.Value;
+        if (parameter.Type.StripNullable().TypeKind == TypeKind.Enum && value != null) value = Convert.ToInt32(value);
+        metadata.AddConstant(parameterHandle, value);
+      }
+      if (parameter.IsParams) this.AddAttribute(parameterHandle, "System.ParamArrayAttribute");
+      if (type instanceof SourceNamedType<TSourceFile> && parameter.DeclaringSyntax != null)
+        this.EmitDecorators(AssemblyEmitter<TSourceFile>.Decorators(parameter.DeclaringSyntax), parameterHandle,
+          (type as SourceNamedType<TSourceFile>).File, type);
+    }
+    for (const parameter of method.TypeParameters) this.AddGenericParameter(handle, parameter);
+    if (method.IsExtensionMethod && method.IsStatic) this.AddAttribute(handle, "System.Runtime.CompilerServices.ExtensionAttribute");
+    if (il != null) {
+      this.methodDebug[handle] = new MethodDebugInfo<TSourceFile>(il.Locals, localSignature, il.Offset, hasFile ? sourceFile : null);
+      this.sequencePoints[handle] = il.SequencePoints;
+    }
+  }
+  private LocalSignature(il: ILBuilder): StandaloneSignatureHandle {
+    if (il.Locals.Count == 0) return new StandaloneSignatureHandle();
+    const builder = new BlobBuilder();
+    const encoder = new BlobEncoder(builder).LocalVariableSignature(il.Locals.Count);
+    for (const local of il.Locals) this.Metadata.EncodeType(encoder.AddVariable().Type(), local.Type);
+    return this.Metadata.Metadata.AddStandaloneSignature(this.Metadata.Metadata.GetOrAddBlob(builder));
+  }
+  private EmitBody(type: NamedTypeSymbol, method: MethodSymbol, il: ILBuilder, source: SourceText?): void {
+    let kind = SynthesizedBodyKind.None;
+    if (method instanceof SourceMethodSymbol<TSourceFile>) kind = (method as SourceMethodSymbol<TSourceFile>).SynthesizedKind;
+    else if (method instanceof SynthesizedMethodSymbol) kind = (method as SynthesizedMethodSymbol).SynthesizedKind;
+    const sourceConstructor = method instanceof SourceMethodSymbol<TSourceFile> &&
+      (kind == SynthesizedBodyKind.DefaultConstructor || kind == SynthesizedBodyKind.InheritedConstructor || kind == SynthesizedBodyKind.StaticConstructor);
+    if (kind != SynthesizedBodyKind.None && kind != SynthesizedBodyKind.Custom && !sourceConstructor) {
+      new SynthesizedBodyEmitter<TSourceFile>(this.Metadata, method, il, this.context.GetSpecialType, this.context.GetWellKnownType).Emit();
+      return;
+    }
+    if (this.program.Bodies.ContainsKey(method)) {
+      new MethodBodyEmitter(this.Metadata, method, il, this.context.GetSpecialType, this.context.GetWellKnownType, source)
+        .EmitBody(this.program.Bodies[method]);
+      return;
+    }
+    if (method.MethodKind == MethodKind.Constructor) {
+      if (!type.IsValueType) {
+        il.Ldarg(0);
+        let constructor: MethodSymbol? = null;
+        if (type.BaseType != null)
+          for (const candidate of type.BaseType.InstanceConstructors)
+            if (candidate.Parameters.Length == 0) { constructor = candidate; break; }
+        if (constructor != null) il.Call(ILOpCode.Call, this.Metadata.GetMethodEntity(constructor), 1, 0);
+        else il.Op(ILOpCode.Pop, -1);
+      }
+      il.Op(ILOpCode.Ret, 0);
+      return;
+    }
+    if (method.MethodKind == MethodKind.StaticConstructor) { il.Op(ILOpCode.Ret, 0); return; }
+    il.Op(ILOpCode.Ldnull, 1);
+    il.Op(ILOpCode.Throw, -1);
+  }
+  private AddAttribute(parent: EntityHandle, name: string): void {
+    const type = this.context.GetWellKnownType(name);
+    if (type == null) return;
+    for (const constructor of type.InstanceConstructors) {
+      if (constructor.Parameters.Length != 0) continue;
+      const blob = new BlobBuilder();
+      blob.WriteUInt16(1);
+      blob.WriteUInt16(0);
+      this.attributes.Add(new EmissionAttribute(parent, this.Metadata.GetMethodEntity(constructor), this.Metadata.Metadata.GetOrAddBlob(blob)));
+      return;
+    }
+  }
+  private EmitTypeAttributes(type: NamedTypeSymbol, handle: TypeDefinitionHandle): void {
+    if (type instanceof SourceUnionSymbol<TSourceFile>)
+      this.AddAttribute(handle, "Caladesi.Runtime.CaladesiUnionAttribute");
+    if (type.TypeKind == TypeKind.Struct && type.IsReadOnlyStruct)
+      this.AddAttribute(handle, "System.Runtime.CompilerServices.IsReadOnlyAttribute");
+    if (type instanceof SourceNamedType<TSourceFile>) {
+      const source = type as SourceNamedType<TSourceFile>;
+      this.EmitDecorators(source.DecoratorSyntaxes, handle, source.File, source);
+    }
+    let extensionContainer = false;
+    if (type.IsStatic)
+      for (const member of type.GetMembers())
+        if (member instanceof MethodSymbol && (member as MethodSymbol).IsExtensionMethod) extensionContainer = true;
+    if (extensionContainer) this.AddAttribute(handle, "System.Runtime.CompilerServices.ExtensionAttribute");
+  }
+  private EmitDecorators(decorators: IEnumerable<DecoratorSyntax>, parent: EntityHandle, file: TSourceFile, symbol: Symbol?): void {
+    const bind = this.context.BindAttribute;
+    if (bind == null) return;
+    const binding = new EmissionAttributeBinding<TSourceFile>(bind!, file);
+    const binder = new AttributeBinder(binding.Bind,
+      this.context.GetAssemblyName, this.context.GetSpecialType);
+    for (const decorator of decorators) {
+      const result = binder.Bind(decorator, symbol);
+      if (result == null) continue;
+      const constructor = result!.Item1;
+      const blob = result!.Item2;
+      this.attributes.Add(new EmissionAttribute(parent, this.Metadata.GetMethodEntity(constructor), this.Metadata.Metadata.GetOrAddBlob(blob)));
+    }
+  }
+  private static Decorators(node: SyntaxNode): IEnumerable<DecoratorSyntax> {
+    if (node instanceof FunctionDeclarationSyntax) return SourceNamedType<TSourceFile>.CollectDecorators((node as FunctionDeclarationSyntax).Decorators);
+    if (node instanceof ClassDeclarationSyntax) return SourceNamedType<TSourceFile>.CollectDecorators((node as ClassDeclarationSyntax).Decorators);
+    if (node instanceof InterfaceDeclarationSyntax) return SourceNamedType<TSourceFile>.CollectDecorators((node as InterfaceDeclarationSyntax).Decorators);
+    if (node instanceof EnumDeclarationSyntax) return SourceNamedType<TSourceFile>.CollectDecorators((node as EnumDeclarationSyntax).Decorators);
+    if (node instanceof TypeAliasDeclarationSyntax) return SourceNamedType<TSourceFile>.CollectDecorators((node as TypeAliasDeclarationSyntax).Decorators);
+    if (node instanceof PropertyDeclarationSyntax) return SourceNamedType<TSourceFile>.CollectDecorators((node as PropertyDeclarationSyntax).Decorators);
+    if (node instanceof MethodDeclarationSyntax) return SourceNamedType<TSourceFile>.CollectDecorators((node as MethodDeclarationSyntax).Decorators);
+    if (node instanceof ConstructorDeclarationSyntax) return SourceNamedType<TSourceFile>.CollectDecorators((node as ConstructorDeclarationSyntax).Decorators);
+    if (node instanceof AccessorDeclarationSyntax) return SourceNamedType<TSourceFile>.CollectDecorators((node as AccessorDeclarationSyntax).Decorators);
+    if (node instanceof ParameterSyntax) return SourceNamedType<TSourceFile>.CollectDecorators((node as ParameterSyntax).Decorators);
+    if (node instanceof VariableStatementSyntax) return SourceNamedType<TSourceFile>.CollectDecorators((node as VariableStatementSyntax).Decorators);
+    return ImmutableArray<DecoratorSyntax>.Empty;
+  }
+  private EmitAssemblyAttributes(): void {
+    const options = this.context.Options;
+    if (options.TargetFramework == null) return;
+    const type = this.context.GetWellKnownType("System.Runtime.Versioning.TargetFrameworkAttribute");
+    if (type == null) return;
+    for (const constructor of type.InstanceConstructors) {
+      if (constructor.Parameters.Length != 1) continue;
+      const blob = new BlobBuilder();
+      blob.WriteUInt16(1);
+      blob.WriteSerializedString(options.TargetFramework);
+      if (options.TargetFrameworkDisplayName != null) {
+        blob.WriteUInt16(1);
+        blob.WriteByte(0x54);
+        blob.WriteByte(0x0E);
+        blob.WriteSerializedString("FrameworkDisplayName");
+        blob.WriteSerializedString(options.TargetFrameworkDisplayName);
+      } else blob.WriteUInt16(0);
+      this.attributes.Add(new EmissionAttribute(EntityHandle.AssemblyDefinition,
+        this.Metadata.GetMethodEntity(constructor), this.Metadata.Metadata.GetOrAddBlob(blob)));
+      return;
+    }
+  }
+  private FlushAttributesAndGenericParameters(): void {
+    this.genericParameters.Sort((a, b) => {
+      const ownerOrder = CodedIndex.TypeOrMethodDef(a.Owner).CompareTo(CodedIndex.TypeOrMethodDef(b.Owner));
+      return ownerOrder != 0 ? ownerOrder : a.Symbol.Ordinal.CompareTo(b.Symbol.Ordinal);
+    });
+    const metadata = this.Metadata.Metadata;
+    for (const row of this.genericParameters) {
+      const handle = metadata.AddGenericParameter(row.Owner, row.Attributes, metadata.GetOrAddString(row.Symbol.Name), row.Symbol.Ordinal);
+      this.Metadata.SetClassTypeParameterMap(row.Symbol.Container instanceof SynthesizedNamedType ?
+        (row.Symbol.Container as SynthesizedNamedType).MethodTypeParameterMap : null);
+      for (const constraint of row.Symbol.ConstraintTypes) metadata.AddGenericParameterConstraint(handle, this.Metadata.GetTypeEntity(constraint));
+      this.Metadata.SetClassTypeParameterMap(null);
+    }
+    this.attributes.Sort((a, b) => CodedIndex.HasCustomAttribute(a.Parent).CompareTo(CodedIndex.HasCustomAttribute(b.Parent)));
+    for (const attribute of this.attributes) metadata.AddCustomAttribute(attribute.Parent, attribute.Constructor, attribute.Value);
+  }
+}

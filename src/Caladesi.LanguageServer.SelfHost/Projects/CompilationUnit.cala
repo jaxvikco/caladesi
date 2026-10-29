@@ -1,4 +1,4 @@
-import { Compilation, CompilationOptions } from "Caladesi.Compiler";
+import { Compilation, CompilationOptions, SourceFile } from "Caladesi.Compiler";
 import { SemanticModel } from "Caladesi.Compiler.Semantics";
 import { ReferenceSet } from "Caladesi.Compiler.Symbols.Metadata";
 import { SyntaxTree } from "Caladesi.Compiler.Syntax";
@@ -6,7 +6,7 @@ import { Workspace } from "../Workspace";
 
 export sealed class CompilationUnit {
   private readonly _trees: Dictionary<string, [string, SyntaxTree]> = new Dictionary<string, [string, SyntaxTree]>(StringComparer.Ordinal);
-  private readonly _models: Dictionary<SyntaxTree, SemanticModel> = new Dictionary<SyntaxTree, SemanticModel>();
+  private readonly _models: Dictionary<SyntaxTree, SemanticModel<SourceFile>> = new Dictionary<SyntaxTree, SemanticModel<SourceFile>>();
   private readonly _generated: SyntaxTree?;
   private _compilation: Compilation? = null;
   private _filesChanged: bool = true;
@@ -87,10 +87,10 @@ export sealed class CompilationUnit {
     }
     return null;
   }
-  GetModel(compilation: Compilation, tree: SyntaxTree): SemanticModel {
+  GetModel(compilation: Compilation, tree: SyntaxTree): SemanticModel<SourceFile> {
     const [found, cached] = this._models.TryGetValue(tree);
     if (found) return cached;
-    const model: SemanticModel = compilation.GetSemanticModel(tree);
+    const model: SemanticModel<SourceFile> = compilation.GetSemanticModel(tree);
     this._models[tree] = model;
     return model;
   }

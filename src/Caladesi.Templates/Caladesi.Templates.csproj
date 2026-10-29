@@ -29,4 +29,5 @@
       <None Include="@(StampedProject)" Pack="true" PackagePath="content/%(StampedProject.PackageDir)%(StampedProject.Filename)%(StampedProject.Extension)" />
     </ItemGroup>
   </Target>
+  <Import Project="../../eng/NativePackaging.targets" />
 </Project>

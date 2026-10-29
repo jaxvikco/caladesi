@@ -1,0 +1,295 @@
+import { List, HashSet, IReadOnlyList } from "System.Collections.Generic";
+import { SyntaxNode } from "../Syntax/SyntaxElement";
+import { SyntaxToken } from "../Syntax/SyntaxToken";
+import { SyntaxKind } from "../Syntax/SyntaxKind";
+import { ParameterSyntax, FunctionDeclarationSyntax, MethodDeclarationSyntax, ConstructorDeclarationSyntax,
+  ArrowFunctionSyntax, FunctionExpressionSyntax, AccessorDeclarationSyntax, BlockSyntax, ForStatementSyntax,
+  ForOfStatementSyntax, CatchClauseSyntax, SwitchSectionSyntax, CompilationUnitSyntax, MemberAccessExpressionSyntax,
+  QualifiedNameSyntax, InvocationExpressionSyntax, NewExpressionSyntax, ArgumentListSyntax } from "../Syntax/Nodes.Core";
+import { Symbol, Accessibility } from "../Symbols/Symbol";
+import { NamespaceSymbol } from "../Symbols/NamespaceSymbol";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { TypeSymbol, TypeKind, ArrayTypeSymbol, TypeParameterSymbol } from "../Symbols/TypeSymbols";
+import { MethodSymbol, MethodKind, FieldSymbol, PropertySymbol, ParameterSymbol, LocalSymbol } from "../Symbols/MemberSymbols";
+import { MemberLookup } from "../Symbols/MemberLookup";
+import { SpecialType } from "../Symbols/SpecialType";
+import { TypeAliasSymbol } from "../Symbols/Source/SourceTypes";
+import { SourceModuleClassSymbol } from "../Symbols/Source/SourceModuleClass";
+import { FileModuleSymbol } from "../FileScope";
+import { SemanticModel } from "./SemanticModel";
+import { SymbolDisplay } from "./SymbolDisplay";
+import { CompletionEntry, CompletionKind, SignatureHelpInfo, SignatureEntry } from "./SemanticModelTypes";
+
+class SemanticMemberWalk<TFile> {
+  constructor(private readonly completion: SemanticCompletion<TFile>, private readonly staticOnly: bool) {}
+  Visit(type: TypeSymbol): bool { return this.completion.VisitMembers(type, this.staticOnly); }
+}
+
+export sealed class SemanticCompletion<TFile> {
+  private readonly entries = new List<CompletionEntry>();
+  private readonly seen = new HashSet<string>(StringComparer.Ordinal);
+  private static readonly keywords: string[] = [
+    "abstract", "as", "async", "await", "break", "case", "catch", "class", "const", "constructor", "continue", "default", "do", "else", "enum",
+    "export", "extends", "false", "finally", "for", "function", "get", "if", "implements", "import", "instanceof", "interface", "let",
+    "new", "null", "of", "override", "private", "protected", "readonly", "return", "satisfies", "sealed", "set", "static", "struct", "super",
+    "switch", "this", "throw", "true", "try", "type", "typeof", "using", "while", "yield"
+  ];
+  constructor(private readonly model: SemanticModel<TFile>) {}
+  private Add(label: string, kind: CompletionKind): void { this.Add(label, kind, null, null); }
+  private Add(label: string, kind: CompletionKind, detail: string?): void { this.Add(label, kind, detail, null); }
+  private Add(label: string, kind: CompletionKind, detail: string?, insert: string?): void {
+    if (label.Length == 0 || label.Contains('<') || label.Contains('$') || label.Contains('.')) return;
+    if (this.seen.Add(label)) this.entries.Add(new CompletionEntry(label, kind, detail, insert));
+  }
+  private static IsIdentChar(value: char): bool { return char.IsLetterOrDigit(value) || value == '_' || value == '$'; }
+  GetCompletions(position: int): IReadOnlyList<CompletionEntry> {
+    const text = this.model.Tree.Text.Text;
+    position = Math.Clamp(position, 0, text.Length);
+    let prefixStart = position;
+    while (prefixStart > 0 && SemanticCompletion<TFile>.IsIdentChar(text[prefixStart - 1])) prefixStart--;
+    if (prefixStart > 0 && text[prefixStart - 1] == '.') {
+      this.MemberCompletions(prefixStart - 1);
+      return this.entries;
+    }
+    for (const declaration of this.model.Declarations) {
+      const symbol = declaration.Symbol;
+      if (declaration.Tree != this.model.Tree || (!(symbol instanceof LocalSymbol) && !(symbol instanceof ParameterSymbol)) ||
+        declaration.Position >= position) continue;
+      const token = this.model.Tree.Root.FindToken(declaration.Position);
+      if (token == null) continue;
+      const scope = SemanticCompletion<TFile>.ScopeNodeOf(token);
+      if (scope == null || scope.Start > position || scope.End < position) continue;
+      this.Add(symbol.Name, CompletionKind.Variable, SymbolDisplay<TFile>.Describe(symbol));
+    }
+    const file = this.model.Compilation.GetFile(this.model.Tree);
+    for (const pair of this.model.Compilation.GetScope(file).VisibleNames())
+      this.Add(pair.Item1, SemanticCompletion<TFile>.KindOf(pair.Item2), SymbolDisplay<TFile>.Describe(pair.Item2));
+    for (const keyword of SemanticCompletion<TFile>.keywords) this.Add(keyword, CompletionKind.Keyword);
+    return this.entries;
+  }
+  private static ScopeNodeOf(declaration: SyntaxToken): SyntaxNode? {
+    const parameter = declaration.Parent instanceof ParameterSyntax;
+    for (let node = declaration.Parent; node != null; node = node.Parent) {
+      if (parameter && (node instanceof FunctionDeclarationSyntax || node instanceof MethodDeclarationSyntax ||
+        node instanceof ConstructorDeclarationSyntax || node instanceof ArrowFunctionSyntax ||
+        node instanceof FunctionExpressionSyntax || node instanceof AccessorDeclarationSyntax)) return node;
+      if (!parameter && (node instanceof BlockSyntax || node instanceof ForStatementSyntax || node instanceof ForOfStatementSyntax ||
+        node instanceof CatchClauseSyntax || node instanceof SwitchSectionSyntax || node instanceof CompilationUnitSyntax)) return node;
+    }
+    return null;
+  }
+  private static KindOf(symbol: Symbol): CompletionKind {
+    const original = symbol.OriginalSymbolDefinition;
+    if (original instanceof NamespaceSymbol || original instanceof FileModuleSymbol<TFile>) return CompletionKind.Module;
+    if (original instanceof NamedTypeSymbol) {
+      const kind = (original as NamedTypeSymbol).TypeKind;
+      if (kind == TypeKind.Interface) return CompletionKind.Interface;
+      if (kind == TypeKind.Enum) return CompletionKind.Enum;
+      if (kind == TypeKind.Struct) return CompletionKind.Struct;
+      return CompletionKind.Class;
+    }
+    if (original instanceof TypeAliasSymbol<TFile>) return CompletionKind.TypeAlias;
+    if (original instanceof TypeParameterSymbol) return CompletionKind.TypeParameter;
+    if (original instanceof MethodSymbol) return original.ContainingSymbol instanceof SourceModuleClassSymbol<TFile> ||
+      original.ContainingType == null ? CompletionKind.Function : CompletionKind.Method;
+    if (original instanceof PropertySymbol) return CompletionKind.Property;
+    if (original instanceof FieldSymbol) {
+      const field = original as FieldSymbol;
+      if (field.IsConst && field.ContainingType != null && field.ContainingType.TypeKind == TypeKind.Enum) return CompletionKind.EnumMember;
+      return field.IsConst ? CompletionKind.Constant : CompletionKind.Field;
+    }
+    return CompletionKind.Variable;
+  }
+  private SymbolOfExpression(expression: SyntaxNode): Symbol? {
+    const recorded = this.model.Compilation.RecordedSymbols;
+    if (recorded == null) return null;
+    const key = expression instanceof MemberAccessExpressionSyntax ? (expression as MemberAccessExpressionSyntax).Name : expression;
+    if (recorded.ContainsKey(key)) return recorded[key];
+    if (expression instanceof QualifiedNameSyntax) {
+      const right = (expression as QualifiedNameSyntax).Right;
+      if (recorded.ContainsKey(right)) return recorded[right];
+    }
+    return null;
+  }
+  private MemberCompletions(dotPosition: int): void {
+    const dot = this.model.Tree.Root.FindToken(dotPosition);
+    if (dot == null) return;
+    const parent = dot.Parent;
+    let receiver: SyntaxNode? = null;
+    if (parent instanceof MemberAccessExpressionSyntax && (parent as MemberAccessExpressionSyntax).OperatorToken.Start == dot.Start)
+      receiver = (parent as MemberAccessExpressionSyntax).Expression;
+    else if (parent instanceof QualifiedNameSyntax && (parent as QualifiedNameSyntax).DotToken.Start == dot.Start)
+      receiver = (parent as QualifiedNameSyntax).Left;
+    if (receiver == null) return;
+    const symbol = this.SymbolOfExpression(receiver);
+    let type: TypeSymbol? = null;
+    const recorded = this.model.Compilation.RecordedTypes;
+    if (recorded != null && recorded.ContainsKey(receiver)) type = recorded[receiver];
+    if (symbol instanceof NamespaceSymbol) {
+      const ns = symbol as NamespaceSymbol;
+      for (const child of ns.GetNamespaceMembers()) this.Add(child.Name, CompletionKind.Module);
+      for (const member of ns.GetTypeMembers())
+        if (member.DeclaredAccessibility == Accessibility.Public) this.Add(member.Name, SemanticCompletion<TFile>.KindOf(member));
+      return;
+    }
+    if (symbol instanceof FileModuleSymbol<TFile>) {
+      for (const item of this.model.Compilation.GetScope((symbol as FileModuleSymbol<TFile>).File).AllExports())
+        this.Add(item.Name, SemanticCompletion<TFile>.KindOf(item), SymbolDisplay<TFile>.Describe(item));
+      return;
+    }
+    if (symbol instanceof NamedTypeSymbol) { this.AddMembers(symbol as NamedTypeSymbol, true); return; }
+    if (type == null) {
+      if (symbol instanceof LocalSymbol) type = (symbol as LocalSymbol).Type;
+      else if (symbol instanceof ParameterSymbol) type = (symbol as ParameterSymbol).Type;
+      else if (symbol instanceof FieldSymbol) type = (symbol as FieldSymbol).Type;
+      else if (symbol instanceof PropertySymbol) type = (symbol as PropertySymbol).Type;
+    }
+    if (type == null || type.IsErrorType) return;
+    type = type.StripNullable();
+    this.AddMembers(type, false);
+    this.AddExtensionMethods(type);
+  }
+  private static IsUserVisible(symbol: Symbol): bool {
+    const access = symbol.DeclaredAccessibility;
+    return symbol.Name.Length != 0 && symbol.Name[0] != '<' && !symbol.Name.Contains('$') && !symbol.Name.Contains('.') &&
+      (access == Accessibility.Public || access == Accessibility.Protected || access == Accessibility.ProtectedOrInternal ||
+      (access == Accessibility.Internal && symbol.IsFromSource));
+  }
+  private AddMembers(type: TypeSymbol, staticOnly: bool): void {
+    const walker = new SemanticMemberWalk<TFile>(this, staticOnly);
+    MemberLookup.Walk(type, this.model.Compilation.GetSpecialType(SpecialType.Object), walker.Visit);
+    if (!staticOnly && type instanceof ArrayTypeSymbol) this.Add("Length", CompletionKind.Property, "int");
+  }
+  VisitMembers(current: TypeSymbol, staticOnly: bool): bool {
+    for (const member of current.GetMembers()) {
+      if (!SemanticCompletion<TFile>.IsUserVisible(member)) continue;
+      if (member instanceof MethodSymbol) {
+        const method = member as MethodSymbol;
+        if ((method.MethodKind == MethodKind.Ordinary || method.MethodKind == MethodKind.LocalFunction) && method.IsStatic == staticOnly)
+          this.Add(member.Name, CompletionKind.Method, SymbolDisplay<TFile>.Signature(method));
+      } else if (member instanceof PropertySymbol) {
+        const property = member as PropertySymbol;
+        if (!property.IsIndexer && property.IsStatic == staticOnly) this.Add(member.Name, CompletionKind.Property, property.Type.ToDisplayString());
+      } else if (member instanceof FieldSymbol) {
+        const field = member as FieldSymbol;
+        if (field.IsStatic == staticOnly || (staticOnly && field.IsConst))
+          this.Add(member.Name, SemanticCompletion<TFile>.KindOf(field), field.Type.ToDisplayString());
+      } else if (member instanceof NamedTypeSymbol && staticOnly) this.Add(member.Name, SemanticCompletion<TFile>.KindOf(member));
+    }
+    return !(staticOnly && current instanceof NamedTypeSymbol && current.TypeKind == TypeKind.Enum);
+  }
+  private AddExtensionMethods(receiver: TypeSymbol): void {
+    const file = this.model.Compilation.GetFile(this.model.Tree);
+    const scope = this.model.Compilation.GetScope(file);
+    const containers = new HashSet<NamedTypeSymbol>();
+    for (const wildcard of scope.WildcardImports) {
+      if (wildcard instanceof NamespaceSymbol) {
+        for (const type of (wildcard as NamespaceSymbol).GetTypeMembers()) if (type.IsStaticClass) containers.Add(type);
+      } else if (wildcard instanceof NamedTypeSymbol) containers.Add(wildcard as NamedTypeSymbol);
+      else if (wildcard instanceof FileModuleSymbol<TFile>) {
+        const module = this.model.Compilation.GetModuleClass((wildcard as FileModuleSymbol<TFile>).File);
+        if (module != null) containers.Add(module);
+      }
+    }
+    for (const symbol of scope.NamedImportSymbols)
+      if (symbol instanceof MethodSymbol && (symbol as MethodSymbol).IsExtensionMethod && symbol.ContainingType != null)
+        containers.Add(symbol.ContainingType);
+    const module = this.model.Compilation.GetModuleClass(file);
+    if (module != null) containers.Add(module);
+    for (const container of containers) {
+      for (const member of container.GetMembers()) {
+        if (!(member instanceof MethodSymbol)) continue;
+        const method = member as MethodSymbol;
+        if (!method.IsExtensionMethod || !method.IsStatic || method.Parameters.Length == 0 ||
+          !SemanticCompletion<TFile>.IsUserVisible(method) ||
+          !SemanticCompletion<TFile>.ExtensionApplies(receiver, method.Parameters[0].Type)) continue;
+        this.Add(method.Name, CompletionKind.Method, SymbolDisplay<TFile>.Signature(method));
+      }
+    }
+  }
+  private static ExtensionApplies(receiver: TypeSymbol, parameter: TypeSymbol): bool {
+    parameter = parameter.StripNullable();
+    if (parameter instanceof TypeParameterSymbol || receiver.Equals(parameter)) return true;
+    if (parameter instanceof ArrayTypeSymbol) {
+      const element = (parameter as ArrayTypeSymbol).ElementType;
+      return receiver instanceof ArrayTypeSymbol && (element instanceof TypeParameterSymbol ||
+        element.Equals((receiver as ArrayTypeSymbol).ElementType));
+    }
+    if (!(parameter instanceof NamedTypeSymbol)) return false;
+    const target = (parameter as NamedTypeSymbol).OriginalDefinition;
+    if (receiver instanceof ArrayTypeSymbol) return target.SpecialType != SpecialType.None ||
+      target.MetadataName.StartsWith("IEnumerable", StringComparison.Ordinal) || target.MetadataName.StartsWith("IList", StringComparison.Ordinal);
+    const visited = new HashSet<TypeSymbol>();
+    for (let current: TypeSymbol? = receiver; current != null && visited.Add(current); current = current.BaseType) {
+      if (current instanceof NamedTypeSymbol && (current as NamedTypeSymbol).OriginalDefinition.Equals(target)) return true;
+      for (const implemented of current.AllInterfaces) if (implemented.OriginalDefinition.Equals(target)) return true;
+    }
+    return false;
+  }
+  GetSignatureHelp(position: int): SignatureHelpInfo? {
+    const token = this.model.Tree.Root.FindToken(Math.Max(0, position - 1)) ?? this.model.Tree.Root.FindToken(position);
+    for (let node = token == null ? null : token.Parent; node != null; node = node.Parent) {
+      let args: ArgumentListSyntax? = null;
+      if (node instanceof InvocationExpressionSyntax) args = (node as InvocationExpressionSyntax).Arguments;
+      else if (node instanceof NewExpressionSyntax) args = (node as NewExpressionSyntax).Arguments;
+      if (args == null || position <= args.Start || position > args.End) continue;
+      const close = args.GetLastToken();
+      if (close != null && !close.IsMissing && close.Kind == SyntaxKind.CloseParenToken && position > close.Start) continue;
+      const methods = new List<MethodSymbol>();
+      const recorded = this.model.Compilation.RecordedSymbols;
+      if (node instanceof InvocationExpressionSyntax) {
+        const expression = (node as InvocationExpressionSyntax).Expression;
+        const name = expression instanceof MemberAccessExpressionSyntax ? (expression as MemberAccessExpressionSyntax).Name : expression;
+        const symbol = recorded != null && recorded.ContainsKey(name) ? recorded[name] : null;
+        if (symbol instanceof MethodSymbol) this.CollectOverloads(symbol as MethodSymbol, methods);
+      } else if (node instanceof NewExpressionSyntax && recorded != null) {
+        const type = (node as NewExpressionSyntax).Type;
+        if (recorded.ContainsKey(type) && recorded[type] instanceof NamedTypeSymbol) {
+          for (const constructor of (recorded[type] as NamedTypeSymbol).InstanceConstructors)
+            if (constructor.DeclaredAccessibility == Accessibility.Public || constructor.DeclaredAccessibility == Accessibility.Protected || constructor.IsFromSource)
+              methods.Add(constructor);
+        }
+      }
+      if (methods.Count == 0) continue;
+      let active = 0;
+      for (let i = 0; i < args.Arguments.SeparatorCount; i++) if (args.Arguments.GetSeparator(i).End <= position) active++;
+      // Stable insertion sort preserves source overload order for equal arities.
+      for (let i = 1; i < methods.Count; i++) {
+        const method = methods[i];
+        let j = i;
+        while (j > 0 && methods[j - 1].Parameters.Length > method.Parameters.Length) {
+          methods[j] = methods[j - 1];
+          j--;
+        }
+        methods[j] = method;
+      }
+      let activeSignature = 0;
+      for (let i = 0; i < methods.Count; i++) {
+        if (methods[i].Parameters.Length > active || methods[i].HasParamsArray) { activeSignature = i; break; }
+      }
+      const signatures = new List<SignatureEntry>();
+      for (const method of methods) signatures.Add(new SignatureEntry(SymbolDisplay<TFile>.Signature(method), SymbolDisplay<TFile>.Parameters(method)));
+      return new SignatureHelpInfo(signatures, activeSignature, active);
+    }
+    return null;
+  }
+  private CollectOverloads(method: MethodSymbol, into: List<MethodSymbol>): void {
+    const owner = method.ContainingSymbol;
+    const visited = new HashSet<NamedTypeSymbol>();
+    for (let type: NamedTypeSymbol? = owner as NamedTypeSymbol; type != null && visited.Add(type); type = type.BaseType) {
+      for (const member of type.GetMembers(method.Name)) {
+        if (!(member instanceof MethodSymbol) || !SemanticCompletion<TFile>.IsUserVisible(member)) continue;
+        const candidate = member as MethodSymbol;
+        let duplicate = false;
+        for (const item of into)
+          if (item.Parameters.Length == candidate.Parameters.Length && SymbolDisplay<TFile>.Signature(item) == SymbolDisplay<TFile>.Signature(candidate)) {
+            duplicate = true;
+            break;
+          }
+        if (!duplicate) into.Add(candidate);
+      }
+      if (type instanceof SourceModuleClassSymbol<TFile>) break;
+    }
+    if (into.Count == 0) into.Add(method);
+  }
+}

@@ -1,0 +1,69 @@
+<Project>
+  <!-- All release packages are source-free wrappers around verified native outputs. -->
+  <Target Name="_RequireVerifiedNativeRelease" BeforeTargets="GenerateNuspec;_GetPackageFiles">
+    <Error Condition="'$(NativeVerificationManifest)' == '' or !Exists('$(NativeVerificationManifest)')"
+           Text="Native release verification is required. Run eng/pack.sh with CALADESI_BOOTSTRAP_DIR; packaging never falls back to the C# oracle." />
+    <ReadLinesFromFile File="$(NativeVerificationManifest)">
+      <Output TaskParameter="Lines" ItemName="_NativeVerificationLine" />
+    </ReadLinesFromFile>
+    <Error Condition="'$(NativeReleaseRoot)' == '' or '$(NativeRuntimeDir)' == '' or '$(CalacPublishDir)' == '' or '$(CaladesiTasksDir)' == ''"
+           Text="Native release artifact directories must be supplied by eng/pack.sh." />
+    <PropertyGroup>
+      <_NativeReleaseRoot>$([MSBuild]::NormalizeDirectory('$(NativeReleaseRoot)'))</_NativeReleaseRoot>
+      <_NativeVerifiedRoot>$([MSBuild]::NormalizeDirectory('$(_NativeReleaseRoot)', '..'))</_NativeVerifiedRoot>
+      <_NativeReleasePivot>$(Configuration.ToLowerInvariant())</_NativeReleasePivot>
+    </PropertyGroup>
+    <ItemGroup>
+      <_NativeProofHeader Include="@(_NativeVerificationLine)"
+                          Condition="!$([System.String]::Copy('%(_NativeVerificationLine.Identity)').StartsWith('SHA256|'))" />
+      <_NativeProofArtifact Include="@(_NativeVerificationLine)"
+                            Condition="$([System.String]::Copy('%(_NativeVerificationLine.Identity)').StartsWith('SHA256|'))">
+        <ArtifactPath>$([System.Text.RegularExpressions.Regex]::Replace('%(_NativeVerificationLine.Identity)', '^SHA256\|([^|]+)\|([0-9A-Fa-f]{64})$', '$1'))</ArtifactPath>
+        <ExpectedHash>$([System.Text.RegularExpressions.Regex]::Replace('%(_NativeVerificationLine.Identity)', '^SHA256\|([^|]+)\|([0-9A-Fa-f]{64})$', '$2'))</ExpectedHash>
+      </_NativeProofArtifact>
+      <_NativeProofFile Include="%(_NativeProofArtifact.ArtifactPath)">
+        <ExpectedHash>%(_NativeProofArtifact.ExpectedHash)</ExpectedHash>
+      </_NativeProofFile>
+      <_NativeExpectedArtifact Include="$(_NativeReleaseRoot)bin/Caladesi.Runtime.SelfHost/$(_NativeReleasePivot)/Caladesi.Runtime.dll;$(_NativeReleaseRoot)bin/Caladesi.Runtime.SelfHost/$(_NativeReleasePivot)/Caladesi.Runtime.pdb" />
+      <_NativeExpectedArtifact Include="$(_NativeReleaseRoot)bin/Caladesi.Compiler.SelfHost/$(_NativeReleasePivot)/Caladesi.Compiler.dll;$(_NativeReleaseRoot)bin/Caladesi.Compiler.SelfHost/$(_NativeReleasePivot)/Caladesi.Compiler.pdb" />
+      <_NativeExpectedArtifact Include="$(_NativeReleaseRoot)bin/Caladesi.Build.Tasks.SelfHost/$(_NativeReleasePivot)/Caladesi.Build.Tasks.dll;$(_NativeReleaseRoot)bin/Caladesi.Build.Tasks.SelfHost/$(_NativeReleasePivot)/Caladesi.Build.Tasks.pdb" />
+      <_NativeExpectedArtifact Include="$(_NativeReleaseRoot)bin/Caladesi.Cli.SelfHost/$(_NativeReleasePivot)/calac.dll;$(_NativeReleaseRoot)bin/Caladesi.Cli.SelfHost/$(_NativeReleasePivot)/calac.pdb" />
+      <_NativeExpectedArtifact Include="$(_NativeReleaseRoot)bin/Caladesi.LanguageServer.SelfHost/$(_NativeReleasePivot)/cala-ls.dll;$(_NativeReleaseRoot)bin/Caladesi.LanguageServer.SelfHost/$(_NativeReleasePivot)/cala-ls.pdb" />
+      <_NativeExpectedArtifact Include="$(_NativeReleaseRoot)bin/Caladesi.Cli.SelfHost/$(_NativeReleasePivot)/calac.deps.json;$(_NativeReleaseRoot)bin/Caladesi.Cli.SelfHost/$(_NativeReleasePivot)/calac.runtimeconfig.json" />
+      <_NativeExpectedArtifact Include="$(_NativeReleaseRoot)bin/Caladesi.LanguageServer.SelfHost/$(_NativeReleasePivot)/cala-ls.deps.json;$(_NativeReleaseRoot)bin/Caladesi.LanguageServer.SelfHost/$(_NativeReleasePivot)/cala-ls.runtimeconfig.json" />
+      <_NativeMissingArtifact Include="@(_NativeExpectedArtifact)" />
+      <_NativeMissingArtifact Remove="@(_NativeProofFile)" />
+      <_NativeUnexpectedArtifact Include="@(_NativeProofFile)" />
+      <_NativeUnexpectedArtifact Remove="@(_NativeExpectedArtifact)" />
+    </ItemGroup>
+    <Error Condition="'@(_NativeProofHeader)' != 'SelfHostReleaseIdentity=true;Version=$(Version);Configuration=$(Configuration);ArtifactsRoot=$(_NativeVerifiedRoot);Verified=true' or '@(_NativeProofFile->Count())' != '14'"
+           Text="Native verification manifest does not match this package's stable identity, version, configuration, isolated stage or complete fixed-point artifact set. Run eng/pack.sh again." />
+    <Error Condition="'@(_NativeMissingArtifact)' != '' or '@(_NativeUnexpectedArtifact)' != ''"
+           Text="Native verification manifest artifact paths differ from the required isolated stage3 set. Missing: @(_NativeMissingArtifact). Unexpected: @(_NativeUnexpectedArtifact)." />
+    <GetFileHash Files="@(_NativeProofFile)" Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="_NativeActualHash" />
+    </GetFileHash>
+    <Error Condition="'%(_NativeActualHash.FileHash)' != '%(_NativeActualHash.ExpectedHash)'"
+           Text="Native release artifact changed after fixed-point verification: %(_NativeActualHash.Identity). Run eng/pack.sh again." />
+    <Error Condition="'$([MSBuild]::NormalizeDirectory('$(NativeRuntimeDir)'))' != '$(_NativeReleaseRoot)bin/Caladesi.Runtime.SelfHost/$(_NativeReleasePivot)/' or '$([MSBuild]::NormalizeDirectory('$(CalacPublishDir)'))' != '$(_NativeReleaseRoot)bin/Caladesi.Cli.SelfHost/$(_NativeReleasePivot)/' or '$([MSBuild]::NormalizeDirectory('$(CaladesiTasksDir)'))' != '$(_NativeReleaseRoot)bin/Caladesi.Build.Tasks.SelfHost/$(_NativeReleasePivot)/'"
+           Text="All package payloads must come from the same isolated native release stage, not oracle build/publish directories." />
+    <Error Condition="!Exists('$(NativeRuntimeDir)Caladesi.Runtime.dll') or !Exists('$(CalacPublishDir)calac.dll') or !Exists('$(CalacPublishDir)Caladesi.Compiler.dll') or !Exists('$(CalacPublishDir)Caladesi.Runtime.dll') or !Exists('$(CalacPublishDir)calac.deps.json') or !Exists('$(CalacPublishDir)calac.runtimeconfig.json') or !Exists('$(CaladesiTasksDir)Caladesi.Build.Tasks.dll')"
+           Text="The verified stable-identity native release is incomplete; runtime, compiler, CLI, CLI host metadata and MSBuild task are all required." />
+    <ItemGroup>
+      <_NativePayloadCopy Include="$(CalacPublishDir)Caladesi.Runtime.dll">
+        <CanonicalPath>$(NativeRuntimeDir)Caladesi.Runtime.dll</CanonicalPath>
+      </_NativePayloadCopy>
+      <_NativePayloadCopy Include="$(CalacPublishDir)Caladesi.Compiler.dll">
+        <CanonicalPath>$(_NativeReleaseRoot)bin/Caladesi.Compiler.SelfHost/$(_NativeReleasePivot)/Caladesi.Compiler.dll</CanonicalPath>
+      </_NativePayloadCopy>
+    </ItemGroup>
+    <GetFileHash Files="@(_NativePayloadCopy)" Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="_NativeCopiedPayloadHash" />
+    </GetFileHash>
+    <GetFileHash Files="@(_NativePayloadCopy->'%(CanonicalPath)')" Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="_NativeCanonicalPayloadHash" />
+    </GetFileHash>
+    <Error Condition="'@(_NativeCopiedPayloadHash->'%(FileHash)')' != '@(_NativeCanonicalPayloadHash->'%(FileHash)')'"
+           Text="Packaged CLI dependency copies differ from their verified native compiler/runtime assemblies. Run eng/pack.sh again." />
+  </Target>
+</Project>

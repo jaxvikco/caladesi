@@ -1,5 +1,5 @@
 import { JsonElement, Utf8JsonWriter } from "System.Text.Json";
-import { Compilation } from "Caladesi.Compiler";
+import { Compilation, SourceFile } from "Caladesi.Compiler";
 import { Formatter } from "Caladesi.Compiler.Formatting";
 import { SemanticModel, SymbolAt, SymbolReference, CompletionKind, CompletionEntry, SignatureEntry, DocumentSymbolKind, DocumentSymbolInfo, DocumentOutline, SemanticTokenInfo } from "Caladesi.Compiler.Semantics";
 import { SyntaxTree, SyntaxFacts, SyntaxKind } from "Caladesi.Compiler.Syntax";
@@ -13,7 +13,7 @@ import { ImportReferences } from "./ImportReferences";
 sealed class DocumentContext {
   constructor(public readonly Document: OpenDocument, public readonly Unit: CompilationUnit, public readonly Compilation: Compilation, public readonly Tree: SyntaxTree) {}
   get Text(): SourceText { return this.Tree.Text; }
-  get Model(): SemanticModel { return this.Unit.GetModel(this.Compilation, this.Tree); }
+  get Model(): SemanticModel<SourceFile> { return this.Unit.GetModel(this.Compilation, this.Tree); }
 }
 
 export sealed class DocumentFeatures {
@@ -49,7 +49,7 @@ export sealed class DocumentFeatures {
   Hover(p: JsonElement): Action<Utf8JsonWriter>? {
     const c = this.GetContext(p);
     if (c == null) return null;
-    const model: SemanticModel = c.Model;
+    const model: SemanticModel<SourceFile> = c.Model;
     const offset: int = DocumentFeatures.ReadOffset(c, p);
     const text: string? = model.GetHover(offset);
     if (string.IsNullOrEmpty(text)) return null;
@@ -69,22 +69,22 @@ export sealed class DocumentFeatures {
   Definition(p: JsonElement): Action<Utf8JsonWriter>? {
     const c = this.GetContext(p);
     if (c == null) return null;
-    const model: SemanticModel = c.Model;
+    const model: SemanticModel<SourceFile> = c.Model;
     const at: SymbolAt? = model.GetSymbolAt(DocumentFeatures.ReadOffset(c, p));
     if (at == null) return null;
     const definition: SymbolReference? = model.GetDefinition(at.Symbol);
     if (definition == null) return null;
-    return w => this.WriteLocation(w, definition);
+    return w => this.WriteLocation(w, definition.Value);
   }
 
   References(p: JsonElement): Action<Utf8JsonWriter>? {
     const c = this.GetContext(p);
     if (c == null) return null;
-    const model: SemanticModel = c.Model;
+    const model: SemanticModel<SourceFile> = c.Model;
     const at: SymbolAt? = model.GetSymbolAt(DocumentFeatures.ReadOffset(c, p));
     if (at == null) return null;
     const includeDeclaration: bool = Json.GetBool(Json.Path(p, "context", "includeDeclaration"), true);
-    const references: IReadOnlyList<SymbolReference> = ImportReferences.Find(model, at.Symbol, includeDeclaration);
+    const references: IReadOnlyList<SymbolReference> = ImportReferences.Find(model, c.Compilation, at.Symbol, includeDeclaration);
     return w => {
       w.WriteStartArray();
       for (const reference: SymbolReference of references) this.WriteLocation(w, reference);
@@ -92,12 +92,12 @@ export sealed class DocumentFeatures {
     };
   }
 
-  private static IsRenameable(model: SemanticModel, at: SymbolAt): bool { return model.GetDefinition(at.Symbol) != null; }
+  private static IsRenameable(model: SemanticModel<SourceFile>, at: SymbolAt): bool { return model.GetDefinition(at.Symbol) != null; }
 
   PrepareRename(p: JsonElement): Action<Utf8JsonWriter>? {
     const c = this.GetContext(p);
     if (c == null) return null;
-    const model: SemanticModel = c.Model;
+    const model: SemanticModel<SourceFile> = c.Model;
     const at: SymbolAt? = model.GetSymbolAt(DocumentFeatures.ReadOffset(c, p));
     if (at == null || !DocumentFeatures.IsRenameable(model, at)) return null;
     const placeholder: string = c.Text.ToString(at.Span);
@@ -114,14 +114,14 @@ export sealed class DocumentFeatures {
     if (c == null) return null;
     const newName: string? = Json.GetString(Json.Get(p, "newName"));
     if (!DocumentFeatures.IsValidIdentifier(newName)) throw new RpcException(-32602, "'" + newName + "' is not a valid identifier");
-    const model: SemanticModel = c.Model;
+    const model: SemanticModel<SourceFile> = c.Model;
     const at: SymbolAt? = model.GetSymbolAt(DocumentFeatures.ReadOffset(c, p));
     if (at == null) throw new RpcException(-32602, "There is no symbol to rename at this position");
     if (!DocumentFeatures.IsRenameable(model, at)) throw new RpcException(-32602, "Only symbols declared in source can be renamed");
     const oldName: string = c.Text.ToString(at.Span);
     const edits = new SortedDictionary<string, List<SymbolReference>>(StringComparer.Ordinal);
     const seen = new Dictionary<string, HashSet<int>>(StringComparer.Ordinal);
-    for (const reference: SymbolReference of ImportReferences.Find(model, at.Symbol, true)) {
+    for (const reference: SymbolReference of ImportReferences.Find(model, c.Compilation, at.Symbol, true)) {
       const path: string = reference.Tree.FilePath;
       if (!this._workspace.IsWorkspaceFile(path)) continue;
       if (reference.Span.End > reference.Tree.Text.Length || reference.Tree.Text.ToString(reference.Span) != oldName) continue;

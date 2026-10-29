@@ -9,7 +9,7 @@ namespace Caladesi.LanguageServer.Tests;
 [TestClass]
 public class ProcessTests
 {
-    private static string ServerDll => Path.Combine(AppContext.BaseDirectory, "cala-ls.dll");
+    private static string ServerDll => typeof(Caladesi.LanguageServer.LanguageServer).Assembly.Location;
 
     private static void Write(Stream stream, string json)
     {
@@ -71,7 +71,7 @@ public class ProcessTests
     [TestMethod]
     public void DotnetServerDllSpeaksLspOverStdio()
     {
-        Assert.IsTrue(File.Exists(ServerDll), "cala-ls.dll missing next to the tests");
+        Assert.IsTrue(File.Exists(ServerDll), "language server assembly missing next to the tests");
         ProcessStartInfo info = new("dotnet")
         {
             RedirectStandardInput = true,

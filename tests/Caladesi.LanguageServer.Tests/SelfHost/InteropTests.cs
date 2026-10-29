@@ -44,7 +44,7 @@ public class InteropTests
     [TestMethod]
     public async Task StandaloneInlineUnionFindsRuntimeReference()
     {
-        Assert.IsTrue(File.Exists(Path.Combine(AppContext.BaseDirectory, "Caladesi.Runtime.dll")));
+        Assert.IsTrue(File.Exists(Path.Combine(AppContext.BaseDirectory, "Caladesi.Runtime.SelfHost.dll")));
         using TestClient client = new();
         await client.Initialize().ConfigureAwait(false);
         const string uri = "file:///virtual/selfhost-inline-union.cala";
@@ -52,5 +52,18 @@ public class InteropTests
         JsonElement diagnostics = client.WaitForDiagnostics(uri).GetProperty("diagnostics");
         Assert.AreEqual(1, diagnostics.GetArrayLength());
         Assert.AreEqual("CAL0201", diagnostics[0].GetProperty("code").GetString());
+    }
+
+    [TestMethod]
+    public void LanguageServerUsesNativeCompilerAssembly()
+    {
+        System.Reflection.Assembly server = typeof(MsBuildProjectData).Assembly;
+        string[] references = server.GetReferencedAssemblies().Select(assembly => assembly.Name!).ToArray();
+        Assert.AreEqual("cala-ls-selfhost", server.GetName().Name);
+        CollectionAssert.Contains(references, "Caladesi.Compiler.SelfHost");
+        CollectionAssert.DoesNotContain(references, "Caladesi.Compiler");
+        CollectionAssert.DoesNotContain(references, "Caladesi.Runtime");
+        Assert.AreEqual("Caladesi.Compiler.SelfHost",
+            typeof(MsBuildProjectData).GetMethod(nameof(MsBuildProjectData.ToCompilationOptions))!.ReturnType.Assembly.GetName().Name);
     }
 }
