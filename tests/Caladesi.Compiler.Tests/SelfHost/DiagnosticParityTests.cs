@@ -20,15 +20,15 @@ public sealed class DiagnosticParityTests
     [TestMethod]
     public void Descriptors_EntireCatalogMatchesBootstrap()
     {
-        FieldInfo[] expected = typeof(Descriptors).GetFields(BindingFlags.Public | BindingFlags.Static);
-        PropertyInfo[] actual = typeof(SelfDescriptors).GetProperties(BindingFlags.Public | BindingFlags.Static);
+        var expected = typeof(Descriptors).GetFields(BindingFlags.Public | BindingFlags.Static);
+        var actual = typeof(SelfDescriptors).GetProperties(BindingFlags.Public | BindingFlags.Static);
         Assert.HasCount(expected.Length, actual);
-        foreach (FieldInfo field in expected)
+        foreach (var field in expected)
         {
-            DiagnosticDescriptor left = (DiagnosticDescriptor)field.GetValue(null)!;
-            PropertyInfo other = typeof(SelfDescriptors).GetProperty(field.Name)!;
+            var left = (DiagnosticDescriptor)field.GetValue(null)!;
+            var other = typeof(SelfDescriptors).GetProperty(field.Name)!;
             Assert.IsNotNull(other, field.Name);
-            SelfDescriptor right = (SelfDescriptor)other.GetValue(null)!;
+            var right = (SelfDescriptor)other.GetValue(null)!;
             Assert.AreEqual(left.Id, right.Id, field.Name);
             Assert.AreEqual((int)left.Severity, (int)right.Severity, field.Name);
             Assert.AreEqual(left.MessageFormat, right.MessageFormat, field.Name);
@@ -38,25 +38,25 @@ public sealed class DiagnosticParityTests
     [TestMethod]
     public void Diagnostic_FormattingCopyingAndInvariantArgumentsMatchBootstrap()
     {
-        CultureInfo previous = CultureInfo.CurrentCulture;
+        var previous = CultureInfo.CurrentCulture;
         try
         {
-            CultureInfo custom = (CultureInfo)CultureInfo.InvariantCulture.Clone();
+            var custom = (CultureInfo)CultureInfo.InvariantCulture.Clone();
             custom.NumberFormat.NumberDecimalSeparator = ",";
             custom.NumberFormat.NumberGroupSeparator = ".";
             CultureInfo.CurrentCulture = custom;
             DiagnosticDescriptor descriptor = new("CAL9999", DiagnosticSeverity.Warning, "Value {0:N2}, '{1}', {2}.");
             SelfDescriptor selfDescriptor = new("CAL9999", SelfSeverity.Warning, "Value {0:N2}, '{1}', {2}.");
-            foreach (string? path in new[] { null, "", "x.cala", "dir/file.cala" })
+            foreach (var path in new[] { null, "", "x.cala", "dir/file.cala" })
             {
-                foreach (int start in new[] { -1, 0, 3, 5, 100 })
+                foreach (var start in new[] { -1, 0, 3, 5, 100 })
                 {
                     object?[] arguments = [1234.5, "x", null];
-                    Diagnostic expected = Diagnostic.Create(descriptor, path, new(start, 2), arguments);
-                    SelfDiagnostic actual = SelfDiagnostic.Create(selfDescriptor, path, new(start, 2), arguments);
+                    var expected = Diagnostic.Create(descriptor, path, new(start, 2), arguments);
+                    var actual = SelfDiagnostic.Create(selfDescriptor, path, new(start, 2), arguments);
                     AssertDiagnostic(expected, actual);
                     Assert.IsTrue(ReferenceEquals(arguments, actual.Arguments));
-                    foreach (DiagnosticSeverity severity in Enum.GetValues<DiagnosticSeverity>())
+                    foreach (var severity in Enum.GetValues<DiagnosticSeverity>())
                     {
                         AssertDiagnostic(expected.WithSeverity(severity), actual.WithSeverity((SelfSeverity)severity));
                         AssertDiagnostic(expected.WithSeverity(severity).WithFilePath("new.cala"),
@@ -108,7 +108,7 @@ public sealed class DiagnosticParityTests
     {
         DiagnosticBag expected = new();
         SelfBag actual = new();
-        foreach (DiagnosticSeverity severity in Enum.GetValues<DiagnosticSeverity>())
+        foreach (var severity in Enum.GetValues<DiagnosticSeverity>())
         {
             expected.Add(Diagnostic.Create(new("CAL9999", severity, "Message."), "", new()));
             actual.Add(SelfDiagnostic.Create(new("CAL9999", (SelfSeverity)severity, "Message."), "", new()));
@@ -118,7 +118,7 @@ public sealed class DiagnosticParityTests
 
         var oldExpected = expected.ToImmutable();
         var oldActual = actual.ToImmutable();
-        for (int count = 6; count >= 0; count--)
+        for (var count = 6; count >= 0; count--)
         {
             expected.TruncateTo(count);
             actual.TruncateTo(count);
@@ -132,22 +132,22 @@ public sealed class DiagnosticParityTests
         actual.AddRange(oldActual);
         Assert.AreEqual(expected.Count, actual.Count);
         Assert.AreEqual(expected.HasErrors, actual.HasErrors);
-        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => actual.TruncateTo(-1));
+        _ = Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => actual.TruncateTo(-1));
         Assert.AreEqual(expected.Count, actual.Count);
     }
 
     [TestMethod]
     public void Diagnostic_NullDescriptorFailsBeforeConstruction()
     {
-        Assert.ThrowsExactly<ArgumentNullException>(() => SelfDiagnostic.Create(null!, "", new SelfSpan()));
+        _ = Assert.ThrowsExactly<ArgumentNullException>(() => SelfDiagnostic.Create(null!, "", new SelfSpan()));
     }
 
     [TestMethod]
     public void CompilerInfo_VersionReadsOwnAssemblyMetadata()
     {
-        string? informational = typeof(SelfHost::Caladesi.Compiler.CompilerInfo).Assembly
+        var informational = typeof(SelfHost::Caladesi.Compiler.CompilerInfo).Assembly
             .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
-        string expected = string.IsNullOrEmpty(informational) ? "0.0.0" : informational.Split('+')[0];
+        var expected = string.IsNullOrEmpty(informational) ? "0.0.0" : informational.Split('+')[0];
         Assert.AreEqual(expected, SelfHost::Caladesi.Compiler.CompilerInfo.Version);
     }
 

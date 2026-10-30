@@ -29,11 +29,15 @@ public sealed class FormatterParityTests
     public void Formatter_RepositorySourcesMatchBootstrap()
     {
         DirectoryInfo? root = new(AppContext.BaseDirectory);
-        while (root != null && !File.Exists(Path.Combine(root.FullName, "Caladesi.slnx"))) root = root.Parent;
-        Assert.IsNotNull(root);
-        foreach (string folder in new[] { "samples", "src", "tests", "playground" })
+        while (root != null && !File.Exists(Path.Combine(root.FullName, "Caladesi.slnx")))
         {
-            foreach (string path in Directory.EnumerateFiles(Path.Combine(root.FullName, folder), "*.cala", SearchOption.AllDirectories))
+            root = root.Parent;
+        }
+
+        Assert.IsNotNull(root);
+        foreach (var folder in new[] { "samples", "src", "tests", "playground" })
+        {
+            foreach (var path in Directory.EnumerateFiles(Path.Combine(root.FullName, folder), "*.cala", SearchOption.AllDirectories))
             {
                 if (!path.Split(Path.DirectorySeparatorChar).Any(p => p is "obj" or "bin"))
                 {
@@ -49,9 +53,9 @@ public sealed class FormatterParityTests
     {
         const string alphabet = "ab09 \t\r\n{}[]()'\"`/$\\*?;:";
         Random random = new(0xF04A7);
-        for (int sample = 0; sample < 500; sample++)
+        for (var sample = 0; sample < 500; sample++)
         {
-            string source = new(Enumerable.Range(0, random.Next(100)).Select(_ => alphabet[random.Next(alphabet.Length)]).ToArray());
+            string source = new([.. Enumerable.Range(0, random.Next(100)).Select(_ => alphabet[random.Next(alphabet.Length)])]);
             AssertParity(source);
         }
     }
@@ -59,14 +63,14 @@ public sealed class FormatterParityTests
     [TestMethod]
     public void Formatter_NullTreeMatchesBootstrap()
     {
-        Assert.ThrowsExactly<ArgumentNullException>(() => SelfFormatter.Format(null!));
+        _ = Assert.ThrowsExactly<ArgumentNullException>(() => SelfFormatter.Format(null!));
     }
 
     private static void AssertParity(string source)
     {
-        SyntaxTree expected = SyntaxTree.ParseText(source);
-        SelfTree actual = SelfTree.ParseText(source);
-        foreach (int indent in new[] { 0, 1, 2, 4, 8 })
+        var expected = SyntaxTree.ParseText(source);
+        var actual = SelfTree.ParseText(source);
+        foreach (var indent in new[] { 0, 1, 2, 4, 8 })
         {
             Assert.AreEqual(Formatter.Format(expected, indent), SelfFormatter.Format(actual, indent), source);
         }

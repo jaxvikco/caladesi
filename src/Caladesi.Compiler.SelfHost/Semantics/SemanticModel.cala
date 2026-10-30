@@ -85,12 +85,12 @@ export sealed class SemanticModel<TFile> {
     return type == null || type.IsErrorType ? null : type.ToDisplayString();
   }
   static Canonical(symbol: Symbol): Symbol {
-    const original = symbol.OriginalSymbolDefinition;
+    const original = Symbol.OriginalDefinitionOf(symbol);
     if (original instanceof MethodSymbol) {
       const method = original as MethodSymbol;
       const associated = method.AssociatedSymbol;
       if ((method.MethodKind == MethodKind.PropertyGet || method.MethodKind == MethodKind.PropertySet) && associated != null)
-        return associated.OriginalSymbolDefinition;
+        return Symbol.OriginalDefinitionOf(associated);
     }
     if (original instanceof SourceFieldSymbol<TFile> && (original as SourceFieldSymbol<TFile>).IsBackingField) {
       const owner = original.ContainingType;
@@ -110,7 +110,7 @@ export sealed class SemanticModel<TFile> {
   GetDefinition(symbol: Symbol): SymbolReference? {
     ArgumentNullException.ThrowIfNull(symbol);
     for (const declaration of this.Declarations) {
-      if (!SemanticModel<TFile>.Same(declaration.Symbol, symbol.OriginalSymbolDefinition)) continue;
+      if (!SemanticModel<TFile>.Same(declaration.Symbol, Symbol.OriginalDefinitionOf(symbol))) continue;
       const token = declaration.Tree.Root.FindToken(declaration.Position);
       if (token != null) return { Tree: declaration.Tree, Span: token.Span, IsDeclaration: true };
     }
@@ -162,7 +162,7 @@ export sealed class SemanticModel<TFile> {
     return result;
   }
   private static ClassifySymbol(symbol: Symbol): SemanticTokenType? {
-    const original = symbol.OriginalSymbolDefinition;
+    const original = Symbol.OriginalDefinitionOf(symbol);
     if (original instanceof NamespaceSymbol || original instanceof FileModuleSymbol<TFile>) return SemanticTokenType.Namespace;
     if (original instanceof NamedTypeSymbol) {
       const kind = (original as NamedTypeSymbol).TypeKind;

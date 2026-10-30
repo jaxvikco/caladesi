@@ -38,7 +38,8 @@ export sealed class AttributeBinder {
     if (cv != null) return cv.Value;
     if (e instanceof BoundConversion) {
       const c = e as BoundConversion;
-      if (c.Kind == ConversionKind.Boxing || c.Kind == ConversionKind.ImplicitReference || c.Kind == ConversionKind.Identity)
+      if (c.Kind == ConversionKind.Boxing || c.Kind == ConversionKind.ImplicitReference || c.Kind == ConversionKind.Identity ||
+        c.Kind == ConversionKind.ToNullable || c.Kind == ConversionKind.TypeOnly)
         return AttributeBinder.ConstantOf(c.Operand);
     }
     return null;

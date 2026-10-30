@@ -36,11 +36,11 @@ public sealed class ConstantFoldingParityTests
             -0.0, 1.5, double.NaN, decimal.MinValue, decimal.MaxValue, -1.5m,
             BigInteger.One << 100, "", "value", new object(),
         ];
-        foreach (UnaryOperatorKind kind in s_unaryKinds)
+        foreach (var kind in s_unaryKinds)
         {
-            foreach (SpecialType type in s_types)
+            foreach (var type in s_types)
             {
-                foreach (object? value in values)
+                foreach (var value in values)
                 {
                     AssertParity(() => s_unary(kind, value!, type),
                         () => SelfFolding.FoldUnary((SelfUnary)(int)kind, value!, (SelfType)(int)type),
@@ -53,7 +53,7 @@ public sealed class ConstantFoldingParityTests
     [TestMethod]
     public void FoldBinary_AllKindsAndSpecialTypesMatchBootstrap()
     {
-        foreach (SpecialType type in s_types)
+        foreach (var type in s_types)
         {
             (object Left, object Right) operands = type switch
             {
@@ -87,19 +87,19 @@ public sealed class ConstantFoldingParityTests
             (SpecialType.Char, ['\0', '\u0001', '\u7fff', '\u8000', '\uffff']),
             (SpecialType.Decimal, [decimal.MinValue, -1.5m, -1m, 0m, 0.1m, 1m, 3m, decimal.MaxValue]),
         ];
-        foreach ((SpecialType type, object[] values) in cases)
+        foreach ((var type, var values) in cases)
         {
-            foreach (object left in values)
+            foreach (var left in values)
             {
-                foreach (object right in values)
+                foreach (var right in values)
                 {
                     AssertBinaryKinds(left, right, type);
                 }
                 if (type is SpecialType.Int32 or SpecialType.Int64 or SpecialType.UInt32 or SpecialType.UInt64)
                 {
-                    foreach (object count in new object[] { int.MinValue, -65, -64, -33, -32, -1, 0, 1, 31, 32, 63, 64, 65, int.MaxValue, 33L, 1.5, "65", null! })
+                    foreach (var count in new object[] { int.MinValue, -65, -64, -33, -32, -1, 0, 1, 31, 32, 63, 64, 65, int.MaxValue, 33L, 1.5, "65", null! })
                     {
-                        foreach (BinaryOperatorKind kind in new[] { BinaryOperatorKind.ShiftLeft, BinaryOperatorKind.ShiftRight, BinaryOperatorKind.UnsignedShiftRight })
+                        foreach (var kind in new[] { BinaryOperatorKind.ShiftLeft, BinaryOperatorKind.ShiftRight, BinaryOperatorKind.UnsignedShiftRight })
                         {
                             AssertBinary(kind, left, count, type);
                         }
@@ -125,20 +125,20 @@ public sealed class ConstantFoldingParityTests
             BitConverter.Int64BitsToDouble(0x7ff8000000001234L),
             BitConverter.Int64BitsToDouble(unchecked((long)0xfff8000000005678UL)),
         ];
-        foreach ((SpecialType type, object[] values) in new[]
+        foreach ((var type, var values) in new[]
         {
             (SpecialType.Single, singles), (SpecialType.Double, doubles),
             (SpecialType.Boolean, new object[] { false, true }),
             (SpecialType.String, new object[] { null!, "", "a", "A", "a\0b", "\ud800" }),
         })
         {
-            foreach (object left in values)
+            foreach (var left in values)
             {
-                foreach (object right in values)
+                foreach (var right in values)
                 {
                     AssertBinaryKinds(left, right, type);
                 }
-                foreach (UnaryOperatorKind kind in s_unaryKinds)
+                foreach (var kind in s_unaryKinds)
                 {
                     AssertParity(() => s_unary(kind, left, type),
                         () => SelfFolding.FoldUnary((SelfUnary)(int)kind, left, (SelfType)(int)type),
@@ -153,7 +153,7 @@ public sealed class ConstantFoldingParityTests
     {
         object?[] invalid =
             [null, new object(), "bad", "2", true, (byte)2, -2.5, -1.5, 1.5, 2.5, 3.5, 1.5m, 2.5m, BigInteger.One, ulong.MaxValue];
-        foreach (SpecialType type in new[]
+        foreach (var type in new[]
         {
             SpecialType.Int32, SpecialType.Int64, SpecialType.UInt32, SpecialType.UInt64,
             SpecialType.Single, SpecialType.Double, SpecialType.Decimal, SpecialType.Boolean,
@@ -173,7 +173,7 @@ public sealed class ConstantFoldingParityTests
                 SpecialType.String => "a",
                 _ => 'a',
             };
-            foreach (object? value in invalid)
+            foreach (var value in invalid)
             {
                 AssertBinaryKinds(valid, value, type);
                 AssertBinaryKinds(value, valid, type);
@@ -216,16 +216,16 @@ public sealed class ConstantFoldingParityTests
             BitConverter.Int64BitsToDouble(0x7ff8000000001234L),
             BitConverter.Int64BitsToDouble(unchecked((long)0xfff8000000005678UL)),
         ];
-        foreach (decimal boundary in new decimal[]
+        foreach (var boundary in new decimal[]
         {
             sbyte.MinValue, sbyte.MaxValue, byte.MaxValue, short.MinValue, short.MaxValue,
             ushort.MaxValue, int.MinValue, int.MaxValue, uint.MaxValue, long.MinValue,
             long.MaxValue, ulong.MaxValue,
         })
         {
-            foreach (decimal offset in new[] { -1m, -0.9m, 0m, 0.9m, 1m })
+            foreach (var offset in new[] { -1m, -0.9m, 0m, 0.9m, 1m })
             {
-                decimal value = boundary + offset;
+                var value = boundary + offset;
                 sources.Add(value);
                 sources.Add((double)value);
                 sources.Add((float)value);
@@ -236,11 +236,11 @@ public sealed class ConstantFoldingParityTests
 
     private static void AssertConversions(IEnumerable<object?> sources)
     {
-        foreach (object? source in sources)
+        foreach (var source in sources)
         {
-            foreach (SpecialType target in s_types)
+            foreach (var target in s_types)
             {
-                foreach (bool unchecked_ in new[] { false, true })
+                foreach (var unchecked_ in new[] { false, true })
                 {
                     AssertParity(() => s_convert(source!, target, unchecked_),
                         () => SelfFolding.ConvertNumeric(source!, (SelfType)(int)target, unchecked_),
@@ -252,25 +252,29 @@ public sealed class ConstantFoldingParityTests
 
     private static void AssertBinaryKinds(object? left, object? right, SpecialType type)
     {
-        foreach (BinaryOperatorKind kind in s_binaryKinds)
+        foreach (var kind in s_binaryKinds)
         {
             AssertBinary(kind, left, right, type);
         }
     }
 
-    private static void AssertBinary(BinaryOperatorKind kind, object? left, object? right, SpecialType type) =>
+    private static void AssertBinary(BinaryOperatorKind kind, object? left, object? right, SpecialType type)
+    {
         AssertParity(() => s_binary(kind, left!, right!, type),
             () => SelfFolding.FoldBinary((SelfBinary)(int)kind, left!, right!, (SelfType)(int)type),
             $"binary {kind}, {type}, {Describe(left)}, {Describe(right)}");
+    }
 
-    private static T BootstrapMethod<T>(string name) where T : Delegate =>
-        typeof(Compilation).Assembly.GetType("Caladesi.Compiler.ConstantFolding", throwOnError: true)!
+    private static T BootstrapMethod<T>(string name) where T : Delegate
+    {
+        return typeof(Compilation).Assembly.GetType("Caladesi.Compiler.ConstantFolding", throwOnError: true)!
             .GetMethod(name)!.CreateDelegate<T>();
+    }
 
     private static void AssertParity(Func<object?> original, Func<object?> migrated, string context)
     {
-        (object? expected, Type? expectedException) = Evaluate(original);
-        (object? actual, Type? actualException) = Evaluate(migrated);
+        (var expected, var expectedException) = Evaluate(original);
+        (var actual, var actualException) = Evaluate(migrated);
         Assert.AreEqual(expectedException, actualException, context);
         if (expectedException is not null)
         {
@@ -305,11 +309,14 @@ public sealed class ConstantFoldingParityTests
         }
     }
 
-    private static string Describe(object? value) => value switch
+    private static string Describe(object? value)
     {
-        null => "null",
-        float single => $"Single:{single.ToString("R", CultureInfo.InvariantCulture)}(0x{BitConverter.SingleToInt32Bits(single):x8})",
-        double number => $"Double:{number.ToString("R", CultureInfo.InvariantCulture)}(0x{BitConverter.DoubleToInt64Bits(number):x16})",
-        _ => $"{value.GetType().Name}:{Convert.ToString(value, CultureInfo.InvariantCulture)}",
-    };
+        return value switch
+        {
+            null => "null",
+            float single => $"Single:{single.ToString("R", CultureInfo.InvariantCulture)}(0x{BitConverter.SingleToInt32Bits(single):x8})",
+            double number => $"Double:{number.ToString("R", CultureInfo.InvariantCulture)}(0x{BitConverter.DoubleToInt64Bits(number):x16})",
+            _ => $"{value.GetType().Name}:{Convert.ToString(value, CultureInfo.InvariantCulture)}",
+        };
+    }
 }

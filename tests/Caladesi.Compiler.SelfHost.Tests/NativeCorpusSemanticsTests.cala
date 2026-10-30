@@ -48,7 +48,7 @@ export class NativeCorpusSemanticsTests {
     const symbol = test.Model.GetSymbolAt(test.Position);
     if (symbol == null) throw new Exception("Missing call symbol");
     const definition = test.Model.GetDefinition(symbol.Symbol);
-    if (definition == null || definition.Value.Span.Start != test.Text.IndexOf("square", StringComparison.Ordinal)) throw new Exception("Definition location");
+    if (definition == null || definition.Span.Start != test.Text.IndexOf("square", StringComparison.Ordinal)) throw new Exception("Definition location");
     const references = test.Model.FindReferences(symbol.Symbol);
     if (references.Count != 3) throw new Exception("Expected three references");
     let declaration = false;

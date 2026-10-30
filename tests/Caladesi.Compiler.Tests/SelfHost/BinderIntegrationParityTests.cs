@@ -2,7 +2,7 @@ extern alias SelfHost;
 
 using System.Reflection;
 using System.Runtime.Loader;
-using Caladesi.Compiler.Tests.Emit;
+using Caladesi.Compiler.Symbols.Source;
 using Native = SelfHost::Caladesi.Compiler;
 using NativeDiagnostics = SelfHost::Caladesi.Compiler.Diagnostics;
 using NativeMetadata = SelfHost::Caladesi.Compiler.Symbols.Metadata;
@@ -38,8 +38,8 @@ public sealed class BinderIntegrationParityTests
     [DataRow("let count = 0; function next(): bool { count++; return true; } export function evaluate(): int { const same = (next() ? null : null) == null; return same ? count : -1; }", 1)]
     public void ActualNativeBinderMatchesOracleAndEmitsExecutableCode(string source, int expected)
     {
-        Compilation oracle = CreateOracle(source);
-        Native.Compilation native = CreateNative(source);
+        var oracle = CreateOracle(source);
+        var native = CreateNative(source);
         AssertNoErrors(oracle);
         AssertNoErrors(native);
         using MemoryStream oracleImage = new();
@@ -79,7 +79,7 @@ public sealed class BinderIntegrationParityTests
     [DataRow("receiver()[index()]++", 125)]
     public void CompoundIndexerAssignmentsEvaluateReceiverBeforeIndexExactlyOnce(string operation, int expected)
     {
-        string source = """
+        var source = """
             import { List } from 'System.Collections.Generic';
             let order = 0;
             const values = new List<int>();
@@ -88,8 +88,8 @@ public sealed class BinderIntegrationParityTests
             export function evaluate(): int {
               values.Add(4);
             """ + operation + "; return order * 10 + values[0]; }";
-        Compilation oracle = CreateOracle(source);
-        Native.Compilation native = CreateNative(source);
+        var oracle = CreateOracle(source);
+        var native = CreateNative(source);
         AssertNoErrors(oracle);
         AssertNoErrors(native);
         using MemoryStream expectedImage = new();
@@ -108,14 +108,14 @@ public sealed class BinderIntegrationParityTests
             export function defaulted(value: int = 4): int { return value; }
             export function inferred() { return defaulted(); }
             """;
-        Compilation oracle = CreateOracle(source);
-        Native.Compilation native = CreateNative(source);
+        var oracle = CreateOracle(source);
+        var native = CreateNative(source);
         AssertNoErrors(oracle);
         AssertNoErrors(native);
-        var expected = oracle.GetFile(oracle.SyntaxTrees[0]).ModuleClass!.GetMembers()
-            .OfType<Symbols.Source.SourceMethodSymbol>().Where(m => m.Name is "identity" or "defaulted" or "inferred").ToArray();
+        SourceMethodSymbol[] expected = [.. oracle.GetFile(oracle.SyntaxTrees[0]).ModuleClass!.GetMembers()
+            .OfType<SourceMethodSymbol>().Where(m => m.Name is "identity" or "defaulted" or "inferred")];
         var actual = native.GetFile(native.SyntaxTrees[0]).ModuleClass!.GetMembers()
-            .OfType<SelfHost::Caladesi.Compiler.Symbols.Source.SourceMethodSymbol<Native.SourceFile>>()
+            .OfType<Native.Symbols.Source.SourceMethodSymbol<Native.SourceFile>>()
             .Where(m => m.Name is "identity" or "defaulted" or "inferred").ToArray();
         CollectionAssert.AreEqual(expected.Select(m => (m.Name, m.ReturnType.ToDisplayString(),
             Parameters: string.Join(",", m.Parameters.Select(p => $"{p.Type}:{p.IsOptional}")))).ToArray(),
@@ -137,14 +137,14 @@ public sealed class BinderIntegrationParityTests
     [DataRow("export function run(): int { const value: [int, string] = [3, 'x']; return value[0]; }")]
     public void AwaitIteratorsTemplatesOutParametersAndTuplesProduceActualMethodBodies(string source)
     {
-        Compilation oracle = CreateOracle(source);
-        Native.Compilation native = CreateNative(source);
+        var oracle = CreateOracle(source);
+        var native = CreateNative(source);
         AssertNoErrors(oracle);
         AssertNoErrors(native);
         var expected = oracle.GetFile(oracle.SyntaxTrees[0]).ModuleClass!.GetMembers()
-            .OfType<Symbols.Source.SourceMethodSymbol>().Single(m => m.Name == "run");
+            .OfType<SourceMethodSymbol>().Single(m => m.Name == "run");
         var actual = native.GetFile(native.SyntaxTrees[0]).ModuleClass!.GetMembers()
-            .OfType<SelfHost::Caladesi.Compiler.Symbols.Source.SourceMethodSymbol<Native.SourceFile>>()
+            .OfType<Native.Symbols.Source.SourceMethodSymbol<Native.SourceFile>>()
             .Single(m => m.Name == "run");
         Assert.AreEqual(expected.ReturnType.ToDisplayString(), actual.ReturnType.ToDisplayString());
         Assert.IsNotNull(actual.GetBoundBody());
@@ -156,18 +156,18 @@ public sealed class BinderIntegrationParityTests
     public void DecoratorBindingRetainsConstructorArgumentsThroughNativeEmission()
     {
         const string source = "@Obsolete('native binder', false) export function evaluate(): int { return 3; }";
-        Native.Compilation native = CreateNative(source);
+        var native = CreateNative(source);
         AssertNoErrors(native);
         using MemoryStream image = new();
         Assert.IsTrue(native.Emit(image).Success);
         image.Position = 0;
-        var context = new AssemblyLoadContext("BinderDecorator_" + Guid.NewGuid().ToString("N"), isCollectible: true);
+        AssemblyLoadContext context = new("BinderDecorator_" + Guid.NewGuid().ToString("N"), isCollectible: true);
         try
         {
-            MethodInfo method = context.LoadFromStream(image).GetTypes()
+            var method = context.LoadFromStream(image).GetTypes()
                 .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Static))
                 .Single(m => m.Name == "evaluate");
-            ObsoleteAttribute attribute = method.GetCustomAttribute<ObsoleteAttribute>()!;
+            var attribute = method.GetCustomAttribute<ObsoleteAttribute>()!;
             Assert.IsNotNull(attribute);
             Assert.AreEqual("native binder", attribute.Message);
             Assert.IsFalse(attribute.IsError);
@@ -175,34 +175,46 @@ public sealed class BinderIntegrationParityTests
         finally { context.Unload(); }
     }
 
-    private static Compilation CreateOracle(string source) => Compilation.Create(new CompilationOptions
+    private static Compilation CreateOracle(string source)
     {
-        AssemblyName = "BinderOracle_" + Guid.NewGuid().ToString("N"),
-        OutputKind = OutputKind.DynamicallyLinkedLibrary,
-        RecordSemanticInfo = true,
-    }, [Syntax.SyntaxTree.ParseText(source, "binder.cala")], TestReferences.Paths);
+        return Compilation.Create(new CompilationOptions
+        {
+            AssemblyName = "BinderOracle_" + Guid.NewGuid().ToString("N"),
+            OutputKind = OutputKind.DynamicallyLinkedLibrary,
+            RecordSemanticInfo = true,
+        }, [Compiler.Syntax.SyntaxTree.ParseText(source, "binder.cala")], TestReferences.Paths);
+    }
 
-    private static Native.Compilation CreateNative(string source) => Native.Compilation.Create(new Native.CompilationOptions
+    private static Native.Compilation CreateNative(string source)
     {
-        AssemblyName = "BinderNative_" + Guid.NewGuid().ToString("N"),
-        OutputKind = Native.OutputKind.DynamicallyLinkedLibrary,
-        RecordSemanticInfo = true,
-    }, [NativeSyntax.SyntaxTree.ParseText(source, "binder.cala")], NativeReferences.Value);
+        return Native.Compilation.Create(new Native.CompilationOptions
+        {
+            AssemblyName = "BinderNative_" + Guid.NewGuid().ToString("N"),
+            OutputKind = Native.OutputKind.DynamicallyLinkedLibrary,
+            RecordSemanticInfo = true,
+        }, [NativeSyntax.SyntaxTree.ParseText(source, "binder.cala")], NativeReferences.Value);
+    }
 
-    private static void AssertNoErrors(Compilation compilation) => Assert.IsFalse(compilation.HasErrors,
+    private static void AssertNoErrors(Compilation compilation)
+    {
+        Assert.IsFalse(compilation.HasErrors,
         string.Join(Environment.NewLine, compilation.GetDiagnostics().Select(d => d.ToString())));
+    }
 
-    private static void AssertNoErrors(Native.Compilation compilation) => Assert.IsFalse(compilation.HasErrors,
+    private static void AssertNoErrors(Native.Compilation compilation)
+    {
+        Assert.IsFalse(compilation.HasErrors,
         string.Join(Environment.NewLine, compilation.GetDiagnostics().Select(d => d.ToString())));
+    }
 
     private static int Execute(MemoryStream image)
     {
         image.Position = 0;
-        var context = new AssemblyLoadContext("BinderParity_" + Guid.NewGuid().ToString("N"), isCollectible: true);
+        AssemblyLoadContext context = new("BinderParity_" + Guid.NewGuid().ToString("N"), isCollectible: true);
         try
         {
-            Assembly assembly = context.LoadFromStream(image);
-            MethodInfo method = assembly.GetTypes().SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Static))
+            var assembly = context.LoadFromStream(image);
+            var method = assembly.GetTypes().SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Static))
                 .Single(m => m.Name == "evaluate");
             return (int)method.Invoke(null, null)!;
         }

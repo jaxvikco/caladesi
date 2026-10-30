@@ -15,6 +15,7 @@ export sealed class CompilationOptions {
   Defines: ImmutableArray<string> = [];
   GlobalImports: ImmutableArray<string> = CompilationOptions.DefaultGlobalImports;
   AssemblyVersion = new Version(1, 0, 0, 0);
+  InformationalVersion: string? = null;
   TargetFramework: string? = ".NETCoreApp,Version=v10.0";
   TargetFrameworkDisplayName: string? = null;
   GenerateTestEntryPoint = false;

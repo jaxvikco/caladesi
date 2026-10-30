@@ -3,18 +3,49 @@ import { Dictionary } from "System.Collections.Generic";
 import { MethodAttributes, ParameterAttributes, FieldAttributes } from "System.Reflection";
 import { MetadataReader, MethodDefinition, MethodDefinitionHandle, FieldDefinition, FieldDefinitionHandle, PropertyDefinition, PropertyDefinitionHandle, Parameter, CustomAttributeHandleCollection, ConstantHandle, ConstantTypeCode, MethodSignature } from "System.Reflection.Metadata";
 import { Symbol, Accessibility, RefKind, AttributeData } from "../Symbol";
-import { TypeSymbol, TypeKind, TypeParameterSymbol, VarianceKind, NullableTypeSymbol, ErrorTypeSymbol } from "../TypeSymbols";
+import { TypeSymbol, ArrayTypeSymbol, TypeKind, TypeParameterSymbol, VarianceKind, NullableTypeSymbol, ErrorTypeSymbol } from "../TypeSymbols";
+import { NamedTypeSymbol } from "../NamedTypeSymbol";
 import { MethodSymbol, FieldSymbol, PropertySymbol, ParameterSymbol, ConstantValue, MethodKind } from "../MemberSymbols";
 import { MetadataNamedType } from "./MetadataNamedType";
 import { MetadataHelpers } from "./MetadataHelpers";
 import { MetadataTypeProvider, GenericContext, ByRefTypeSymbol } from "./MetadataTypeProvider";
 
 export static class Nullability {
+  static ApplySignature(type: TypeSymbol, reader: MetadataReader, attributes: CustomAttributeHandleCollection, fallback: byte): TypeSymbol {
+    const attribute = MetadataHelpers.FindAttribute(reader, attributes, "System.Runtime.CompilerServices", "NullableAttribute");
+    if (attribute == null) return Nullability.Apply(type, fallback);
+    let blob = reader.GetBlobReader(attribute!.Value);
+    if (blob.ReadUInt16() != 1) throw new BadImageFormatException("Invalid NullableAttribute prolog.");
+    const flags: byte[] = blob.Length == 5 ? [blob.ReadByte()] : blob.ReadBytes(blob.ReadInt32());
+    return new NullableSignatureDecoder(flags, fallback).Decode(type);
+  }
   static Apply(type: TypeSymbol, flag: byte): TypeSymbol {
     if (flag != 2 || type instanceof NullableTypeSymbol || type.IsVoid || type.IsErrorType) return type;
     if (type.IsReferenceType) return new NullableTypeSymbol(type);
     if (type instanceof TypeParameterSymbol && !(type as TypeParameterSymbol).HasValueTypeConstraint) return new NullableTypeSymbol(type);
     return type;
+  }
+}
+
+sealed class NullableSignatureDecoder {
+  private position: int = 0;
+  constructor(private readonly flags: byte[], private readonly fallback: byte) {}
+  Decode(type: TypeSymbol): TypeSymbol {
+    let flag = this.fallback;
+    if (type.IsReferenceType || type instanceof TypeParameterSymbol ||
+        (type instanceof NamedTypeSymbol && (type as NamedTypeSymbol).TypeArguments.Length > 0)) {
+      flag = this.position < this.flags.Length ? this.flags[this.position] : this.fallback;
+      this.position++;
+    }
+    if (type instanceof ArrayTypeSymbol) {
+      type = (type as ArrayTypeSymbol).WithElementType(this.Decode((type as ArrayTypeSymbol).ElementType));
+    } else if (type instanceof NamedTypeSymbol && (type as NamedTypeSymbol).TypeArguments.Length > 0) {
+      const named = type as NamedTypeSymbol;
+      const arguments = ImmutableArray.CreateBuilder<TypeSymbol>();
+      for (const argument of named.TypeArguments) arguments.Add(this.Decode(argument));
+      type = named.OriginalDefinition.Construct(arguments.ToImmutable());
+    }
+    return Nullability.Apply(type, flag);
   }
 }
 
@@ -138,7 +169,8 @@ export sealed class MetadataMethodSymbol extends MethodSymbol {
     }
     const [hasReturnRow, returnRow] = rows.TryGetValue(0);
     const returnFlag = hasReturnRow ? this.NullableFlagOf(returnRow.GetCustomAttributes(), contextFlag) : contextFlag;
-    this.returnType = Nullability.Apply(returnType, returnFlag);
+    this.returnType = hasReturnRow ? Nullability.ApplySignature(returnType, reader, returnRow.GetCustomAttributes(), contextFlag) :
+      Nullability.Apply(returnType, returnFlag);
     const extension = this.IsExtensionMethod;
     const builder = ImmutableArray.CreateBuilder<ParameterSymbol>(signature.ParameterTypes.Length);
     for (let index = 0; index < signature.ParameterTypes.Length; index++) {
@@ -170,7 +202,7 @@ export sealed class MetadataMethodSymbol extends MethodSymbol {
           if (defaultValue == null) defaultValue = MetadataMethodSymbol.ReadAttributeDefault(reader, attributes);
         }
       }
-      type = Nullability.Apply(type, flag);
+      type = hasRow ? Nullability.ApplySignature(type, reader, row.GetCustomAttributes(), contextFlag) : Nullability.Apply(type, flag);
       if (isParams) type = type.StripNullable();
       if (optional && defaultValue == null && !type.IsValueType) defaultValue = ConstantValue.Null;
       builder.Add(new ParameterSymbol(name, type, index, this, refKind, isParams, defaultValue, optional, extension && index == 0));
@@ -248,7 +280,7 @@ export sealed class MetadataFieldSymbol extends FieldSymbol {
     const attribute = MetadataHelpers.FindAttribute(reader, this.definition.GetCustomAttributes(),
       "System.Runtime.CompilerServices", "NullableAttribute");
     if (attribute != null) flag = MetadataHelpers.ReadNullableFlag(reader, attribute!.Value);
-    this.type = Nullability.Apply(this.type, flag);
+    this.type = Nullability.ApplySignature(this.type, reader, this.definition.GetCustomAttributes(), flag);
   }
   get IsUnsupported(): bool { return this.unsupported; }
   override get Name(): string { return this.name; }

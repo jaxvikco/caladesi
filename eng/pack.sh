@@ -38,7 +38,7 @@ dotnet msbuild "$root/eng/SelfHost.proj" -t:Verify \
     -p:ContinuousIntegrationBuild=true --nologo -v:minimal
 
 stage="$work/selfhost/stage3"
-pivot="${config,,}"
+pivot="$(printf '%s' "$config" | tr '[:upper:]' '[:lower:]')"
 cli="$stage/bin/Caladesi.Cli.SelfHost/$pivot"
 tasks="$stage/bin/Caladesi.Build.Tasks.SelfHost/$pivot"
 runtime="$stage/bin/Caladesi.Runtime.SelfHost/$pivot"

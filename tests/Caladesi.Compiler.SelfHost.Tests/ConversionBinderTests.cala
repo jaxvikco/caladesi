@@ -147,7 +147,7 @@ export class ConversionBinderTests {
     const nullConversion = ConversionBinderTests.Node(binder.ConvertImplicit(nullLiteral, nullable, syntax),
       ConversionKind.NullLiteral, nullable, syntax);
     ConversionBinderTests.Same(nullConversion.Operand, nullLiteral);
-    if (nullConversion.ConstantValue != null) throw new Exception("Null conversion is not numeric folded");
+    if (nullConversion.ConstantValue != ConstantValue.Null) throw new Exception("Null conversion must preserve the null constant");
   }
 
   @TestMethod
@@ -573,7 +573,7 @@ export sealed class ConversionBinderTestContext extends ConversionBindingContext
     return this.GroupResult;
   }
   override IsLiteralEnum(type: TypeSymbol): bool { return Object.ReferenceEquals(type, this.LiteralEnum); }
-  override Report(descriptor: DiagnosticDescriptor, syntax: SyntaxNode?, args: object[]): void {
+  override Report(descriptor: DiagnosticDescriptor, syntax: SyntaxNode?, args: object?[]): void {
     this.ReportCount++;
     this.descriptor = descriptor;
     this.syntax = syntax;

@@ -19,7 +19,8 @@ import { SourceText } from "../Text/SourceText";
 import { Symbol, Accessibility, RefKind } from "../Symbols/Symbol";
 import { NamespaceSymbol } from "../Symbols/NamespaceSymbol";
 import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
-import { TypeParameterSymbol, TypeKind, VarianceKind } from "../Symbols/TypeSymbols";
+import { SpecialType } from "../Symbols/SpecialType";
+import { TypeSymbol, ArrayTypeSymbol, NullableTypeSymbol, TypeParameterSymbol, TypeKind, VarianceKind } from "../Symbols/TypeSymbols";
 import { MethodSymbol, MethodKind, FieldSymbol, PropertySymbol } from "../Symbols/MemberSymbols";
 import { SourceNamedType } from "../Symbols/Source/SourceTypes";
 import { SourceUnionSymbol } from "../Symbols/Source/SourceTypeAliasTypes";
@@ -154,6 +155,9 @@ export sealed class AssemblyEmitter<TSourceFile> {
     } finally { stream.Dispose(); }
   }
   private AssignHandles(): void {
+    const ordered = this.program.Types.OrderBy(AssemblyEmitter<TSourceFile>.NestingDepth).ToArray();
+    this.program.Types.Clear();
+    this.program.Types.AddRange(ordered);
     let nextType = 2;
     let nextField = 1;
     let nextMethod = 1;
@@ -187,6 +191,11 @@ export sealed class AssemblyEmitter<TSourceFile> {
         }
       }
     }
+  }
+  private static NestingDepth(type: NamedTypeSymbol): int {
+    let depth = 0;
+    for (let owner = type.ContainingSymbol; owner instanceof NamedTypeSymbol; owner = owner.ContainingSymbol) depth++;
+    return depth;
   }
   private static NamespaceOf(type: NamedTypeSymbol): string {
     return type.ContainingSymbol instanceof NamespaceSymbol ? (type.ContainingSymbol as NamespaceSymbol).ToDisplayString() : "";
@@ -300,6 +309,7 @@ export sealed class AssemblyEmitter<TSourceFile> {
     if (field.IsConst) flags |= FieldAttributes.Static | FieldAttributes.Literal | FieldAttributes.HasDefault;
     else if (field.IsReadOnly) flags |= FieldAttributes.InitOnly;
     const handle = metadata.AddFieldDefinition(flags, metadata.GetOrAddString(field.Name), this.Metadata.EncodeFieldSignature(field.Type));
+    this.AddNullableAttribute(handle, field.Type);
     if (!handle.Equals(this.fieldDefs[field.OriginalDefinition])) throw new InvalidOperationException("Field row mismatch for " + field.Name);
     if (field.IsConst) {
       let value: object? = field.ConstantValue == null ? null : field.ConstantValue.Value;
@@ -315,6 +325,7 @@ export sealed class AssemblyEmitter<TSourceFile> {
   private EmitProperty(property: PropertySymbol): void {
     const metadata = this.Metadata.Metadata;
     const handle = metadata.AddProperty(PropertyAttributes.None, metadata.GetOrAddString(property.Name), this.Metadata.EncodePropertySignature(property));
+    this.AddNullableAttribute(handle, property.Type);
     if (!handle.Equals(this.propertyDefs[property.OriginalDefinition])) throw new InvalidOperationException("Property row mismatch for " + property.Name);
     if (property.GetMethod != null && this.methodDefs.ContainsKey(property.GetMethod.OriginalDefinition))
       metadata.AddMethodSemantics(handle, MethodSemanticsAttributes.Getter, this.methodDefs[property.GetMethod.OriginalDefinition]);
@@ -385,6 +396,13 @@ export sealed class AssemblyEmitter<TSourceFile> {
       if (source.Declaration != null)
         this.EmitDecorators(AssemblyEmitter<TSourceFile>.Decorators(source.Declaration), handle, source.File, type);
     }
+    const returnFlags = new List<byte>();
+    AssemblyEmitter<TSourceFile>.CollectNullableFlags(method.ReturnType, returnFlags);
+    if (returnFlags.Contains(2)) {
+      const returnHandle = metadata.AddParameter(ParameterAttributes.None, metadata.GetOrAddString(""), 0);
+      this.paramRow++;
+      this.AddNullableAttribute(returnHandle, method.ReturnType);
+    }
     for (const parameter of method.Parameters) {
       let parameterFlags = ParameterAttributes.None;
       if (parameter.RefKind == RefKind.Out) parameterFlags |= ParameterAttributes.Out;
@@ -393,6 +411,7 @@ export sealed class AssemblyEmitter<TSourceFile> {
       if (parameter.DefaultValue != null) parameterFlags |= ParameterAttributes.HasDefault;
       const parameterHandle = metadata.AddParameter(parameterFlags, metadata.GetOrAddString(parameter.Name), parameter.Ordinal + 1);
       this.paramRow++;
+      this.AddNullableAttribute(parameterHandle, parameter.Type);
       if (parameter.DefaultValue != null) {
         let value: object? = parameter.DefaultValue.Value;
         if (parameter.Type.StripNullable().TypeKind == TypeKind.Enum && value != null) value = Convert.ToInt32(value);
@@ -448,6 +467,39 @@ export sealed class AssemblyEmitter<TSourceFile> {
     if (method.MethodKind == MethodKind.StaticConstructor) { il.Op(ILOpCode.Ret, 0); return; }
     il.Op(ILOpCode.Ldnull, 1);
     il.Op(ILOpCode.Throw, -1);
+  }
+  private static CollectNullableFlags(type: TypeSymbol, flags: List<byte>): void {
+    const underlying = type.StripNullable();
+    if (underlying.IsReferenceType || underlying instanceof TypeParameterSymbol)
+      flags.Add(type instanceof NullableTypeSymbol ? (2 as byte) : (1 as byte));
+    else if (underlying instanceof NamedTypeSymbol && (underlying as NamedTypeSymbol).TypeArguments.Length > 0) flags.Add(0);
+    if (underlying instanceof ArrayTypeSymbol) {
+      AssemblyEmitter<TSourceFile>.CollectNullableFlags((underlying as ArrayTypeSymbol).ElementType, flags);
+    } else if (underlying instanceof NamedTypeSymbol) {
+      for (const argument of (underlying as NamedTypeSymbol).TypeArguments)
+        AssemblyEmitter<TSourceFile>.CollectNullableFlags(argument, flags);
+    }
+  }
+  private AddNullableAttribute(parent: EntityHandle, type: TypeSymbol): void {
+    const flags = new List<byte>();
+    AssemblyEmitter<TSourceFile>.CollectNullableFlags(type, flags);
+    if (!flags.Contains(2)) return;
+    const attribute = this.context.GetWellKnownType("System.Runtime.CompilerServices.NullableAttribute");
+    if (attribute != null) {
+      for (const constructor of attribute.InstanceConstructors) {
+        if (constructor.Parameters.Length != 1) continue;
+        if (flags.Count == 1 ? constructor.Parameters[0].Type.SpecialType != SpecialType.Byte :
+            !(constructor.Parameters[0].Type instanceof ArrayTypeSymbol)) continue;
+        const blob = new BlobBuilder();
+        blob.WriteUInt16(1);
+        if (flags.Count > 1) blob.WriteInt32(flags.Count);
+        for (const flag of flags) blob.WriteByte(flag);
+        blob.WriteUInt16(0);
+        this.attributes.Add(new EmissionAttribute(parent, this.Metadata.GetMethodEntity(constructor), this.Metadata.Metadata.GetOrAddBlob(blob)));
+        return;
+      }
+    }
+    throw new InvalidOperationException("NullableAttribute is required to preserve nullable reference signatures.");
   }
   private AddAttribute(parent: EntityHandle, name: string): void {
     const type = this.context.GetWellKnownType(name);
@@ -506,6 +558,19 @@ export sealed class AssemblyEmitter<TSourceFile> {
   }
   private EmitAssemblyAttributes(): void {
     const options = this.context.Options;
+    if (options.InformationalVersion != null) {
+      const versionAttribute = this.context.GetWellKnownType("System.Reflection.AssemblyInformationalVersionAttribute");
+      if (versionAttribute != null) for (const constructor of versionAttribute.InstanceConstructors) {
+        if (constructor.Parameters.Length != 1) continue;
+        const blob = new BlobBuilder();
+        blob.WriteUInt16(1);
+        blob.WriteSerializedString(options.InformationalVersion);
+        blob.WriteUInt16(0);
+        this.attributes.Add(new EmissionAttribute(EntityHandle.AssemblyDefinition,
+          this.Metadata.GetMethodEntity(constructor), this.Metadata.Metadata.GetOrAddBlob(blob)));
+        break;
+      }
+    }
     if (options.TargetFramework == null) return;
     const type = this.context.GetWellKnownType("System.Runtime.Versioning.TargetFrameworkAttribute");
     if (type == null) return;

@@ -26,7 +26,7 @@ public sealed class ModifierParityTests
     [TestMethod]
     public void Modifiers_EverySyntaxKindAndDuplicatesMatchBootstrap()
     {
-        foreach (SyntaxKind kind in Enum.GetValues<SyntaxKind>())
+        foreach (var kind in Enum.GetValues<SyntaxKind>())
         {
             AssertKinds([kind]);
             AssertKinds([kind, kind, SyntaxKind.IdentifierToken]);
@@ -42,18 +42,18 @@ public sealed class ModifierParityTests
             SyntaxKind.OverrideKeyword, SyntaxKind.PrivateKeyword, SyntaxKind.ProtectedKeyword, SyntaxKind.InternalKeyword,
             SyntaxKind.PublicKeyword, SyntaxKind.ReadonlyKeyword, SyntaxKind.SealedKeyword, SyntaxKind.StructKeyword
         ];
-        for (int mask = 0; mask < 1 << flags.Length; mask++)
+        for (var mask = 0; mask < 1 << flags.Length; mask++)
         {
-            AssertKinds(flags.Where((_, index) => (mask & (1 << index)) != 0).ToArray());
+            AssertKinds([.. flags.Where((_, index) => (mask & (1 << index)) != 0)]);
         }
     }
 
     private static void AssertKinds(SyntaxKind[] kinds)
     {
-        SyntaxElement[] expectedTokens = kinds.Select(kind =>
-            (SyntaxElement)new SyntaxToken(kind, "", 0, default, default)).ToArray();
-        SelfElement[] actualTokens = kinds.Select(kind =>
-            (SelfElement)new SelfToken((SelfKind)(int)kind, "", 0, default, default, null)).ToArray();
+        SyntaxElement[] expectedTokens = [.. kinds.Select(kind =>
+            (SyntaxElement)new SyntaxToken(kind, "", 0, default, default))];
+        SelfElement[] actualTokens = [.. kinds.Select(kind =>
+            (SelfElement)new SelfToken((SelfKind)(int)kind, "", 0, default, default, null))];
         AssertModifiers(new ModifierSet(new SyntaxList<SyntaxToken>(new ListNode(SyntaxKind.List, expectedTokens))),
             SelfModifiers.Create(new SelfList(new SelfListNode(SelfKind.List, actualTokens))));
     }

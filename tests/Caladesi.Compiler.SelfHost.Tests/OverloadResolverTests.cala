@@ -59,7 +59,7 @@ export class OverloadResolverTests {
       RefKind.None, false, new ConstantValue(17), true, false), new ParameterSymbol("answer", integer, 1, method, RefKind.Out, false));
     const result = f.Call(ImmutableArray.Create<MethodSymbol>(method), ImmutableArray<BoundExpression>.Empty);
     if (result == null || result.OutLocals.Length != 1 || result.Arguments.Length != 2 ||
-        result.Arguments[0].ConstantValue == null || Convert.ToInt32(result.Arguments[0].ConstantValue.Value) != 17)
+        result.Arguments[0].ConstantValue == null || Convert.ToInt32(result.Arguments[0].ConstantValue!.Value) != 17)
       throw new Exception("Optional plus omitted trailing out");
     const local = result.OutLocals[0];
     if (!local.IsSynthesized || local.Name != "<out>answer" ||
@@ -134,7 +134,7 @@ export class OverloadResolverTests {
     const integer = f.Context.GetSpecialType(SpecialType.Int32);
     const target = new OverloadNativeDelegate("D", f.Unary(integer, integer));
     let binds = 0;
-    const info = new LambdaInfo(1, ImmutableArray.Create<TypeSymbol>(OverloadResolverTests.NoType),
+    const info = new LambdaInfo(1, ImmutableArray.Create<TypeSymbol?>(OverloadResolverTests.NoType),
       (types, result, speculative) => {
         if (!speculative || f.Context.Depth != 1) throw new Exception("Lambda owner speculation");
         binds++;
@@ -146,7 +146,7 @@ export class OverloadResolverTests {
         f.Context.Depth != 0 || f.Context.Disposals != 1) throw new Exception("Lambda cache and guard");
     const sameName = new OverloadNativeDelegate("D", f.Unary(f.Context.GetSpecialType(SpecialType.Int64), integer));
     if (!f.Engine.LambdaConvertible(info, sameName) || binds != 1) throw new Exception("Delegate display cache key");
-    const mismatch = new LambdaInfo(1, ImmutableArray.Create<TypeSymbol>(f.Context.GetSpecialType(SpecialType.String)),
+    const mismatch = new LambdaInfo(1, ImmutableArray.Create<TypeSymbol?>(f.Context.GetSpecialType(SpecialType.String)),
       (types, result, speculative) => { throw new Exception("Must not bind mismatched explicit parameter"); }, types => integer);
     if (f.Engine.LambdaConvertible(mismatch, target)) throw new Exception("Explicit lambda parameter exactness");
     const failure = new BoundUnbound(f.Syntax, type => { throw new InvalidOperationException("speculative"); });
@@ -252,7 +252,7 @@ export class OverloadNativeContext extends OverloadResolutionContext {
     return new ConversionClassifierNativeType(type.ToString(), TypeKind.Class, type);
   }
   override get LocalOwner(): Symbol? { return null; }
-  override Report(descriptor: DiagnosticDescriptor, syntax: SyntaxNode?, args: object[]): void {
+  override Report(descriptor: DiagnosticDescriptor, syntax: SyntaxNode?, args: object?[]): void {
     if (this.Depth == 0) this.LastId = descriptor.Id;
   }
   override BeginSpeculation(): IDisposable {

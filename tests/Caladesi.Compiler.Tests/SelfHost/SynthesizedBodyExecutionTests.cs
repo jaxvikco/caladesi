@@ -25,9 +25,9 @@ public sealed class SynthesizedBodyExecutionTests
     {
         new Fixture().Execute(type =>
         {
-            object value = Create(type, 17, "initial");
-            PropertyInfo first = type.GetProperty("First")!;
-            PropertyInfo second = type.GetProperty("Second")!;
+            var value = Create(type, 17, "initial");
+            var first = type.GetProperty("First")!;
+            var second = type.GetProperty("Second")!;
             Assert.AreEqual(17, first.GetValue(value));
             Assert.AreEqual("initial", second.GetValue(value));
             first.SetValue(value, -4);
@@ -42,8 +42,8 @@ public sealed class SynthesizedBodyExecutionTests
     {
         new Fixture().Execute(type =>
         {
-            object value = Create(type, 5, "same");
-            MethodInfo equals = type.GetMethod("Equals", [type])!;
+            var value = Create(type, 5, "same");
+            var equals = type.GetMethod("Equals", [type])!;
             Assert.IsTrue((bool)equals.Invoke(value, [Create(type, 5, "same")])!);
             Assert.IsFalse((bool)equals.Invoke(value, [Create(type, 6, "same")])!);
             Assert.IsFalse((bool)equals.Invoke(value, [Create(type, 5, "different")])!);
@@ -61,13 +61,13 @@ public sealed class SynthesizedBodyExecutionTests
     {
         new Fixture().Execute(type =>
         {
-            foreach (string? text in new[] { "same", null })
+            foreach (var text in new[] { "same", null })
             {
-                object left = Create(type, 23, text);
-                object right = Create(type, 23, text);
+                var left = Create(type, 23, text);
+                var right = Create(type, 23, text);
                 Assert.IsTrue(left.Equals(right));
                 Assert.AreEqual(left.GetHashCode(), right.GetHashCode());
-                int expected = unchecked(23 * -1521134295 + (text?.GetHashCode() ?? 0));
+                var expected = unchecked((23 * -1521134295) + (text?.GetHashCode() ?? 0));
                 Assert.AreEqual(expected, left.GetHashCode());
             }
         });
@@ -85,8 +85,10 @@ public sealed class SynthesizedBodyExecutionTests
         });
     }
 
-    private static object Create(Type type, int first, string? second) =>
-        Activator.CreateInstance(type, [first, second])!;
+    private static object Create(Type type, int first, string? second)
+    {
+        return Activator.CreateInstance(type, [first, second])!;
+    }
 
     private sealed class Fixture : HSS.SourceSymbolContext<string>
     {
@@ -105,17 +107,17 @@ public sealed class SynthesizedBodyExecutionTests
             owner.SetBase(GetSpecialType(HS.SpecialType.Object));
             AddProperty("First", GetSpecialType(HS.SpecialType.Int32));
             AddProperty("Second", GetSpecialType(HS.SpecialType.String));
-            AddMethod(".ctor", HS.MethodKind.Constructor, HSS.SynthesizedBodyKind.RecordConstructor,
+            _ = AddMethod(".ctor", HS.MethodKind.Constructor, HSS.SynthesizedBodyKind.RecordConstructor,
                 GetSpecialType(HS.SpecialType.Void),
                 [("first", properties[0].Type), ("second", properties[1].Type)]);
-            AddMethod("Equals", HS.MethodKind.Ordinary, HSS.SynthesizedBodyKind.RecordEquals,
+            _ = AddMethod("Equals", HS.MethodKind.Ordinary, HSS.SynthesizedBodyKind.RecordEquals,
                 GetSpecialType(HS.SpecialType.Boolean), [("other", owner)]);
-            AddMethod("Equals", HS.MethodKind.Ordinary, HSS.SynthesizedBodyKind.RecordEqualsObject,
+            _ = AddMethod("Equals", HS.MethodKind.Ordinary, HSS.SynthesizedBodyKind.RecordEqualsObject,
                 GetSpecialType(HS.SpecialType.Boolean), [("other", GetSpecialType(HS.SpecialType.Object))],
                 isOverride: true);
-            AddMethod("GetHashCode", HS.MethodKind.Ordinary, HSS.SynthesizedBodyKind.RecordGetHashCode,
+            _ = AddMethod("GetHashCode", HS.MethodKind.Ordinary, HSS.SynthesizedBodyKind.RecordGetHashCode,
                 GetSpecialType(HS.SpecialType.Int32), [], isOverride: true);
-            AddMethod("ToString", HS.MethodKind.Ordinary, HSS.SynthesizedBodyKind.RecordToString,
+            _ = AddMethod("ToString", HS.MethodKind.Ordinary, HSS.SynthesizedBodyKind.RecordToString,
                 GetSpecialType(HS.SpecialType.String), [], isOverride: true);
         }
 
@@ -126,11 +128,14 @@ public sealed class SynthesizedBodyExecutionTests
             { IsBackingField = true };
             HSS.SourcePropertySymbol<string> property = new(this, "", owner, name,
                 HS.Accessibility.Public, false, null, null, type)
-            { IsAutoProperty = true, BackingField = field };
-            property.Getter = AddMethod("get_" + name, HS.MethodKind.PropertyGet,
-                HSS.SynthesizedBodyKind.AutoGetter, type, []);
-            property.Setter = AddMethod("set_" + name, HS.MethodKind.PropertySet,
-                HSS.SynthesizedBodyKind.AutoSetter, GetSpecialType(HS.SpecialType.Void), [("value", type)]);
+            {
+                IsAutoProperty = true,
+                BackingField = field,
+                Getter = AddMethod("get_" + name, HS.MethodKind.PropertyGet,
+                    HSS.SynthesizedBodyKind.AutoGetter, type, []),
+                Setter = AddMethod("set_" + name, HS.MethodKind.PropertySet,
+                    HSS.SynthesizedBodyKind.AutoSetter, GetSpecialType(HS.SpecialType.Void), [("value", type)])
+            };
             property.Getter.AssociatedProperty = property;
             property.Setter.AssociatedProperty = property;
             owner.AddMember(field);
@@ -151,8 +156,8 @@ public sealed class SynthesizedBodyExecutionTests
                 IsVirtualFlag = isOverride,
                 IsSealedFlag = isOverride
             };
-            method.ExplicitParameters = parameters.Select((p, index) =>
-                new HS.ParameterSymbol(p.Name, p.Type, index, method)).ToImmutableArray();
+            method.ExplicitParameters = [.. parameters.Select((p, index) =>
+                new HS.ParameterSymbol(p.Name, p.Type, index, method))];
             owner.AddMember(method);
             methods.Add(method);
             return method;
@@ -160,35 +165,43 @@ public sealed class SynthesizedBodyExecutionTests
 
         public void Execute(Action<Type> assertions)
         {
-            string assemblyName = "SynthesizedBodyExecution_" + Guid.NewGuid().ToString("N");
-            MetadataBuilder md = metadata.Metadata;
-            md.AddModule(0, md.GetOrAddString(assemblyName + ".dll"), md.GetOrAddGuid(Guid.NewGuid()), default, default);
-            md.AddAssembly(md.GetOrAddString(assemblyName), new Version(1, 0, 0, 0),
+            var assemblyName = "SynthesizedBodyExecution_" + Guid.NewGuid().ToString("N");
+            var md = metadata.Metadata;
+            _ = md.AddModule(0, md.GetOrAddString(assemblyName + ".dll"), md.GetOrAddGuid(Guid.NewGuid()), default, default);
+            _ = md.AddAssembly(md.GetOrAddString(assemblyName), new Version(1, 0, 0, 0),
                 default, default, 0, AssemblyHashAlgorithm.None);
-            md.AddTypeDefinition(default, default, md.GetOrAddString("<Module>"), default,
+            _ = md.AddTypeDefinition(default, default, md.GetOrAddString("<Module>"), default,
                 MetadataTokens.FieldDefinitionHandle(1), MetadataTokens.MethodDefinitionHandle(1));
-            TypeDefinitionHandle type = md.AddTypeDefinition(TypeAttributes.Public | TypeAttributes.Sealed,
+            var type = md.AddTypeDefinition(TypeAttributes.Public | TypeAttributes.Sealed,
                 default, md.GetOrAddString(owner.Name), metadata.GetTypeEntity(owner.BaseType!),
                 MetadataTokens.FieldDefinitionHandle(1), MetadataTokens.MethodDefinitionHandle(1));
             metadata.RegisterTypeDefinition(owner, type);
-            for (int i = 0; i < properties.Count; i++)
+            for (var i = 0; i < properties.Count; i++)
+            {
                 metadata.RegisterField(properties[i].BackingField!, MetadataTokens.FieldDefinitionHandle(i + 1));
-            for (int i = 0; i < methods.Count; i++)
-                metadata.RegisterMethod(methods[i], MetadataTokens.MethodDefinitionHandle(i + 1));
-            for (int i = 0; i < properties.Count; i++)
-                metadata.RegisterProperty(properties[i], MetadataTokens.PropertyDefinitionHandle(i + 1));
+            }
 
-            foreach (HSS.SourcePropertySymbol<string> property in properties)
+            for (var i = 0; i < methods.Count; i++)
+            {
+                metadata.RegisterMethod(methods[i], MetadataTokens.MethodDefinitionHandle(i + 1));
+            }
+
+            for (var i = 0; i < properties.Count; i++)
+            {
+                metadata.RegisterProperty(properties[i], MetadataTokens.PropertyDefinitionHandle(i + 1));
+            }
+
+            foreach (var property in properties)
             {
                 HS.FieldSymbol field = property.BackingField!;
-                md.AddFieldDefinition(FieldAttributes.Private, md.GetOrAddString(field.Name),
+                _ = md.AddFieldDefinition(FieldAttributes.Private, md.GetOrAddString(field.Name),
                     metadata.EncodeFieldSignature(field.Type));
             }
 
             BlobBuilder methodBodies = new();
             MethodBodyStreamEncoder bodies = new(methodBodies);
-            int parameterRow = 1;
-            foreach (HSS.SourceMethodSymbol<string> method in methods)
+            var parameterRow = 1;
+            foreach (var method in methods)
             {
                 H.ILBuilder il = new();
                 new H.SynthesizedBodyEmitter<string>(metadata, method, il, GetSpecialType,
@@ -197,33 +210,45 @@ public sealed class SynthesizedBodyExecutionTests
                 if (il.Locals.Count > 0)
                 {
                     BlobBuilder signature = new();
-                    LocalVariablesEncoder encoder = new BlobEncoder(signature).LocalVariableSignature(il.Locals.Count);
-                    foreach (H.LocalSlot slot in il.Locals)
+                    var encoder = new BlobEncoder(signature).LocalVariableSignature(il.Locals.Count);
+                    foreach (var slot in il.Locals)
+                    {
                         metadata.EncodeType(encoder.AddVariable().Type(), slot.Type);
+                    }
+
                     locals = md.AddStandaloneSignature(md.GetOrAddBlob(signature));
                 }
-                int offset = bodies.AddMethodBody(il.Encoder, il.MaxStack, locals, MethodBodyAttributes.InitLocals);
-                ParameterHandle firstParameter = MetadataTokens.ParameterHandle(parameterRow);
-                foreach (HS.ParameterSymbol parameter in method.Parameters)
+                var offset = bodies.AddMethodBody(il.Encoder, il.MaxStack, locals, MethodBodyAttributes.InitLocals);
+                var firstParameter = MetadataTokens.ParameterHandle(parameterRow);
+                foreach (var parameter in method.Parameters)
                 {
-                    md.AddParameter(ParameterAttributes.None, md.GetOrAddString(parameter.Name), parameter.Ordinal + 1);
+                    _ = md.AddParameter(ParameterAttributes.None, md.GetOrAddString(parameter.Name), parameter.Ordinal + 1);
                     parameterRow++;
                 }
-                MethodAttributes attributes = MethodAttributes.Public | MethodAttributes.HideBySig;
+                var attributes = MethodAttributes.Public | MethodAttributes.HideBySig;
                 if (method.MethodKind == HS.MethodKind.Constructor)
+                {
                     attributes |= MethodAttributes.SpecialName | MethodAttributes.RTSpecialName;
+                }
+
                 if (method.MethodKind is HS.MethodKind.PropertyGet or HS.MethodKind.PropertySet)
+                {
                     attributes |= MethodAttributes.SpecialName;
+                }
+
                 if (method.IsOverride)
+                {
                     attributes |= MethodAttributes.Virtual | MethodAttributes.Final;
-                md.AddMethodDefinition(attributes, MethodImplAttributes.IL | MethodImplAttributes.Managed,
+                }
+
+                _ = md.AddMethodDefinition(attributes, MethodImplAttributes.IL | MethodImplAttributes.Managed,
                     md.GetOrAddString(method.MetadataName), metadata.EncodeMethodSignature(method), offset, firstParameter);
             }
 
             md.AddPropertyMap(type, MetadataTokens.PropertyDefinitionHandle(1));
-            foreach (HSS.SourcePropertySymbol<string> property in properties)
+            foreach (var property in properties)
             {
-                PropertyDefinitionHandle handle = md.AddProperty(PropertyAttributes.None,
+                var handle = md.AddProperty(PropertyAttributes.None,
                     md.GetOrAddString(property.Name), metadata.EncodePropertySignature(property));
                 md.AddMethodSemantics(handle, MethodSemanticsAttributes.Getter,
                     MetadataTokens.MethodDefinitionHandle(methods.IndexOf(property.Getter!) + 1));
@@ -233,15 +258,15 @@ public sealed class SynthesizedBodyExecutionTests
             ManagedPEBuilder pe = new(PEHeaderBuilder.CreateLibraryHeader(), new MetadataRootBuilder(md),
                 methodBodies, flags: CorFlags.ILOnly);
             BlobBuilder image = new();
-            pe.Serialize(image);
-            byte[] bytes = image.ToArray();
+            _ = pe.Serialize(image);
+            var bytes = image.ToArray();
             Assert.IsEmpty(ILVerifier.Verify(assemblyName, bytes));
 
             AssemblyLoadContext context = new(assemblyName, isCollectible: true);
             try
             {
                 using MemoryStream stream = new(bytes);
-                Assembly assembly = context.LoadFromStream(stream);
+                var assembly = context.LoadFromStream(stream);
                 assertions(assembly.GetType(owner.Name, throwOnError: true)!);
             }
             finally
@@ -250,22 +275,57 @@ public sealed class SynthesizedBodyExecutionTests
             }
         }
 
-        public override HS.NamedTypeSymbol GetSpecialType(HS.SpecialType type) => references.GetSpecialType(type)!;
-        public override bool IsSourceNamedType(HS.NamedTypeSymbol type) => ReferenceEquals(type, owner);
-        public override string GetFilePath(string file) => file;
+        public override HS.NamedTypeSymbol GetSpecialType(HS.SpecialType type)
+        {
+            return references.GetSpecialType(type)!;
+        }
+
+        public override bool IsSourceNamedType(HS.NamedTypeSymbol type)
+        {
+            return ReferenceEquals(type, owner);
+        }
+
+        public override string GetFilePath(string file)
+        {
+            return file;
+        }
+
         public override HD.DiagnosticBag DeclarationDiagnostics { get; } = new();
 
         // All signatures are explicit; any accidental request for binding must fail the test.
-        public override HX.SyntaxTree GetTree(string file) => throw new NotSupportedException();
+        public override HX.SyntaxTree GetTree(string file)
+        {
+            throw new NotSupportedException();
+        }
+
         public override ImmutableArray<HS.ParameterSymbol> BindParameters(string file,
-            HSS.SourceMethodSymbol<string> method, HX.ParameterListSyntax syntax) => throw new NotSupportedException();
+                    HSS.SourceMethodSymbol<string> method, HX.ParameterListSyntax syntax)
+        {
+            throw new NotSupportedException();
+        }
+
         public override HS.TypeSymbol BindType(string file, HS.Symbol owner, HX.TypeSyntax syntax,
-            bool allowVoid) => throw new NotSupportedException();
+                    bool allowVoid)
+        {
+            throw new NotSupportedException();
+        }
+
         public override HS.TypeSymbol AdjustDeclaredReturnType(string file, HSS.SourceMethodSymbol<string> method,
-            HS.TypeSymbol type, HX.TypeSyntax syntax) => throw new NotSupportedException();
+                    HS.TypeSymbol type, HX.TypeSyntax syntax)
+        {
+            throw new NotSupportedException();
+        }
+
         public override HS.TypeParameterConstraints BindConstraints(string file, HS.Symbol owner,
-            HX.TypeParameterSyntax syntax, HS.TypeParameterSymbol parameter) => throw new NotSupportedException();
+                    HX.TypeParameterSyntax syntax, HS.TypeParameterSymbol parameter)
+        {
+            throw new NotSupportedException();
+        }
+
         public override HB.BoundBlock? BindMethodBody(string file,
-            HSS.SourceMethodSymbol<string> method) => throw new NotSupportedException();
+                    HSS.SourceMethodSymbol<string> method)
+        {
+            throw new NotSupportedException();
+        }
     }
 }

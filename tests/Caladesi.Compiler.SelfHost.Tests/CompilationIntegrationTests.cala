@@ -104,7 +104,7 @@ export class CompilationIntegrationTests {
       if (!(member instanceof FieldSymbol)) continue;
       const field = member as FieldSymbol;
       const expected = fields == 0 ? 4 : fields == 1 ? 7 : 8;
-      if ((field.ConstantValue!.Value as int) != expected) throw new Exception("Enum constant binding");
+      if ((field.ConstantValue!.Value as int) != expected) throw new Exception("Enum constant binding: " + field.Name + " = " + (Convert.ToString(field.ConstantValue!.Value) ?? "null") + ", expected " + expected);
       fields++;
     }
     if (fields != 3 || CompilationIntegrationTests.Execute(compilation, "evaluate", 1) != 11)

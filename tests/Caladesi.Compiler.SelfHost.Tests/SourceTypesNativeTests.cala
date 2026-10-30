@@ -51,7 +51,7 @@ export class SourceTypesNativeTests {
       throw new Exception("Accessor groups");
     if (instance.Type.SpecialType != SpecialType.String || statics.Type.SpecialType != SpecialType.Int32)
       throw new Exception("Accessor type capture");
-    if (instance.Getter!.SynthesizedKind != SynthesizedBodyKind.None || instance.Getter.BodySyntax == null)
+    if (instance.Getter!.SynthesizedKind != SynthesizedBodyKind.None || instance.Getter!.BodySyntax == null)
       throw new Exception("Explicit accessor body");
   }
 
@@ -106,8 +106,8 @@ export class SourceTypesNativeTests {
     if (!record.IsRecord || !record.IsSealed || record.IsReadOnlyStruct || !value.IsReadOnlyStruct || value.TypeKind != TypeKind.Struct)
       throw new Exception("Record type flags");
     if (record.Properties.Length != 2 || record.PrimaryConstructor!.Parameters.Length != 2) throw new Exception("Record positional properties");
-    if (!record.PrimaryConstructor.Parameters[1].IsOptional || record.PrimaryConstructor.Parameters[1].DefaultValue != ConstantValue.Null ||
-      record.PrimaryConstructor.Parameters[0].OriginalParameter == null)
+    if (!record.PrimaryConstructor!.Parameters[1].IsOptional || record.PrimaryConstructor!.Parameters[1].DefaultValue != ConstantValue.Null ||
+      record.PrimaryConstructor!.Parameters[0].OriginalParameter == null)
       throw new Exception("Optional constructor default");
     if (!record.Properties[0].IsInitOnlyProperty || !record.Properties[0].BackingField!.IsReadOnly ||
       !record.Properties[0].Setter!.IsInitOnly) throw new Exception("Record readonly/init semantics");
@@ -176,7 +176,7 @@ export class SourceTypesNativeTests {
     const concreteX = concrete.GetMembers("x")[0] as PropertySymbol;
     // Constructed members are substituted symbols, not source declarations.
     const source = record.GetMembers("x")[0] as SourcePropertySymbol<string>;
-    if (source.Setter != null || !source.BackingField!.IsReadOnly || source.BackingField.Name != "<x>i__Field")
+    if (source.Setter != null || !source.BackingField!.IsReadOnly || source.BackingField!.Name != "<x>i__Field")
       throw new Exception("Anonymous property representation");
     if (concrete.GetMembers("x")[0].Name != "x" || record.InstanceConstructors[0].Parameters.Length != 2 ||
       record.GetMembers("Equals").Length != 2 || record.GetMembers("op_Equality").Length != 0)

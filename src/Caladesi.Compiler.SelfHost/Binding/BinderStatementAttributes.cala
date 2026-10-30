@@ -82,7 +82,8 @@ export sealed class BinderStatementAttributes<TFile> {
     if (expression instanceof BoundConversion) {
       const conversion = expression as BoundConversion;
       return (conversion.Kind == ConversionKind.Identity || conversion.Kind == ConversionKind.Boxing ||
-        conversion.Kind == ConversionKind.ImplicitReference) && this.Constant(conversion.Operand);
+        conversion.Kind == ConversionKind.ImplicitReference || conversion.Kind == ConversionKind.ToNullable ||
+        conversion.Kind == ConversionKind.TypeOnly) && this.Constant(conversion.Operand);
     }
     return false;
   }

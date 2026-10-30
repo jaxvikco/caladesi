@@ -28,11 +28,11 @@ public sealed class FileScopeParityTests
             export const value: int = 3;
             const secret: int = 4;
             """);
-        SourceFile file = f.Main;
-        C.FileScope<SourceFile> scope = f.GetScope(file);
+        var file = f.Main;
+        var scope = f.GetScope(file);
         Assert.AreSame(scope.Declared, scope.Declared);
         CollectionAssert.AreEqual(file.Scope.Declared.Keys.ToArray(), scope.Declared.Keys.ToArray());
-        foreach (string name in file.Scope.Declared.Keys)
+        foreach (var name in file.Scope.Declared.Keys)
         {
             f.Check(file.Scope.Lookup(name), scope.Lookup(name));
             f.Check(file.Scope.GetExports(name), scope.GetExports(name));
@@ -61,9 +61,12 @@ public sealed class FileScopeParityTests
             """, ["/scope/a/a.cala", "/scope/b/b.cala", "/scope/global.cala"],
             ["export class C {} export class OnlyA {}", "export class C {} export class OnlyB {}", "export class Global {}"],
             globalImports: ["Root.A", "Missing", "Root.A"]);
-        C.FileScope<SourceFile> scope = f.GetScope(f.Main);
-        foreach (string name in new[] { "Own", "Choice", "C", "OnlyA", "OnlyB", "B", "Root", "Unknown" })
+        var scope = f.GetScope(f.Main);
+        foreach (var name in new[] { "Own", "Choice", "C", "OnlyA", "OnlyB", "B", "Root", "Unknown" })
+        {
             f.Check(f.Main.Scope.Lookup(name), scope.Lookup(name));
+        }
+
         Assert.HasCount(2, scope.Lookup("Choice"));
         Assert.AreSame(scope.Lookup("Choice")[0], scope.Lookup("Choice")[1]);
         Assert.HasCount(2, scope.Lookup("C"));
@@ -97,13 +100,16 @@ public sealed class FileScopeParityTests
              const secret: int = 2;
              export function run(): int { return 1; }
              """, "export class Indexed {}", "export class Up {}"], record: true);
-        C.FileScope<SourceFile> scope = f.GetScope(f.Main);
-        foreach (string name in new[] { "Public", "Renamed", "PublicAlias", "value", "run", "Hidden", "HiddenAlias", "secret", "Library", "Indexed", "Up" })
+        var scope = f.GetScope(f.Main);
+        foreach (var name in new[] { "Public", "Renamed", "PublicAlias", "value", "run", "Hidden", "HiddenAlias", "secret", "Library", "Indexed", "Up" })
+        {
             f.Check(f.Main.Scope.Lookup(name), scope.Lookup(name));
+        }
+
         f.CheckDiagnostics(f.Main);
         f.CheckVisible(f.Main);
         f.CheckRecorded();
-        C.FileModuleSymbol<SourceFile> module = (C.FileModuleSymbol<SourceFile>)scope.Lookup("Library").Single();
+        var module = (C.FileModuleSymbol<SourceFile>)scope.Lookup("Library").Single();
         Assert.AreEqual("Library", module.Name);
         Assert.AreSame(f.Files.Single(file => file.FilePath == "/scope/library.cala"), module.File);
         Assert.HasCount(2, scope.WildcardImports);
@@ -134,12 +140,15 @@ public sealed class FileScopeParityTests
                public static TagAttribute(): int { return 4; }
              }
              """, "export class Child {}"]);
-        C.FileScope<SourceFile> scope = f.GetScope(f.Main);
-        foreach (string name in new[] { "Tag", "Both", "PublicStatic", "PrivateStatic", "Instance", "TagAttribute", "Alias" })
+        var scope = f.GetScope(f.Main);
+        foreach (var name in new[] { "Tag", "Both", "PublicStatic", "PrivateStatic", "Instance", "TagAttribute", "Alias" })
+        {
             f.Check(f.Main.Scope.Lookup(name), scope.Lookup(name));
+        }
+
         Assert.HasCount(2, scope.Lookup("Both"));
         Assert.AreEqual("Both", scope.Lookup("Both")[0].Name);
-        Assert.IsInstanceOfType<H.NamespaceSymbol>(scope.Lookup("Both")[1]);
+        _ = Assert.IsInstanceOfType<H.NamespaceSymbol>(scope.Lookup("Both")[1]);
         Assert.AreEqual("TagAttribute", scope.Lookup("Tag").Single().Name);
         Assert.IsTrue(scope.Lookup("PrivateStatic").Any());
         Assert.IsFalse(scope.VisibleNames().Any(p => p.Item1 == "PrivateStatic" && p.Item2.Name == "PrivateStatic" &&
@@ -152,7 +161,7 @@ public sealed class FileScopeParityTests
     private static void AddNested(Fixture f)
     {
         // Namespace lookup also exercises a synthetic static container with an instance nested type.
-        NamespaceSymbol ns = f.Compilation.GlobalNamespace.GetOrAddNamespace("Root.Static");
+        var ns = f.Compilation.GlobalNamespace.GetOrAddNamespace("Root.Static");
         SynthesizedNamedType container = new("Holder", ns, TypeKind.Class, Accessibility.Public);
         SynthesizedNamedType nested = new("Nested", container, TypeKind.Class, Accessibility.Private);
         container.AddMember(nested);
@@ -167,9 +176,12 @@ public sealed class FileScopeParityTests
     {
         Fixture f = new("""import "Root.Static.Holder"; import { Nested as N } from "Root.Static.Holder";""");
         AddNested(f);
-        C.FileScope<SourceFile> scope = f.GetScope(f.Main);
-        foreach (string name in new[] { "Nested", "N", "privateMember" })
+        var scope = f.GetScope(f.Main);
+        foreach (var name in new[] { "Nested", "N", "privateMember" })
+        {
             f.Check(f.Main.Scope.Lookup(name), scope.Lookup(name));
+        }
+
         Assert.HasCount(1, scope.Lookup("Nested"));
         Assert.HasCount(1, scope.Lookup("privateMember"));
         Assert.IsFalse(scope.VisibleNames().Any(p => p.Item1 is "Nested" or "privateMember"));
@@ -181,8 +193,8 @@ public sealed class FileScopeParityTests
     {
         Fixture f = new("""export class Own {} import { Foreign } from "Root.Lib"; import "Missing";""",
             ["/scope/lib/lib.cala"], ["export class Foreign {}"], record: true);
-        C.FileScope<SourceFile> scope = f.GetScope(f.Main);
-        IEnumerable<(string Name, Symbol Symbol)> expected = f.Main.Scope.VisibleNames();
+        var scope = f.GetScope(f.Main);
+        var expected = f.Main.Scope.VisibleNames();
         var actual = scope.VisibleNames();
         Assert.IsFalse(ImportsResolved(f.Main.Scope));
         Assert.AreEqual(0, f.ImportsRead);
@@ -223,7 +235,7 @@ public sealed class FileScopeParityTests
     {
         Fixture f = new("""import { A, B as Renamed, Missing } from "Root.Lib";""",
             ["/scope/lib/lib.cala"], ["export class A {} export class B {}"], record: true);
-        C.FileScope<SourceFile> scope = f.GetScope(f.Main);
+        var scope = f.GetScope(f.Main);
         List<int> prefixes = [];
         f.OnRecord = () =>
         {
@@ -255,26 +267,33 @@ public sealed class FileScopeParityTests
     [TestMethod]
     public void SourceFileNaming_RootRelativeOutsideInvalidAndPascalPathsMatch()
     {
-        foreach (string? project in new[] { "/scope", "/scope/", "", null, "relative-project", "bad\0project" })
-        foreach (string root in new[] { "", "Root.AlreadyDotted" })
-        foreach (string path in new[] { "", "/scope/main.cala", "/scope/data-access/my_file.cala",
-            "/scope/42 things/--/foo bar.cala", "/other/main.cala", "/scope/..hidden/a.cala", "relative.cala" })
+        foreach (var project in new[] { "/scope", "/scope/", "", null, "relative-project", "bad\0project" })
         {
-            CompilationOptions options = new() { ProjectDirectory = project, RootNamespace = root, GlobalImports = [] };
-            Compilation compilation = Compilation.Create(options, [], Array.Empty<string>());
-            SourceFile original = new(compilation, SyntaxTree.ParseText("", path));
-            C.CompilationOptions actualOptions = new() { ProjectDirectory = project, RootNamespace = root };
-            Assert.AreEqual(original.NamespaceName, C.SourceFileNames.DeriveNamespace(actualOptions, path), $"{project}: {path}");
-            Assert.AreEqual(original.ModuleClassBaseName, C.SourceFileNames.GetModuleClassBaseName(actualOptions, path), path);
+            foreach (var root in new[] { "", "Root.AlreadyDotted" })
+            {
+                foreach (var path in new[] { "", "/scope/main.cala", "/scope/data-access/my_file.cala",
+            "/scope/42 things/--/foo bar.cala", "/other/main.cala", "/scope/..hidden/a.cala", "relative.cala" })
+                {
+                    CompilationOptions options = new() { ProjectDirectory = project, RootNamespace = root, GlobalImports = [] };
+                    var compilation = Compilation.Create(options, [], []);
+                    SourceFile original = new(compilation, SyntaxTree.ParseText("", path));
+                    C.CompilationOptions actualOptions = new() { ProjectDirectory = project, RootNamespace = root };
+                    Assert.AreEqual(original.NamespaceName, C.SourceFileNames.DeriveNamespace(actualOptions, path), $"{project}: {path}");
+                    Assert.AreEqual(original.ModuleClassBaseName, C.SourceFileNames.GetModuleClassBaseName(actualOptions, path), path);
+                }
+            }
         }
+
         C.CompilationOptions defaults = new();
         Assert.AreEqual("Program", C.SourceFileNames.GetModuleClassBaseName(defaults, "/scope/--.cala"));
         Assert.AreEqual("Root", C.SourceFileNames.DeriveNamespace(
             new C.CompilationOptions { RootNamespace = "Root", ProjectDirectory = "/scope" }, "bad\0name"));
     }
 
-    private static bool ImportsResolved(FileScope scope) =>
-        (bool)typeof(FileScope).GetField("_importsResolved", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(scope)!;
+    private static bool ImportsResolved(FileScope scope)
+    {
+        return (bool)typeof(FileScope).GetField("_importsResolved", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(scope)!;
+    }
 
     private sealed class Fixture : C.FileScopeContext<SourceFile>
     {
@@ -294,40 +313,83 @@ public sealed class FileScopeParityTests
         public Fixture(string source, string[]? paths = null, string[]? sources = null,
             string[]? globalImports = null, bool record = false)
         {
-            CompilationOptions options = new() { RootNamespace = "Root", ProjectDirectory = "/scope",
-                OutputKind = OutputKind.DynamicallyLinkedLibrary, GlobalImports = globalImports?.ToImmutableArray() ?? [],
-                RecordSemanticInfo = record };
+            CompilationOptions options = new()
+            {
+                RootNamespace = "Root",
+                ProjectDirectory = "/scope",
+                OutputKind = OutputKind.DynamicallyLinkedLibrary,
+                GlobalImports = globalImports?.ToImmutableArray() ?? [],
+                RecordSemanticInfo = record
+            };
             List<SyntaxTree> trees = [SyntaxTree.ParseText(source, "/scope/main.cala")];
-            for (int i = 0; i < (paths?.Length ?? 0); i++) trees.Add(SyntaxTree.ParseText(sources![i], paths![i]));
-            Compilation = Compilation.Create(options, trees, Array.Empty<string>());
-            Files = trees.Select(Compilation.GetFile).ToArray();
-            Options = new C.CompilationOptions { RootNamespace = options.RootNamespace, ProjectDirectory = options.ProjectDirectory,
-                GlobalImports = options.GlobalImports, RecordSemanticInfo = record };
+            for (var i = 0; i < (paths?.Length ?? 0); i++)
+            {
+                trees.Add(SyntaxTree.ParseText(sources![i], paths![i]));
+            }
+
+            Compilation = Compilation.Create(options, trees, []);
+            Files = [.. trees.Select(Compilation.GetFile)];
+            Options = new C.CompilationOptions
+            {
+                RootNamespace = options.RootNamespace,
+                ProjectDirectory = options.ProjectDirectory,
+                GlobalImports = options.GlobalImports,
+                RecordSemanticInfo = record
+            };
             GlobalNamespace = (H.NamespaceSymbol)Map(Compilation.GlobalNamespace);
             AddNamespace(Compilation.GlobalNamespace);
-            foreach (SourceFile file in Files)
+            foreach (var file in Files)
             {
-                foreach (NamedTypeSymbol type in file.Types) Map(type);
-                foreach (Symbol alias in file.Aliases) Map(alias);
-                if (file.ModuleClass is { } module) Map(module);
-                HX.SyntaxTree tree = HX.SyntaxTree.ParseText(file.Tree.Text.ToString(), file.FilePath);
+                foreach (NamedTypeSymbol type in file.Types)
+                {
+                    _ = Map(type);
+                }
+
+                foreach (Symbol alias in file.Aliases)
+                {
+                    _ = Map(alias);
+                }
+
+                if (file.ModuleClass is { } module)
+                {
+                    _ = Map(module);
+                }
+
+                var tree = HX.SyntaxTree.ParseText(file.Tree.Text.ToString(), file.FilePath);
                 var fileImports = ImmutableArray.CreateBuilder<HX.ImportDeclarationSyntax>();
-                foreach (HX.StatementSyntax statement in tree.Root.Statements)
-                    if (statement is HX.ImportDeclarationSyntax import) fileImports.Add(import);
+                foreach (var statement in tree.Root.Statements)
+                {
+                    if (statement is HX.ImportDeclarationSyntax import)
+                    {
+                        fileImports.Add(import);
+                    }
+                }
+
                 imports[file] = fileImports.ToImmutable();
             }
         }
 
         public void AddNamespace(NamespaceSymbol ns)
         {
-            H.NamespaceSymbol actual = (H.NamespaceSymbol)Map(ns);
-            foreach (NamedTypeSymbol type in ns.GetTypeMembers()) actual.AddType((H.NamedTypeSymbol)Map(type));
-            foreach (NamespaceSymbol child in ns.GetNamespaceMembers()) AddNamespace(child);
+            var actual = (H.NamespaceSymbol)Map(ns);
+            foreach (var type in ns.GetTypeMembers())
+            {
+                actual.AddType((H.NamedTypeSymbol)Map(type));
+            }
+
+            foreach (var child in ns.GetNamespaceMembers())
+            {
+                AddNamespace(child);
+            }
         }
 
         private H.Symbol Map(Symbol original)
         {
-            if (symbols.TryGetValue(original, out H.Symbol? cached)) return cached;
+            if (symbols.TryGetValue(original, out var cached))
+            {
+                return cached;
+            }
+
             H.Symbol result;
             switch (original)
             {
@@ -342,7 +404,11 @@ public sealed class FileScopeParityTests
                         (H.TypeKind)(int)type.TypeKind, (H.Accessibility)(int)type.DeclaredAccessibility)
                     { OwnArityValue = type.OwnArity, IsStaticFlag = type.IsStatic };
                     Register(original, named);
-                    foreach (Symbol member in type.GetMembers()) named.AddMember(Map(member));
+                    foreach (var member in type.GetMembers())
+                    {
+                        named.AddMember(Map(member));
+                    }
+
                     return named;
                 case MethodSymbol method:
                     result = new HS.SynthesizedMethodSymbol(Map(method.ContainingSymbol!), method.Name,
@@ -367,39 +433,68 @@ public sealed class FileScopeParityTests
             originals.Add(actual, original);
         }
 
-        public override string GetFilePath(SourceFile file) => file.FilePath;
-        public override string GetModuleClassBaseName(SourceFile file) => file.ModuleClassBaseName;
+        public override string GetFilePath(SourceFile file)
+        {
+            return file.FilePath;
+        }
+
+        public override string GetModuleClassBaseName(SourceFile file)
+        {
+            return file.ModuleClassBaseName;
+        }
+
         public override ImmutableArray<H.NamedTypeSymbol> GetTypes(SourceFile file)
         {
             TypesRead++;
-            return file.Types.Select(t => (H.NamedTypeSymbol)Map(t)).ToImmutableArray();
+            return [.. file.Types.Select(t => (H.NamedTypeSymbol)Map(t))];
         }
-        public override ImmutableArray<H.Symbol> GetAliases(SourceFile file) => file.Aliases.Select(a => Map(a)).ToImmutableArray();
-        public override H.NamedTypeSymbol? GetModuleClass(SourceFile file) =>
-            file.ModuleClass is null ? null : (H.NamedTypeSymbol)Map(file.ModuleClass);
+        public override ImmutableArray<H.Symbol> GetAliases(SourceFile file)
+        {
+            return [.. file.Aliases.Select(Map)];
+        }
+
+        public override H.NamedTypeSymbol? GetModuleClass(SourceFile file)
+        {
+            return file.ModuleClass is null ? null : (H.NamedTypeSymbol)Map(file.ModuleClass);
+        }
+
         public override ImmutableArray<HX.ImportDeclarationSyntax> GetImports(SourceFile file)
         {
             ImportsRead++;
             return imports[file];
         }
-        public override bool? IsExportedAlias(H.Symbol symbol) =>
-            originals.TryGetValue(symbol, out Symbol? original) && original is TypeAliasSymbol alias ? alias.IsExported : null;
-        public override bool IsModuleVariable(H.FieldSymbol field) =>
-            originals[field] is SourceFieldSymbol { IsModuleVariable: true };
+        public override bool? IsExportedAlias(H.Symbol symbol)
+        {
+            return originals.TryGetValue(symbol, out var original) && original is TypeAliasSymbol alias ? alias.IsExported : null;
+        }
+
+        public override bool IsModuleVariable(H.FieldSymbol field)
+        {
+            return originals[field] is SourceFieldSymbol { IsModuleVariable: true };
+        }
 #pragma warning disable CS8764 // The Cala TFile? boundary does not yet emit unconstrained generic return nullability.
         public override SourceFile? FindSourceFile(SourceFile from, string spec)
         {
-            string combined = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(from.FilePath))!, spec));
+            var combined = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(from.FilePath))!, spec));
             string[] candidates = [combined, combined + ".cala", Path.Combine(combined, "index.cala")];
-            foreach (string candidate in candidates)
-                if (Files.FirstOrDefault(file => Path.GetFullPath(file.FilePath) == candidate) is { } found) return found;
+            foreach (var candidate in candidates)
+            {
+                if (Files.FirstOrDefault(file => Path.GetFullPath(file.FilePath) == candidate) is { } found)
+                {
+                    return found;
+                }
+            }
+
             return null;
         }
 #pragma warning restore CS8764
         public override C.FileScope<SourceFile> GetScope(SourceFile file)
         {
-            if (!scopes.TryGetValue(file, out C.FileScope<SourceFile>? scope))
+            if (!scopes.TryGetValue(file, out var scope))
+            {
                 scopes.Add(file, scope = new C.FileScope<SourceFile>(this, file));
+            }
+
             return scope;
         }
         public override void RecordImport(HX.ImportSpecifierSyntax specifier, H.Symbol symbol)
@@ -411,26 +506,29 @@ public sealed class FileScopeParityTests
 
         public void Check(IEnumerable<Symbol> expected, IEnumerable<H.Symbol> actual)
         {
-            Symbol[] left = expected.ToArray();
-            H.Symbol[] right = actual.ToArray();
+            Symbol[] left = [.. expected];
+            H.Symbol[] right = [.. actual];
             Assert.HasCount(left.Length, right);
-            for (int i = 0; i < left.Length; i++)
+            for (var i = 0; i < left.Length; i++)
             {
                 if (left[i] is FileModuleSymbol module)
                 {
-                    Assert.IsInstanceOfType<C.FileModuleSymbol<SourceFile>>(right[i]);
+                    _ = Assert.IsInstanceOfType<C.FileModuleSymbol<SourceFile>>(right[i]);
                     var actualModule = (C.FileModuleSymbol<SourceFile>)right[i];
                     Assert.AreSame(module.File, actualModule.File);
                     Assert.AreEqual(module.Name, actualModule.Name);
                     Assert.AreEqual((int)module.Kind, (int)actualModule.Kind);
                 }
-                else Assert.AreSame(Map(left[i]), right[i], left[i].Name);
+                else
+                {
+                    Assert.AreSame(Map(left[i]), right[i], left[i].Name);
+                }
             }
         }
 
         public void CheckVisible(SourceFile file)
         {
-            var expected = file.Scope.VisibleNames().ToArray();
+            (string Name, Symbol Symbol)[] expected = [.. file.Scope.VisibleNames()];
             var actual = GetScope(file).VisibleNames().ToArray();
             CollectionAssert.AreEqual(expected.Select(p => p.Name).ToArray(), actual.Select(p => p.Item1).ToArray());
             Check(expected.Select(p => p.Symbol), actual.Select(p => p.Item2));
@@ -441,7 +539,7 @@ public sealed class FileScopeParityTests
             var expected = file.Scope.GetImportDiagnostics();
             var actual = GetScope(file).GetImportDiagnostics();
             Assert.HasCount(expected.Length, actual);
-            for (int i = 0; i < expected.Length; i++)
+            for (var i = 0; i < expected.Length; i++)
             {
                 Assert.AreEqual(expected[i].Id, actual[i].Id);
                 Assert.AreEqual(expected[i].Message, actual[i].Message);
@@ -456,10 +554,10 @@ public sealed class FileScopeParityTests
         {
             var recorded = (Dictionary<SyntaxNode, Symbol>?)typeof(Compilation)
                 .GetProperty("RecordedSymbols", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(Compilation);
-            var expected = (recorded ?? []).Where(p => p.Key is ImportSpecifierSyntax).OrderBy(p => p.Key.Span.Start).ToArray();
+            KeyValuePair<SyntaxNode, Symbol>[] expected = [.. (recorded ?? []).Where(p => p.Key is ImportSpecifierSyntax).OrderBy(p => p.Key.Span.Start)];
             var actual = Recorded.OrderBy(p => p.Syntax.Span.Start).ToArray();
             Assert.HasCount(expected.Length, actual);
-            for (int i = 0; i < expected.Length; i++)
+            for (var i = 0; i < expected.Length; i++)
             {
                 Assert.AreEqual(expected[i].Key.Span.Start, actual[i].Syntax.Span.Start);
                 Check([expected[i].Value], [actual[i].Symbol]);

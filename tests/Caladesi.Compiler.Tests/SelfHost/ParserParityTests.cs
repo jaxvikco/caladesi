@@ -19,16 +19,16 @@ public sealed class ParserParityTests
     [TestMethod]
     public void Parser_AllValidSamplesAndEveryPrefixAndMutationMatchBootstrap()
     {
-        foreach (string source in ParserTests.ValidSamples)
+        foreach (var source in ParserTests.ValidSamples)
         {
             Assert.AreEqual(source, SelfTree.ParseText(source).Root.ToFullString());
             AssertParity(source);
-            for (int length = 0; length <= source.Length; length += 3)
+            for (var length = 0; length <= source.Length; length += 3)
             {
                 AssertParity(source[..length]);
             }
 
-            for (int start = 0; start < source.Length; start += 7)
+            for (var start = 0; start < source.Length; start += 7)
             {
                 AssertParity(source.Remove(start, Math.Min(3, source.Length - start)));
             }
@@ -82,10 +82,10 @@ public sealed class ParserParityTests
         }
 
         Assert.IsNotNull(root);
-        int count = 0;
-        foreach (string folder in new[] { "samples", "src", "tests", "playground" })
+        var count = 0;
+        foreach (var folder in new[] { "samples", "src", "tests", "playground" })
         {
-            foreach (string path in Directory.EnumerateFiles(Path.Combine(root.FullName, folder), "*.cala", SearchOption.AllDirectories))
+            foreach (var path in Directory.EnumerateFiles(Path.Combine(root.FullName, folder), "*.cala", SearchOption.AllDirectories))
             {
                 if (path.Split(Path.DirectorySeparatorChar).Any(p => p is "obj" or "bin"))
                 {
@@ -106,13 +106,13 @@ public sealed class ParserParityTests
     {
         const string alphabet = "abcXYZ09_ $'\"`{}[]()<>/\\*+-.?=;:,&|!@\r\n\t\u2028α😀";
         Random random = new(0xCA1A);
-        for (int sample = 0; sample < 2_500; sample++)
+        for (var sample = 0; sample < 2_500; sample++)
         {
             StringBuilder source = new();
-            int length = random.Next(100);
-            for (int i = 0; i < length; i++)
+            var length = random.Next(100);
+            for (var i = 0; i < length; i++)
             {
-                source.Append(alphabet[random.Next(alphabet.Length)]);
+                _ = source.Append(alphabet[random.Next(alphabet.Length)]);
             }
 
             AssertParity(source.ToString());
@@ -122,7 +122,7 @@ public sealed class ParserParityTests
     [TestMethod]
     public void Parser_NestingGuardAndUnwindingMatchBootstrap()
     {
-        foreach (int depth in new[] { 120, 255, 256, 300, 600 })
+        foreach (var depth in new[] { 120, 255, 256, 300, 600 })
         {
             AssertParity("let x = " + new string('(', depth) + "0" + new string(')', depth) + "; let tail = 1;");
             AssertParity(new string('{', depth) + ";" + new string('}', depth));
@@ -145,7 +145,7 @@ public sealed class ParserParityTests
         AssertElements(expected.ParseCompilationUnit(), actual.ParseCompilationUnit(), source);
         Assert.AreEqual(expectedDiagnostics.Count, actual.Diagnostics.Count);
         Assert.IsTrue(ReferenceEquals(actualDiagnostics, actual.Diagnostics));
-        for (int i = 0; i < expectedDiagnostics.Count; i++)
+        for (var i = 0; i < expectedDiagnostics.Count; i++)
         {
             Assert.AreEqual(expectedDiagnostics.Items[i].Format(), actual.Diagnostics.Items[i].Format());
         }
@@ -153,8 +153,8 @@ public sealed class ParserParityTests
 
     private static void AssertParity(string source, string path = "parser.cala", bool roundTrip = true)
     {
-        SyntaxTree expected = SyntaxTree.ParseText(source, path);
-        SelfTree actual = SelfTree.ParseText(source, path);
+        var expected = SyntaxTree.ParseText(source, path);
+        var actual = SelfTree.ParseText(source, path);
         Assert.AreEqual(expected.Root.ToFullString(), actual.Root.ToFullString(), path);
         if (roundTrip)
         {
@@ -162,10 +162,10 @@ public sealed class ParserParityTests
         }
         AssertElements(expected.Root, actual.Root, path + ": " + source[..Math.Min(120, source.Length)]);
         Assert.HasCount(expected.Diagnostics.Length, actual.Diagnostics, source);
-        for (int i = 0; i < expected.Diagnostics.Length; i++)
+        for (var i = 0; i < expected.Diagnostics.Length; i++)
         {
-            Diagnostic left = expected.Diagnostics[i];
-            SelfHost::Caladesi.Compiler.Diagnostics.Diagnostic right = actual.Diagnostics[i];
+            var left = expected.Diagnostics[i];
+            var right = actual.Diagnostics[i];
             Assert.AreEqual(left.Id, right.Id, source);
             Assert.AreEqual(left.Message, right.Message, source);
             Assert.AreEqual(left.FilePath, right.FilePath, source);
@@ -179,10 +179,10 @@ public sealed class ParserParityTests
     {
         Stack<(SyntaxElement Left, SelfElement Right)> pending = new();
         pending.Push((expected, actual));
-        while (pending.TryPop(out (SyntaxElement Left, SelfElement Right) pair))
+        while (pending.TryPop(out var pair))
         {
-            (SyntaxElement left, SelfElement right) = pair;
-            string location = $"{context}, {left.Kind} at {left.FullStart}";
+            (var left, var right) = pair;
+            var location = $"{context}, {left.Kind} at {left.FullStart}";
             Assert.AreEqual(left.GetType().Name, right.GetType().Name, location);
             Assert.AreEqual((int)left.Kind, (int)right.Kind, location);
             Assert.AreEqual(left.FullStart, right.FullStart, location);
@@ -196,7 +196,7 @@ public sealed class ParserParityTests
             Assert.AreEqual(left.IsMissing, right.IsMissing, location);
             if (left is SyntaxToken token)
             {
-                SelfToken selfToken = (SelfToken)right;
+                var selfToken = (SelfToken)right;
                 Assert.AreEqual(token.Text, selfToken.Text, location);
                 Assert.AreEqual(token.Value, selfToken.Value, location);
                 Assert.AreEqual(token.Value?.GetType(), selfToken.Value?.GetType(), location);
@@ -204,13 +204,13 @@ public sealed class ParserParityTests
                 Assert.AreEqual(token.ToFullString(), selfToken.ToFullString(), location);
                 Assert.HasCount(token.LeadingTrivia.Length, selfToken.LeadingTrivia, location);
                 Assert.HasCount(token.TrailingTrivia.Length, selfToken.TrailingTrivia, location);
-                for (int i = 0; i < token.LeadingTrivia.Length; i++)
+                for (var i = 0; i < token.LeadingTrivia.Length; i++)
                 {
                     Assert.AreEqual((int)token.LeadingTrivia[i].Kind, (int)selfToken.LeadingTrivia[i].Kind, location);
                     Assert.AreEqual(token.LeadingTrivia[i].Text, selfToken.LeadingTrivia[i].Text, location);
                 }
 
-                for (int i = 0; i < token.TrailingTrivia.Length; i++)
+                for (var i = 0; i < token.TrailingTrivia.Length; i++)
                 {
                     Assert.AreEqual((int)token.TrailingTrivia[i].Kind, (int)selfToken.TrailingTrivia[i].Kind, location);
                     Assert.AreEqual(token.TrailingTrivia[i].Text, selfToken.TrailingTrivia[i].Text, location);
@@ -218,13 +218,13 @@ public sealed class ParserParityTests
             }
             else
             {
-                SyntaxNode node = (SyntaxNode)left;
-                SelfNode selfNode = (SelfNode)right;
+                var node = (SyntaxNode)left;
+                var selfNode = (SelfNode)right;
                 Assert.AreEqual(node.SlotCount, selfNode.SlotCount, location);
-                for (int i = 0; i < node.SlotCount; i++)
+                for (var i = 0; i < node.SlotCount; i++)
                 {
-                    SyntaxElement? child = node.Slot(i);
-                    SelfElement? selfChild = selfNode.Slot(i);
+                    var child = node.Slot(i);
+                    var selfChild = selfNode.Slot(i);
                     Assert.AreEqual(child == null, selfChild == null, location);
                     if (child != null && selfChild != null)
                     {

@@ -28,17 +28,21 @@ public sealed class OutlineParityTests
     public void Outline_RepositorySourcesMatchBootstrap()
     {
         DirectoryInfo? root = new(AppContext.BaseDirectory);
-        while (root != null && !File.Exists(Path.Combine(root.FullName, "Caladesi.slnx"))) root = root.Parent;
-        Assert.IsNotNull(root);
-        foreach (string folder in new[] { "samples", "src", "tests", "playground" })
+        while (root != null && !File.Exists(Path.Combine(root.FullName, "Caladesi.slnx")))
         {
-            foreach (string path in Directory.EnumerateFiles(Path.Combine(root.FullName, folder), "*.cala", SearchOption.AllDirectories))
+            root = root.Parent;
+        }
+
+        Assert.IsNotNull(root);
+        foreach (var folder in new[] { "samples", "src", "tests", "playground" })
+        {
+            foreach (var path in Directory.EnumerateFiles(Path.Combine(root.FullName, folder), "*.cala", SearchOption.AllDirectories))
             {
                 if (!path.Split(Path.DirectorySeparatorChar).Any(p => p is "obj" or "bin"))
                 {
-                    string source = File.ReadAllText(path);
-                    SyntaxTree expected = SyntaxTree.ParseText(source);
-                    SelfTree actual = SelfTree.ParseText(source);
+                    var source = File.ReadAllText(path);
+                    var expected = SyntaxTree.ParseText(source);
+                    var actual = SelfTree.ParseText(source);
                     AssertSymbols(DocumentOutline.Compute(expected), SelfOutline.Compute(actual));
                 }
             }
@@ -48,7 +52,7 @@ public sealed class OutlineParityTests
     [TestMethod]
     public void Outline_NullTreeRejected()
     {
-        Assert.ThrowsExactly<ArgumentNullException>(() => SelfOutline.Compute(null!));
+        _ = Assert.ThrowsExactly<ArgumentNullException>(() => SelfOutline.Compute(null!));
     }
 
     [TestMethod]
@@ -71,11 +75,11 @@ public sealed class OutlineParityTests
     {
         const string alphabet = "ab09 \t\r\n{}[]()'\"`/$\\*?;:";
         Random random = new(0x5EAA);
-        for (int sample = 0; sample < 500; sample++)
+        for (var sample = 0; sample < 500; sample++)
         {
-            string source = new(Enumerable.Range(0, random.Next(100)).Select(_ => alphabet[random.Next(alphabet.Length)]).ToArray());
-            SyntaxTree expected = SyntaxTree.ParseText(source);
-            SelfTree actual = SelfTree.ParseText(source);
+            string source = new([.. Enumerable.Range(0, random.Next(100)).Select(_ => alphabet[random.Next(alphabet.Length)])]);
+            var expected = SyntaxTree.ParseText(source);
+            var actual = SelfTree.ParseText(source);
             AssertSymbols(DocumentOutline.Compute(expected), SelfOutline.Compute(actual));
         }
     }
@@ -83,7 +87,7 @@ public sealed class OutlineParityTests
     private static void AssertSymbols(IReadOnlyList<DocumentSymbolInfo> expected, IReadOnlyList<SelfSymbol> actual)
     {
         Assert.HasCount(expected.Count, actual);
-        for (int i = 0; i < expected.Count; i++)
+        for (var i = 0; i < expected.Count; i++)
         {
             Assert.AreEqual(expected[i].Name, actual[i].Name);
             Assert.AreEqual(expected[i].Detail, actual[i].Detail);

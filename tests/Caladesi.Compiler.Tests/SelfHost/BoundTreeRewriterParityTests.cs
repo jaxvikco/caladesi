@@ -22,7 +22,7 @@ public sealed class BoundTreeRewriterParityTests
         Assert.IsNull(actual.Visit(null));
         Assert.IsNull(actual.VisitExprOpt(null));
         Assert.IsNull(actual.VisitStmtOpt(null));
-        foreach (Pair node in fixture.Nodes())
+        foreach (var node in fixture.Nodes())
         {
             Assert.AreSame(node.Expected, expected.Visit((BoundNode)node.Expected), node.Expected.GetType().Name);
             Assert.AreSame(node.Actual, actual.Visit((SelfBound.BoundNode)node.Actual), node.Actual.GetType().Name);
@@ -35,10 +35,10 @@ public sealed class BoundTreeRewriterParityTests
         Fixture fixture = new();
         BootstrapRewriter expected = new((BoundLiteral)fixture.Leaf.Expected, (BoundLiteral)fixture.Replacement.Expected);
         SelfRewriter actual = new((SelfBound.BoundLiteral)fixture.Leaf.Actual, (SelfBound.BoundLiteral)fixture.Replacement.Actual);
-        foreach (Pair node in fixture.Nodes())
+        foreach (var node in fixture.Nodes())
         {
-            BoundNode left = expected.Visit((BoundNode)node.Expected)!;
-            SelfBound.BoundNode right = actual.Visit((SelfBound.BoundNode)node.Actual)!;
+            var left = expected.Visit((BoundNode)node.Expected)!;
+            var right = actual.Visit((SelfBound.BoundNode)node.Actual)!;
             Assert.AreEqual(ReferenceEquals(node.Expected, left), ReferenceEquals(node.Actual, right), node.Expected.GetType().Name);
             fixture.AssertEquivalent(left, right);
         }
@@ -67,28 +67,25 @@ public sealed class BoundTreeRewriterParityTests
         SelfBound.BoundNoOp noOp = new();
         ImmutableArray<SelfBound.BoundStatement> unchangedStatements = [noOp, noOp];
         Assert.AreEqual(unchangedStatements, actual.Statements(unchangedStatements));
-        for (int changedIndex = 0; changedIndex < 3; changedIndex++)
+        for (var changedIndex = 0; changedIndex < 3; changedIndex++)
         {
-            ImmutableArray<BoundExpression> expressions = Enumerable.Range(0, 3)
-                .Select(i => i == changedIndex ? (BoundExpression)leaf : unchanged).ToImmutableArray();
-            ImmutableArray<SelfBound.BoundExpression> selfExpressions = Enumerable.Range(0, 3)
-                .Select(i => i == changedIndex ? (SelfBound.BoundExpression)selfLeaf : selfUnchanged).ToImmutableArray();
-            ImmutableArray<BoundExpression> left = expected.Expressions(expressions);
-            int visitsBefore = actual.LiteralVisits;
-            ImmutableArray<SelfBound.BoundExpression> right = actual.Expressions(selfExpressions);
+            ImmutableArray<BoundExpression> expressions = [.. Enumerable.Range(0, 3).Select(i => i == changedIndex ? (BoundExpression)leaf : unchanged)];
+            ImmutableArray<SelfBound.BoundExpression> selfExpressions = [.. Enumerable.Range(0, 3).Select(i => i == changedIndex ? (SelfBound.BoundExpression)selfLeaf : selfUnchanged)];
+            var left = expected.Expressions(expressions);
+            var visitsBefore = actual.LiteralVisits;
+            var right = actual.Expressions(selfExpressions);
             Assert.AreEqual(visitsBefore + 1, actual.LiteralVisits);
             Assert.AreNotEqual(selfExpressions, right);
-            for (int i = 0; i < 3; i++)
+            for (var i = 0; i < 3; i++)
             {
                 Assert.AreEqual(ReferenceEquals(expressions[i], left[i]), ReferenceEquals(selfExpressions[i], right[i]));
                 Assert.AreSame(i == changedIndex ? selfReplacement : selfUnchanged, right[i]);
             }
 
-            ImmutableArray<SelfBound.BoundStatement> statements = selfExpressions
-                .Select(e => (SelfBound.BoundStatement)new SelfBound.BoundExpressionStatement(e)).ToImmutableArray();
-            ImmutableArray<SelfBound.BoundStatement> rewritten = actual.Statements(statements);
+            ImmutableArray<SelfBound.BoundStatement> statements = [.. selfExpressions.Select(e => (SelfBound.BoundStatement)new SelfBound.BoundExpressionStatement(e))];
+            var rewritten = actual.Statements(statements);
             Assert.AreNotEqual(statements, rewritten);
-            for (int i = 0; i < 3; i++)
+            for (var i = 0; i < 3; i++)
             {
                 Assert.AreEqual(i != changedIndex, ReferenceEquals(statements[i], rewritten[i]));
             }
@@ -100,8 +97,8 @@ public sealed class BoundTreeRewriterParityTests
     {
         // BoundModuleExpression is deferred until SourceFile/Compilation are migrated.
         Assert.IsNull(typeof(SelfBound.BoundNode).Assembly.GetType("Caladesi.Compiler.Bound.BoundModuleExpression"));
-        InvalidOperationException left = Assert.ThrowsExactly<InvalidOperationException>(() => new BootstrapRewriter().Visit(new UnknownNode()));
-        InvalidOperationException right = Assert.ThrowsExactly<InvalidOperationException>(() => new SelfRewriter().Visit(new UnknownSelfNode()));
+        var left = Assert.ThrowsExactly<InvalidOperationException>(() => new BootstrapRewriter().Visit(new UnknownNode()));
+        var right = Assert.ThrowsExactly<InvalidOperationException>(() => new SelfRewriter().Visit(new UnknownSelfNode()));
         Assert.AreEqual("Unhandled bound node UnknownNode", left.Message);
         Assert.AreEqual("Unhandled bound node UnknownSelfNode", right.Message);
         SelfBound.BoundYieldBreak yieldBreak = new();
@@ -111,8 +108,15 @@ public sealed class BoundTreeRewriterParityTests
 
     private sealed class BootstrapRewriter(BoundLiteral? from = null, BoundLiteral? to = null) : BoundTreeRewriter
     {
-        protected override BoundNode VisitLiteral(BoundLiteral n) => ReferenceEquals(n, from) ? to! : n;
-        public ImmutableArray<BoundExpression> Expressions(ImmutableArray<BoundExpression> expressions) => VisitExprs(expressions);
+        protected override BoundNode VisitLiteral(BoundLiteral n)
+        {
+            return ReferenceEquals(n, from) ? to! : n;
+        }
+
+        public ImmutableArray<BoundExpression> Expressions(ImmutableArray<BoundExpression> expressions)
+        {
+            return VisitExprs(expressions);
+        }
     }
 
     private sealed class SelfRewriter(SelfBound.BoundLiteral? from = null, SelfBound.BoundLiteral? to = null) : SelfBound.BoundTreeRewriter
@@ -123,13 +127,23 @@ public sealed class BoundTreeRewriterParityTests
             LiteralVisits++;
             return ReferenceEquals(n, from) ? to! : n;
         }
-        public ImmutableArray<SelfBound.BoundExpression> Expressions(ImmutableArray<SelfBound.BoundExpression> expressions) => VisitExprs(expressions);
-        public ImmutableArray<SelfBound.BoundStatement> Statements(ImmutableArray<SelfBound.BoundStatement> statements) => VisitStmts(statements);
+        public ImmutableArray<SelfBound.BoundExpression> Expressions(ImmutableArray<SelfBound.BoundExpression> expressions)
+        {
+            return VisitExprs(expressions);
+        }
+
+        public ImmutableArray<SelfBound.BoundStatement> Statements(ImmutableArray<SelfBound.BoundStatement> statements)
+        {
+            return VisitStmts(statements);
+        }
     }
 
     private sealed class YieldBreakRewriter(SelfBound.BoundNode replacement) : SelfBound.BoundTreeRewriter
     {
-        protected override SelfBound.BoundNode VisitYieldBreak(SelfBound.BoundYieldBreak n) => replacement;
+        protected override SelfBound.BoundNode VisitYieldBreak(SelfBound.BoundYieldBreak n)
+        {
+            return replacement;
+        }
     }
 
     private sealed class UnknownNode : BoundNode;
@@ -183,7 +197,7 @@ public sealed class BoundTreeRewriterParityTests
         public Fixture()
         {
             type = Remember(ErrorTypeSymbol.Instance, SelfSymbols.ErrorTypeSymbol.Instance);
-            syntax = Remember(Caladesi.Compiler.Syntax.SyntaxTree.ParseText("let x = 1;").Root,
+            syntax = Remember(Compiler.Syntax.SyntaxTree.ParseText("let x = 1;").Root,
                 SelfHost::Caladesi.Compiler.Syntax.SyntaxTree.ParseText("let x = 1;").Root);
             label = Create("Symbols.LabelSymbol", "exit");
             local = Create("Symbols.LocalSymbol", "local", type, false, null, null);
@@ -199,12 +213,12 @@ public sealed class BoundTreeRewriterParityTests
 
         public IEnumerable<Pair> Nodes()
         {
-            Pair empty = Node("BoundNoOp");
-            Pair statement = Node("BoundExpressionStatement", Leaf);
-            Pair block = Node("BoundBlock", Array("Symbols.LocalSymbol", local), Array("Bound.BoundStatement", empty, statement, empty));
-            Pair placeholder = Node("BoundConditionalReceiver", type);
-            Pair arrayType = Create("Symbols.ArrayTypeSymbol", type, null, 1);
-            Pair expressions = Array("Bound.BoundExpression", Node("BoundThis", type), Leaf, Leaf);
+            var empty = Node("BoundNoOp");
+            var statement = Node("BoundExpressionStatement", Leaf);
+            var block = Node("BoundBlock", Array("Symbols.LocalSymbol", local), Array("Bound.BoundStatement", empty, statement, empty));
+            var placeholder = Node("BoundConditionalReceiver", type);
+            var arrayType = Create("Symbols.ArrayTypeSymbol", type, null, 1);
+            var expressions = Array("Bound.BoundExpression", Node("BoundThis", type), Leaf, Leaf);
             yield return Leaf;
             yield return Node("BoundBadExpression", Array("Bound.BoundNode", Leaf), null);
             yield return Node("BoundLocal", local);
@@ -215,7 +229,7 @@ public sealed class BoundTreeRewriterParityTests
             yield return Node("BoundTypeOf", type, type);
             yield return Node("BoundTypeExpression", type);
             yield return Node("BoundNamespaceExpression", (object?)null);
-            Pair binder = Remember((Func<TypeSymbol?, BoundExpression>)(_ => (BoundExpression)Leaf.Expected),
+            var binder = Remember((Func<TypeSymbol?, BoundExpression>)(_ => (BoundExpression)Leaf.Expected),
                 (Func<SelfSymbols.TypeSymbol?, SelfBound.BoundExpression>)(_ => (SelfBound.BoundExpression)Leaf.Actual));
             yield return Set(Node("BoundUnbound", syntax, binder, type), "IsLambda", true);
             yield return Set(Node("BoundMethodGroup", Leaf, "group", Array("Symbols.MethodSymbol", method), Array("Symbols.TypeSymbol", type), true), "IsBaseAccess", true);
@@ -228,7 +242,7 @@ public sealed class BoundTreeRewriterParityTests
             yield return Node("BoundArrayCreation", arrayType, Leaf, expressions);
             yield return Node("BoundArrayCreation", arrayType, null, Array("Bound.BoundExpression"));
             yield return Node("BoundArrayAccess", Leaf, Leaf, type);
-            Pair folded = Create("Symbols.ConstantValue", 17);
+            var folded = Create("Symbols.ConstantValue", 17);
             yield return Set(Set(Node("BoundConversion", Leaf, 11, type, method), "CaseIndex", 4), "ConstantFolded", folded);
             yield return Set(Node("BoundUnary", 1, Leaf, type, method), "Folded", folded);
             yield return Set(Node("BoundBinary", 0, Leaf, Leaf, type, type, method), "Folded", folded);
@@ -265,9 +279,9 @@ public sealed class BoundTreeRewriterParityTests
             yield return Node("BoundReturn", (object?)null);
             yield return Node("BoundThrow", Leaf);
             yield return Node("BoundThrow", (object?)null);
-            Pair unchangedBlock = Node("BoundBlock", Array("Symbols.LocalSymbol"), Array("Bound.BoundStatement", empty));
-            Pair unchangedCatch = Create("Bound.BoundCatch", null, type, unchangedBlock);
-            Pair changedCatch = Create("Bound.BoundCatch", local, type, block);
+            var unchangedBlock = Node("BoundBlock", Array("Symbols.LocalSymbol"), Array("Bound.BoundStatement", empty));
+            var unchangedCatch = Create("Bound.BoundCatch", null, type, unchangedBlock);
+            var changedCatch = Create("Bound.BoundCatch", local, type, block);
             yield return Node("BoundTry", block, Array("Bound.BoundCatch", unchangedCatch, changedCatch), block);
             yield return Node("BoundTry", unchangedBlock, Array("Bound.BoundCatch", changedCatch), null);
             yield return Node("BoundTry", unchangedBlock, Array("Bound.BoundCatch", unchangedCatch), block);
@@ -282,7 +296,7 @@ public sealed class BoundTreeRewriterParityTests
         {
             if (expected == null) { Assert.IsNull(actual); return; }
             Assert.IsNotNull(actual);
-            if (originals.TryGetValue(expected, out object? original))
+            if (originals.TryGetValue(expected, out var original))
             {
                 Assert.AreSame(original, actual, expected.GetType().Name);
                 return;
@@ -292,18 +306,22 @@ public sealed class BoundTreeRewriterParityTests
             Assert.AreEqual(expected.GetType().Name, actual.GetType().Name);
             if (expected is IEnumerable sequence)
             {
-                object[] left = sequence.Cast<object>().ToArray();
-                object[] right = ((IEnumerable)actual).Cast<object>().ToArray();
+                object[] left = [.. sequence.Cast<object>()];
+                object[] right = [.. ((IEnumerable)actual).Cast<object>()];
                 Assert.HasCount(left.Length, right);
-                for (int i = 0; i < left.Length; i++) AssertEquivalent(left[i], right[i]);
+                for (var i = 0; i < left.Length; i++)
+                {
+                    AssertEquivalent(left[i], right[i]);
+                }
+
                 return;
             }
-            foreach (PropertyInfo member in expected.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public))
+            foreach (var member in expected.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public))
             {
-                PropertyInfo counterpart = actual.GetType().GetProperties()
+                var counterpart = actual.GetType().GetProperties()
                     .First(p => p.Name == member.Name);
-                object? left = member.GetValue(expected);
-                object? right = counterpart.GetValue(actual);
+                var left = member.GetValue(expected);
+                var right = counterpart.GetValue(actual);
                 if (left != null && member.PropertyType.IsGenericType &&
                     member.PropertyType.GetGenericTypeDefinition() == typeof(ImmutableArray<>))
                 {
@@ -317,7 +335,10 @@ public sealed class BoundTreeRewriterParityTests
             }
         }
 
-        private Pair Node(string name, params object?[] arguments) => Set(Create("Bound." + name, arguments), "Syntax", syntax);
+        private Pair Node(string name, params object?[] arguments)
+        {
+            return Set(Create("Bound." + name, arguments), "Syntax", syntax);
+        }
 
         private Pair Remember(object expected, object actual)
         {
@@ -327,23 +348,31 @@ public sealed class BoundTreeRewriterParityTests
 
         private Pair Create(string name, params object?[] arguments)
         {
-            Type left = typeof(BoundNode).Assembly.GetType("Caladesi.Compiler." + name, true)!;
-            Type right = typeof(SelfBound.BoundNode).Assembly.GetType("Caladesi.Compiler." + name, true)!;
+            var left = typeof(BoundNode).Assembly.GetType("Caladesi.Compiler." + name, true)!;
+            var right = typeof(SelfBound.BoundNode).Assembly.GetType("Caladesi.Compiler." + name, true)!;
             return Remember(Construct(left, arguments, false), Construct(right, arguments, true));
         }
 
         private static object Construct(Type type, object?[] arguments, bool self)
         {
-            ConstructorInfo constructor = type.GetConstructors()
+            var constructor = type.GetConstructors()
                 .Where(c => c.GetParameters().Length >= arguments.Length && c.GetParameters().Skip(arguments.Length).All(p => p.HasDefaultValue))
                 .OrderBy(c => c.GetParameters().Length).First();
-            ParameterInfo[] parameters = constructor.GetParameters();
-            object?[] values = new object?[parameters.Length];
-            for (int i = 0; i < values.Length; i++)
+            var parameters = constructor.GetParameters();
+            var values = new object?[parameters.Length];
+            for (var i = 0; i < values.Length; i++)
             {
-                object? value = i < arguments.Length ? arguments[i] : parameters[i].DefaultValue;
-                if (value is Pair pair) value = self ? pair.Actual : pair.Expected;
-                if (value != null && parameters[i].ParameterType.IsEnum) value = Enum.ToObject(parameters[i].ParameterType, value);
+                var value = i < arguments.Length ? arguments[i] : parameters[i].DefaultValue;
+                if (value is Pair pair)
+                {
+                    value = self ? pair.Actual : pair.Expected;
+                }
+
+                if (value != null && parameters[i].ParameterType.IsEnum)
+                {
+                    value = Enum.ToObject(parameters[i].ParameterType, value);
+                }
+
                 values[i] = value;
             }
             return constructor.Invoke(values);
@@ -353,11 +382,15 @@ public sealed class BoundTreeRewriterParityTests
         {
             object Build(bool self)
             {
-                Assembly assembly = self ? typeof(SelfBound.BoundNode).Assembly : typeof(BoundNode).Assembly;
-                Type element = assembly.GetType("Caladesi.Compiler." + elementName, true)!;
-                System.Array values = System.Array.CreateInstance(element, items.Length);
-                for (int i = 0; i < items.Length; i++) values.SetValue(self ? items[i].Actual : items[i].Expected, i);
-                MethodInfo create = typeof(ImmutableArray).GetMethods()
+                var assembly = self ? typeof(SelfBound.BoundNode).Assembly : typeof(BoundNode).Assembly;
+                var element = assembly.GetType("Caladesi.Compiler." + elementName, true)!;
+                var values = System.Array.CreateInstance(element, items.Length);
+                for (var i = 0; i < items.Length; i++)
+                {
+                    values.SetValue(self ? items[i].Actual : items[i].Expected, i);
+                }
+
+                var create = typeof(ImmutableArray).GetMethods()
                     .Single(m => m.Name == "Create" && m.IsGenericMethodDefinition && m.GetParameters().Length == 1 && m.GetParameters()[0].ParameterType.IsArray);
                 return create.MakeGenericMethod(element).Invoke(null, [values])!;
             }

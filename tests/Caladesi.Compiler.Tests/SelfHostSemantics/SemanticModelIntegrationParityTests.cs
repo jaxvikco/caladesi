@@ -7,6 +7,7 @@ using NativeSemantics = SelfHost::Caladesi.Compiler.Semantics;
 using NativeSyntax = SelfHost::Caladesi.Compiler.Syntax;
 using NativeMetadata = SelfHost::Caladesi.Compiler.Symbols.Metadata;
 using NativeSymbols = SelfHost::Caladesi.Compiler.Symbols;
+using Caladesi.Compiler.Symbols;
 
 namespace Caladesi.Compiler.Tests.SelfHostSemantics;
 
@@ -25,8 +26,9 @@ public sealed class SemanticModelIntegrationParityTests
     [DataRow("class C { value: int = 0; } const c = new C(); c.value = c.value + 1;")]
     public void RecordedQueriesReferencesAndSemanticTokensMatchBootstrap(string text)
     {
+        ArgumentNullException.ThrowIfNull(text);
         var (expected, actual) = Models(text);
-        for (int position = 0; position <= text.Length; position++)
+        for (var position = 0; position <= text.Length; position++)
         {
             Assert.AreEqual(expected.GetHover(position), actual.GetHover(position), $"Hover at {position}");
             var left = expected.GetSymbolAt(position);
@@ -34,7 +36,11 @@ public sealed class SemanticModelIntegrationParityTests
             Assert.AreEqual(left == null, right == null, $"Symbol presence at {position}");
             Assert.AreEqual(expected.GetExpressionTypeAt(position)?.ToDisplayString(),
                 actual.GetExpressionTypeAt(position)?.ToDisplayString(), $"Expression type at {position}");
-            if (left == null || right == null) continue;
+            if (left == null || right == null)
+            {
+                continue;
+            }
+
             Assert.AreEqual(left.Symbol.Name, right.Symbol.Name);
             Assert.AreEqual(left.Symbol.Kind.ToString(), right.Symbol.Kind.ToString());
             Assert.AreEqual(left.IsDeclaration, right.IsDeclaration);
@@ -67,7 +73,8 @@ public sealed class SemanticModelIntegrationParityTests
     [DataRow("enum Color { Red, Blue } Color.|")]
     public void LexicalMemberNamespaceAndExtensionCompletionsMatchBootstrap(string marked)
     {
-        int position = marked.IndexOf('|');
+        ArgumentNullException.ThrowIfNull(marked);
+        var position = marked.IndexOf('|');
         var (expected, actual) = Models(marked.Remove(position, 1));
         CollectionAssert.AreEqual(
             expected.GetCompletions(position).OrderBy(c => c.Label, StringComparer.Ordinal)
@@ -86,17 +93,24 @@ public sealed class SemanticModelIntegrationParityTests
     [DataRow("function f(value: int): int { return value; } f(1)|;")]
     public void SignatureHelpOverloadsConstructorsOptionalAndRestParametersMatchBootstrap(string marked)
     {
-        int position = marked.IndexOf('|');
+        ArgumentNullException.ThrowIfNull(marked);
+        var position = marked.IndexOf('|');
         var (expected, actual) = Models(marked.Remove(position, 1));
         var left = expected.GetSignatureHelp(position);
         var right = actual.GetSignatureHelp(position);
         Assert.AreEqual(left == null, right == null);
-        if (left == null || right == null) return;
+        if (left == null || right == null)
+        {
+            return;
+        }
+
         Assert.AreEqual(left.ActiveParameter, right.ActiveParameter);
         Assert.AreEqual(left.ActiveSignature, right.ActiveSignature);
         CollectionAssert.AreEqual(left.Signatures.Select(s => s.Label).ToArray(), right.Signatures.Select(s => s.Label).ToArray());
-        for (int i = 0; i < left.Signatures.Count; i++)
+        for (var i = 0; i < left.Signatures.Count; i++)
+        {
             CollectionAssert.AreEqual(left.Signatures[i].Parameters.ToArray(), right.Signatures[i].Parameters.ToArray());
+        }
     }
 
     [TestMethod]
@@ -104,8 +118,8 @@ public sealed class SemanticModelIntegrationParityTests
     {
         const string text = "class C { get value(): int { return 1; } } const c = new C(); const n = c.value;";
         var (expected, actual) = Models(text);
-        int position = text.LastIndexOf("value", StringComparison.Ordinal);
-        var left = (Caladesi.Compiler.Symbols.PropertySymbol)expected.GetSymbolAt(position)!.Symbol;
+        var position = text.LastIndexOf("value", StringComparison.Ordinal);
+        var left = (PropertySymbol)expected.GetSymbolAt(position)!.Symbol;
         var right = (NativeSymbols.PropertySymbol)actual.GetSymbolAt(position)!.Symbol;
         CollectionAssert.AreEqual(
             expected.FindReferences(left.GetMethod!).Select(r => (r.Tree.FilePath, r.Span.Start, r.IsDeclaration)).ToArray(),
@@ -119,7 +133,7 @@ public sealed class SemanticModelIntegrationParityTests
         const string text = "import { twice } from \"./lib\"; import * as L from \"./lib\"; const value = twice(21); L.";
         const string library = "export function twice(x: int): int { return x * 2; } function hidden(): void {}";
         var (expected, actual) = Models(text, library);
-        int position = text.IndexOf("twice(21)", StringComparison.Ordinal);
+        var position = text.IndexOf("twice(21)", StringComparison.Ordinal);
         var left = expected.GetSymbolAt(position)!.Symbol;
         var right = actual.GetSymbolAt(position)!.Symbol;
         CollectionAssert.AreEqual(
@@ -133,7 +147,7 @@ public sealed class SemanticModelIntegrationParityTests
     private static (SemanticModel Expected, NativeSemantics.SemanticModel<Native.SourceFile> Actual) Models(
         string text, string? library = null)
     {
-        var originalTrees = new List<SyntaxTree> { SyntaxTree.ParseText(text, "/semantic/main.cala") };
+        List<SyntaxTree> originalTrees = [SyntaxTree.ParseText(text, "/semantic/main.cala")];
         var nativeTrees = new List<NativeSyntax.SyntaxTree> { NativeSyntax.SyntaxTree.ParseText(text, "/semantic/main.cala") };
         if (library != null)
         {
@@ -142,13 +156,17 @@ public sealed class SemanticModelIntegrationParityTests
         }
         var original = Compilation.Create(new CompilationOptions
         {
-            RecordSemanticInfo = true, OutputKind = OutputKind.DynamicallyLinkedLibrary,
-            AssemblyName = "SemanticIntegration", ProjectDirectory = "/semantic",
+            RecordSemanticInfo = true,
+            OutputKind = OutputKind.DynamicallyLinkedLibrary,
+            AssemblyName = "SemanticIntegration",
+            ProjectDirectory = "/semantic",
         }, originalTrees, TestCompiler.References);
         var native = Native.Compilation.Create(new Native.CompilationOptions
         {
-            RecordSemanticInfo = true, OutputKind = Native.OutputKind.DynamicallyLinkedLibrary,
-            AssemblyName = "SemanticIntegration", ProjectDirectory = "/semantic",
+            RecordSemanticInfo = true,
+            OutputKind = Native.OutputKind.DynamicallyLinkedLibrary,
+            AssemblyName = "SemanticIntegration",
+            ProjectDirectory = "/semantic",
         }, nativeTrees, References.Value);
         return (original.GetSemanticModel(originalTrees[0]), native.GetSemanticModel(nativeTrees[0]));
     }

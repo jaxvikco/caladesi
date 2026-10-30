@@ -109,7 +109,7 @@ export sealed class BinderStatements<TFile> {
   }
   BindStatementList(statements: SyntaxList<StatementSyntax>, start: int, hoist: bool): ImmutableArray<BoundStatement> {
     const result = ImmutableArray.CreateBuilder<BoundStatement>();
-    if (hoist) result.AddRange(this.Methods.Hoist(statements, start));
+    if (hoist) result.AddRange(this.Methods.Hoist(statements, start, true));
     for (let i = start; i < statements.Count; i++) {
       const syntax = statements.Get(i);
       if (syntax instanceof FunctionDeclarationSyntax) continue;
@@ -119,6 +119,7 @@ export sealed class BinderStatements<TFile> {
       }
       result.Add(this.Bind(syntax));
     }
+    if (hoist) result.InsertRange(0, this.Methods.Hoist(statements, start, false));
     return result.ToImmutable();
   }
   Embedded(syntax: StatementSyntax): BoundStatement {

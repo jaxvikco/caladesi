@@ -17,48 +17,62 @@ public sealed class ILBuilderParityTests
     public void ConstantsTokensAndCalls_EmitIdenticalBytesAndTrackDepth()
     {
         Pair pair = new();
-        foreach (int value in new[] { int.MinValue, -129, -128, -2, -1, 0, 1, 8, 9, 127, 128, int.MaxValue })
-            pair.Run("LdcI4", value);
-        foreach (long value in new[] { long.MinValue, -1L, 0L, long.MaxValue })
-            pair.Run("LdcI8", value);
-        foreach (float value in new[] { float.MinValue, -0.0f, 0.0f, float.MaxValue, float.NaN, float.PositiveInfinity })
-            pair.Run("LdcR4", value);
-        foreach (double value in new[] { double.MinValue, -0.0, 0.0, double.MaxValue, double.NaN, double.NegativeInfinity })
-            pair.Run("LdcR8", value);
-        pair.Run("LdStr", MetadataTokens.UserStringHandle(17));
-        pair.Run("Token", ILOpCode.Ldtoken, (EntityHandle)MetadataTokens.TypeReferenceHandle(3), 1);
-        pair.Run("Token", ILOpCode.Ldfld, (EntityHandle)MetadataTokens.FieldDefinitionHandle(4), -2);
-        pair.Run("Call", ILOpCode.Call, (EntityHandle)MetadataTokens.MethodDefinitionHandle(7), 3, 1);
-        pair.Run("Call", ILOpCode.Callvirt, (EntityHandle)MetadataTokens.MemberReferenceHandle(9), -3, -1);
-        pair.Run("Call", ILOpCode.Newobj, (EntityHandle)MetadataTokens.MemberReferenceHandle(10), 1000, 1);
-        pair.Run("Op", ILOpCode.Nop, 0);
-        pair.Run("Op", ILOpCode.Dup, 2);
-        foreach (ILOpCode op in new[] { ILOpCode.Br, ILOpCode.Throw, ILOpCode.Rethrow, ILOpCode.Leave,
+        foreach (var value in new[] { int.MinValue, -129, -128, -2, -1, 0, 1, 8, 9, 127, 128, int.MaxValue })
+        {
+            _ = pair.Run("LdcI4", value);
+        }
+
+        foreach (var value in new[] { long.MinValue, -1L, 0L, long.MaxValue })
+        {
+            _ = pair.Run("LdcI8", value);
+        }
+
+        foreach (var value in new[] { float.MinValue, -0.0f, 0.0f, float.MaxValue, float.NaN, float.PositiveInfinity })
+        {
+            _ = pair.Run("LdcR4", value);
+        }
+
+        foreach (var value in new[] { double.MinValue, -0.0, 0.0, double.MaxValue, double.NaN, double.NegativeInfinity })
+        {
+            _ = pair.Run("LdcR8", value);
+        }
+
+        _ = pair.Run("LdStr", MetadataTokens.UserStringHandle(17));
+        _ = pair.Run("Token", ILOpCode.Ldtoken, (EntityHandle)MetadataTokens.TypeReferenceHandle(3), 1);
+        _ = pair.Run("Token", ILOpCode.Ldfld, (EntityHandle)MetadataTokens.FieldDefinitionHandle(4), -2);
+        _ = pair.Run("Call", ILOpCode.Call, (EntityHandle)MetadataTokens.MethodDefinitionHandle(7), 3, 1);
+        _ = pair.Run("Call", ILOpCode.Callvirt, (EntityHandle)MetadataTokens.MemberReferenceHandle(9), -3, -1);
+        _ = pair.Run("Call", ILOpCode.Newobj, (EntityHandle)MetadataTokens.MemberReferenceHandle(10), 1000, 1);
+        _ = pair.Run("Op", ILOpCode.Nop, 0);
+        _ = pair.Run("Op", ILOpCode.Dup, 2);
+        foreach (var op in new[] { ILOpCode.Br, ILOpCode.Throw, ILOpCode.Rethrow, ILOpCode.Leave,
                      ILOpCode.Endfinally, ILOpCode.Endfilter, ILOpCode.Ret })
         {
-            pair.Run("ResetDepth", 5);
-            pair.Run("Op", op, -1);
+            _ = pair.Run("ResetDepth", 5);
+            _ = pair.Run("Op", op, -1);
         }
-        pair.Run("ResetDepth", -7);
-        pair.Run("Op", ILOpCode.Pop, -1);
+        _ = pair.Run("ResetDepth", -7);
+        _ = pair.Run("Op", ILOpCode.Pop, -1);
         Assert.AreEqual(0, pair.Actual.CurrentDepth);
-        pair.Run("ResetDepth", 100);
-        pair.Run("ResetDepth", 0);
+        _ = pair.Run("ResetDepth", 100);
+        _ = pair.Run("ResetDepth", 0);
         Assert.AreEqual(104, pair.Actual.MaxStack);
-        pair.Run("ResetDepth", int.MaxValue);
-        pair.Run("Op", ILOpCode.Nop, 1);
+        _ = pair.Run("ResetDepth", int.MaxValue);
+        _ = pair.Run("Op", ILOpCode.Nop, 1);
         Assert.AreEqual(0, pair.Actual.CurrentDepth);
-        pair.Run("Call", ILOpCode.Call, (EntityHandle)MetadataTokens.MethodDefinitionHandle(1), int.MinValue, -1);
+        _ = pair.Run("Call", ILOpCode.Call, (EntityHandle)MetadataTokens.MethodDefinitionHandle(1), int.MinValue, -1);
     }
 
     [TestMethod]
     public void ArgumentsAndLocals_PreserveCompactWideAndUncheckedAddressPaths()
     {
-        foreach (string method in new[] { "Ldloc", "Stloc", "Ldarg", "Starg", "Ldloca", "Ldarga" })
+        foreach (var method in new[] { "Ldloc", "Stloc", "Ldarg", "Starg", "Ldloca", "Ldarga" })
         {
             Pair pair = new();
-            foreach (int index in new[] { -65537, -257, -1, 0, 1, 2, 3, 4, 255, 256, 65535, 65536, int.MaxValue })
-                pair.Run(method, index);
+            foreach (var index in new[] { -65537, -257, -1, 0, 1, 2, 3, 4, 255, 256, 65535, 65536, int.MaxValue })
+            {
+                _ = pair.Run(method, index);
+            }
         }
     }
 
@@ -66,33 +80,33 @@ public sealed class ILBuilderParityTests
     public void Labels_PreserveMergesFallthroughBackwardEdgesAndBranchBodyFixups()
     {
         Pair pair = new();
-        LabelHandle target = (LabelHandle)pair.Run("NewLabel")!;
-        LabelHandle backward = (LabelHandle)pair.Run("NewLabel")!;
+        var target = (LabelHandle)pair.Run("NewLabel")!;
+        var backward = (LabelHandle)pair.Run("NewLabel")!;
         Assert.AreNotEqual(target, backward);
-        pair.Run("Mark", backward);
-        pair.Run("ResetDepth", 7);
-        pair.Run("Branch", ILOpCode.Brtrue, target);
-        pair.Run("ResetDepth", 3);
-        pair.Run("Branch", ILOpCode.Brfalse, target);
-        pair.Run("ResetDepth", 1);
-        pair.Run("Mark", target);
+        _ = pair.Run("Mark", backward);
+        _ = pair.Run("ResetDepth", 7);
+        _ = pair.Run("Branch", ILOpCode.Brtrue, target);
+        _ = pair.Run("ResetDepth", 3);
+        _ = pair.Run("Branch", ILOpCode.Brfalse, target);
+        _ = pair.Run("ResetDepth", 1);
+        _ = pair.Run("Mark", target);
         Assert.AreEqual(6, pair.Actual.CurrentDepth);
-        pair.Run("Branch", ILOpCode.Beq, backward);
-        pair.Run("Branch", ILOpCode.Br, backward);
+        _ = pair.Run("Branch", ILOpCode.Beq, backward);
+        _ = pair.Run("Branch", ILOpCode.Br, backward);
         Assert.AreEqual(0, pair.Actual.CurrentDepth);
         CollectionAssert.AreEqual(Body(pair.Expected), Body(pair.Actual));
 
-        foreach (ILOpCode op in new[] { ILOpCode.Br, ILOpCode.Leave, ILOpCode.Brtrue, ILOpCode.Brfalse,
+        foreach (var op in new[] { ILOpCode.Br, ILOpCode.Leave, ILOpCode.Brtrue, ILOpCode.Brfalse,
                      ILOpCode.Beq, ILOpCode.Bne_un, ILOpCode.Bge, ILOpCode.Bge_un, ILOpCode.Bgt,
                      ILOpCode.Bgt_un, ILOpCode.Ble, ILOpCode.Ble_un, ILOpCode.Blt, ILOpCode.Blt_un,
                      ILOpCode.Br_s, ILOpCode.Leave_s, ILOpCode.Brtrue_s, ILOpCode.Brfalse_s, ILOpCode.Beq_s })
         {
             Pair branch = new();
-            LabelHandle label = (LabelHandle)branch.Run("NewLabel")!;
-            branch.Run("ResetDepth", 5);
-            branch.Run("Branch", op, label);
-            branch.Run("ResetDepth", 9);
-            branch.Run("Mark", label);
+            var label = (LabelHandle)branch.Run("NewLabel")!;
+            _ = branch.Run("ResetDepth", 5);
+            _ = branch.Run("Branch", op, label);
+            _ = branch.Run("ResetDepth", 9);
+            _ = branch.Run("Mark", label);
             Assert.AreEqual(9, branch.Actual.CurrentDepth);
             CollectionAssert.AreEqual(Body(branch.Expected), Body(branch.Actual), op.ToString());
         }
@@ -102,13 +116,13 @@ public sealed class ILBuilderParityTests
     public void Labels_InvalidOperationsPreserveExceptionsAndMutationOrdering()
     {
         Pair pair = new();
-        pair.Run("ResetDepth", 5);
-        pair.Run("Branch", ILOpCode.Nop, default(LabelHandle));
-        pair.Run("Branch", ILOpCode.Brtrue, default(LabelHandle));
-        pair.Run("Mark", default(LabelHandle));
-        LabelHandle label = (LabelHandle)pair.Run("NewLabel")!;
-        pair.Run("Mark", label);
-        pair.Run("Mark", label);
+        _ = pair.Run("ResetDepth", 5);
+        _ = pair.Run("Branch", ILOpCode.Nop, default(LabelHandle));
+        _ = pair.Run("Branch", ILOpCode.Brtrue, default(LabelHandle));
+        _ = pair.Run("Mark", default(LabelHandle));
+        var label = (LabelHandle)pair.Run("NewLabel")!;
+        _ = pair.Run("Mark", label);
+        _ = pair.Run("Mark", label);
     }
 
     [TestMethod]
@@ -122,10 +136,10 @@ public sealed class ILBuilderParityTests
         Assert.IsTrue(typeof(H.SequencePoint).IsDefined(typeof(System.Runtime.CompilerServices.IsReadOnlyAttribute)));
         Assert.IsTrue(typeof(H.LocalSlot).IsSealed);
         Assert.IsTrue(typeof(H.ILBuilder).IsSealed);
-        foreach (string? name in new[] { null, "", "local" })
+        foreach (var name in new[] { null, "", "local" })
         {
-            object expected = Invoke(pair.Expected, "NewLocal", S.NullTypeSymbol.Instance, name)!;
-            H.LocalSlot actual = name == null
+            var expected = Invoke(pair.Expected, "NewLocal", S.NullTypeSymbol.Instance, name)!;
+            var actual = name == null
                 ? pair.Actual.NewLocal(HS.NullTypeSymbol.Instance)
                 : pair.Actual.NewLocal(HS.NullTypeSymbol.Instance, name);
             Assert.AreSame(HS.NullTypeSymbol.Instance, actual.Type);
@@ -134,11 +148,11 @@ public sealed class ILBuilderParityTests
             Assert.AreEqual(Get<string?>(expected, "Name"), actual.Name);
         }
         pair.Check();
-        pair.Run("MarkHidden");
-        pair.Run("MarkSequencePoint", 1, 2, 3, 4);
-        pair.Run("LdcI4", 128);
-        pair.Run("MarkSequencePoint", -1, 0, -2, int.MaxValue);
-        pair.Run("MarkHidden");
+        _ = pair.Run("MarkHidden");
+        _ = pair.Run("MarkSequencePoint", 1, 2, 3, 4);
+        _ = pair.Run("LdcI4", 128);
+        _ = pair.Run("MarkSequencePoint", -1, 0, -2, int.MaxValue);
+        _ = pair.Run("MarkHidden");
         Assert.AreEqual(0xFEEFEE, pair.Actual.SequencePoints[^1].StartLine);
         Assert.AreEqual(pair.Actual.Offset, pair.Actual.SequencePoints[^1].Offset);
         pair.Actual.Encoder.LoadConstantI4(7);
@@ -153,20 +167,24 @@ public sealed class ILBuilderParityTests
     {
         BlobBuilder bytes = new();
         MethodBodyStreamEncoder bodies = new(bytes);
-        bodies.AddMethodBody(Get<InstructionEncoder>(builder, "Encoder"), Get<int>(builder, "MaxStack"));
+        _ = bodies.AddMethodBody(Get<InstructionEncoder>(builder, "Encoder"), Get<int>(builder, "MaxStack"));
         return bytes.ToArray();
     }
 
-    private static T Get<T>(object instance, string name) =>
-        (T)instance.GetType().GetProperty(name)!.GetValue(instance)!;
+    private static T Get<T>(object instance, string name)
+    {
+        return (T)instance.GetType().GetProperty(name)!.GetValue(instance)!;
+    }
 
-    private static object? Invoke(object instance, string name, params object?[] arguments) =>
-        instance.GetType().GetMethod(name)!.Invoke(instance, arguments);
+    private static object? Invoke(object instance, string name, params object?[] arguments)
+    {
+        return instance.GetType().GetMethod(name)!.Invoke(instance, arguments);
+    }
 
     private sealed class Pair
     {
         public object Expected { get; } = Activator.CreateInstance(
-            typeof(Caladesi.Compiler.Compilation).Assembly.GetType("Caladesi.Compiler.Emit.ILBuilder", true)!)!;
+            typeof(Compilation).Assembly.GetType("Caladesi.Compiler.Emit.ILBuilder", true)!)!;
         public H.ILBuilder Actual { get; } = new();
 
         public object? Run(string method, params object?[] arguments)
@@ -193,11 +211,15 @@ public sealed class ILBuilderParityTests
             Assert.AreEqual(Get<int>(Expected, "CurrentDepth"), Actual.CurrentDepth);
             Assert.AreEqual(Get<int>(Expected, "MaxStack"), Actual.MaxStack);
             Assert.HasCount(Get<IList>(Expected, "Locals").Count, Actual.Locals);
-            IList points = Get<IList>(Expected, "SequencePoints");
+            var points = Get<IList>(Expected, "SequencePoints");
             Assert.HasCount(points.Count, Actual.SequencePoints);
-            for (int i = 0; i < points.Count; i++)
-                foreach (string property in new[] { "Offset", "StartLine", "StartColumn", "EndLine", "EndColumn", "IsHidden" })
+            for (var i = 0; i < points.Count; i++)
+            {
+                foreach (var property in new[] { "Offset", "StartLine", "StartColumn", "EndLine", "EndColumn", "IsHidden" })
+                {
                     Assert.AreEqual(Get<object>(points[i]!, property), Get<object>(Actual.SequencePoints[i], property), property);
+                }
+            }
         }
     }
 }

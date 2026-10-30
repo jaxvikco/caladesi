@@ -5,6 +5,9 @@ End-to-end tests: build and run real Caladesi projects through the real `dotnet`
 ## Running
 
 ```sh
+eng/bootstrap.sh
+export CALADESI_BOOTSTRAP_DIR="$PWD/artifacts/bootstrap"
+export CALADESI_VERSION=1.0.0
 dotnet test --project tests/Caladesi.E2E        # whole suite (about 40 s)
 dotnet test --solution Caladesi.slnx            # unit tests + E2E
 ```
@@ -21,9 +24,12 @@ Environment variables:
 | Variable | Effect |
 | --- | --- |
 | `CALADESI_E2E_FEED=<dir>` | Use an already packed feed and skip `eng/pack.sh`. |
+| `CALADESI_BOOTSTRAP_DIR=<dir>` | Trusted native CLI/task required when the harness packs; there is no C# fallback. |
+| `CALADESI_VERSION=1.0.0` | Pack the version pinned by the integration fixtures. |
 | `CALADESI_E2E_KEEP=1` | Keep the temp work directory of passing samples too (failing ones are always kept; the path is in the failure message). |
 
-To pack by hand: `eng/pack.sh` (output: `artifacts/packages`, override with `CALADESI_PACK_OUT`).
+To pack by hand: `CALADESI_VERSION=1.0.0 eng/pack.sh` with the bootstrap set above
+(output: `artifacts/packages`, override with `CALADESI_PACK_OUT`).
 To try a package by hand, put a `nuget.config` with that folder as a source next to your project.
 
 ## Samples

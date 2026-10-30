@@ -79,7 +79,7 @@ export sealed class SemanticCompletion<TFile> {
     return null;
   }
   private static KindOf(symbol: Symbol): CompletionKind {
-    const original = symbol.OriginalSymbolDefinition;
+    const original = Symbol.OriginalDefinitionOf(symbol);
     if (original instanceof NamespaceSymbol || original instanceof FileModuleSymbol<TFile>) return CompletionKind.Module;
     if (original instanceof NamedTypeSymbol) {
       const kind = (original as NamedTypeSymbol).TypeKind;

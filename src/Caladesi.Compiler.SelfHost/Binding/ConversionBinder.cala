@@ -162,6 +162,7 @@ export sealed class ConversionBinder {
   }
 
   private static TryFoldConversion(expr: BoundExpression, conversion: Conversion, target: TypeSymbol): ConstantValue? {
+    if (conversion.Kind == ConversionKind.NullLiteral) return ConstantValue.Null;
     const cv = expr.ConstantValue;
     if (cv == null || cv.Value == null) return null;
     if ((conversion.Kind == ConversionKind.ImplicitNumeric || conversion.Kind == ConversionKind.ExplicitNumeric) &&

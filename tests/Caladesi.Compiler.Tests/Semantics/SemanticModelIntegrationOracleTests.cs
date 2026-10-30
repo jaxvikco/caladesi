@@ -102,6 +102,6 @@ public sealed class SemanticModelIntegrationOracleTests
     public void SemanticModelRequiresRecordingOption()
     {
         Compilation compilation = TestCompiler.Create("const x = 1;");
-        Assert.ThrowsExactly<ArgumentException>(() => compilation.GetSemanticModel(compilation.SyntaxTrees[0]));
+        _ = Assert.ThrowsExactly<ArgumentException>(() => compilation.GetSemanticModel(compilation.SyntaxTrees[0]));
     }
 }

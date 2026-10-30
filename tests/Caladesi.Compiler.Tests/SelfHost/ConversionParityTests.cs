@@ -28,15 +28,15 @@ public sealed class ConversionParityTests
     [TestMethod]
     public void Conversion_FactoriesAndNullableWrapMatchEveryKind()
     {
-        foreach (ConversionKind kind in Enum.GetValues<ConversionKind>())
+        foreach (var kind in Enum.GetValues<ConversionKind>())
         {
-            SelfKind selfKind = (SelfKind)(int)kind;
-            foreach (int caseIndex in new[] { int.MinValue, -1, 0, 7, int.MaxValue })
+            var selfKind = (SelfKind)(int)kind;
+            foreach (var caseIndex in new[] { int.MinValue, -1, 0, 7, int.MaxValue })
             {
-                foreach (bool isImplicit in new[] { false, true })
+                foreach (var isImplicit in new[] { false, true })
                 {
                     Conversion original = new(kind, isImplicit, caseIndex: caseIndex);
-                    SelfConversion migrated = SelfConversions.Create(selfKind, isImplicit, null, caseIndex);
+                    var migrated = SelfConversions.Create(selfKind, isImplicit, null, caseIndex);
                     AssertConversion(original, migrated);
                     AssertConversion(original.WithNullableWrap(), SelfConversions.WithNullableWrap(migrated));
                     AssertConversion(original.WithNullableWrap().WithNullableWrap(),
@@ -61,17 +61,17 @@ public sealed class ConversionParityTests
     {
         LambdaSymbol method = new(ErrorTypeSymbol.Instance, "convert", false, false);
         SelfLambda selfMethod = new(SelfError.Instance, "convert", false, false);
-        foreach (object? value in new object?[] { null, false, 0, 42L, 3.5, "literal" })
+        foreach (var value in new object?[] { null, false, 0, 42L, 3.5, "literal" })
         {
             ConstantValue constant = new(value);
             SelfConstant selfConstant = new(value);
-            Conversion original = Conversion.Implicit(ConversionKind.UserDefined, method, 3, constant);
-            SelfConversion migrated = SelfConversions.Implicit(SelfKind.UserDefined, selfMethod, 3, selfConstant);
+            var original = Conversion.Implicit(ConversionKind.UserDefined, method, 3, constant);
+            var migrated = SelfConversions.Implicit(SelfKind.UserDefined, selfMethod, 3, selfConstant);
             AssertConversion(original, migrated);
             AssertConversion(original.WithNullableWrap(), SelfConversions.WithNullableWrap(migrated));
             Assert.AreSame(selfMethod, migrated.Method);
             Assert.AreSame(selfConstant, migrated.Constant);
-            SelfConversion wrapped = SelfConversions.WithNullableWrap(migrated);
+            var wrapped = SelfConversions.WithNullableWrap(migrated);
             Assert.AreSame(selfMethod, wrapped.Method);
             Assert.AreSame(selfConstant, wrapped.Constant);
         }
@@ -83,7 +83,7 @@ public sealed class ConversionParityTests
     [TestMethod]
     public void Conversion_UndefinedKindsRetainValues()
     {
-        foreach (int value in new[] { int.MinValue, -1, int.MaxValue })
+        foreach (var value in new[] { int.MinValue, -1, int.MaxValue })
         {
             AssertConversion(new Conversion((ConversionKind)value, true),
                 SelfConversions.Create((SelfKind)value, true));

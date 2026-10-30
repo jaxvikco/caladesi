@@ -9,10 +9,10 @@ public sealed class CliParityTests
 {
     private sealed record Result(int ExitCode, string Stdout, string Stderr);
 
-    private static string FindCli(bool selfHost)
+    internal static string FindCli(bool selfHost)
     {
-        string project = selfHost ? "Caladesi.Cli.SelfHost" : "Caladesi.Cli";
-        string file = selfHost ? "calac-selfhost.dll" : "calac.dll";
+        var project = selfHost ? "Caladesi.Cli.SelfHost" : "Caladesi.Cli";
+        var file = selfHost ? "calac-selfhost.dll" : "calac.dll";
 #if DEBUG
         const string configuration = "Debug";
 #else
@@ -21,8 +21,8 @@ public sealed class CliParityTests
         DirectoryInfo? directory = new(AppContext.BaseDirectory);
         while (directory != null)
         {
-            string normal = Path.Join(directory.FullName, "src", project, "bin", configuration, "net10.0", file);
-            string artifacts = Path.Join(directory.FullName, project, configuration.ToLowerInvariant(), file);
+            var normal = Path.Join(directory.FullName, "src", project, "bin", configuration, "net10.0", file);
+            var artifacts = Path.Join(directory.FullName, project, configuration.ToLowerInvariant(), file);
             if (File.Exists(artifacts))
             {
                 return artifacts;
@@ -40,7 +40,9 @@ public sealed class CliParityTests
     }
 
     private static Result Run(bool selfHost, IEnumerable<string> arguments)
-        => RunCompiler(FindCli(selfHost), arguments);
+    {
+        return RunCompiler(FindCli(selfHost), arguments);
+    }
 
     private static Result RunCompiler(string cli, IEnumerable<string> arguments)
     {
@@ -50,14 +52,14 @@ public sealed class CliParityTests
             RedirectStandardError = true,
         };
         start.ArgumentList.Add(cli);
-        foreach (string argument in arguments)
+        foreach (var argument in arguments)
         {
             start.ArgumentList.Add(argument);
         }
 
-        using Process process = Process.Start(start)!;
-        Task<string> stdout = process.StandardOutput.ReadToEndAsync();
-        Task<string> stderr = process.StandardError.ReadToEndAsync();
+        using var process = Process.Start(start)!;
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
         if (!process.WaitForExit(60_000))
         {
             process.Kill(entireProcessTree: true);
@@ -69,9 +71,9 @@ public sealed class CliParityTests
 
     private static Result AssertParity(IEnumerable<string> arguments, int exitCode)
     {
-        string[] args = arguments.ToArray();
-        Result bootstrap = Run(selfHost: false, args);
-        Result port = Run(selfHost: true, args);
+        string[] args = [.. arguments];
+        var bootstrap = Run(selfHost: false, args);
+        var port = Run(selfHost: true, args);
         Assert.AreEqual(exitCode, bootstrap.ExitCode, bootstrap.Stderr);
         Assert.AreEqual(bootstrap, port);
         return port;
@@ -80,8 +82,8 @@ public sealed class CliParityTests
     private static void InWorkspace(Action<string> test)
     {
         // Keep test artifacts beside the test binary, not in the system temporary directory.
-        string directory = Path.Join(AppContext.BaseDirectory, "cli-parity-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(directory);
+        var directory = Path.Join(AppContext.BaseDirectory, "cli-parity-" + Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(directory);
         try
         {
             test(directory);
@@ -94,7 +96,7 @@ public sealed class CliParityTests
 
     private static string[] CompileArguments(string directory, string source, params string[] options)
     {
-        string path = Path.Join(directory, "input.cala");
+        var path = Path.Join(directory, "input.cala");
         File.WriteAllText(path, source);
         return [
             "-out:" + Path.Join(directory, "app.dll"),
@@ -109,15 +111,14 @@ public sealed class CliParityTests
     [TestMethod]
     public void NativeTooling_DoesNotReferenceBootstrapCompilerOrRuntime()
     {
-        string cli = FindCli(selfHost: true);
-        string directory = Path.GetDirectoryName(cli)!;
-        foreach (string assembly in new[] { cli, Path.Join(directory, "Caladesi.Compiler.SelfHost.dll"), Path.Join(directory, "Caladesi.Runtime.SelfHost.dll") })
+        var cli = FindCli(selfHost: true);
+        var directory = Path.GetDirectoryName(cli)!;
+        foreach (var assembly in new[] { cli, Path.Join(directory, "Caladesi.Compiler.SelfHost.dll"), Path.Join(directory, "Caladesi.Runtime.SelfHost.dll") })
         {
-            using FileStream stream = File.OpenRead(assembly);
+            using var stream = File.OpenRead(assembly);
             using PEReader reader = new(stream);
-            MetadataReader metadata = reader.GetMetadataReader();
-            string[] references = metadata.AssemblyReferences
-                .Select(handle => metadata.GetString(metadata.GetAssemblyReference(handle).Name)).ToArray();
+            var metadata = reader.GetMetadataReader();
+            string[] references = [.. metadata.AssemblyReferences.Select(handle => metadata.GetString(metadata.GetAssemblyReference(handle).Name))];
             CollectionAssert.DoesNotContain(references, "Caladesi.Compiler", assembly);
             CollectionAssert.DoesNotContain(references, "Caladesi.Runtime", assembly);
             if (assembly == cli)
@@ -125,7 +126,7 @@ public sealed class CliParityTests
                 CollectionAssert.Contains(references, "Caladesi.Compiler.SelfHost");
                 Assert.IsTrue(metadata.TypeReferences.Any(handle =>
                 {
-                    TypeReference type = metadata.GetTypeReference(handle);
+                    var type = metadata.GetTypeReference(handle);
                     return metadata.GetString(type.Namespace) == "Caladesi.Compiler" &&
                         metadata.GetString(type.Name) == "Compilation" &&
                         type.ResolutionScope.Kind == HandleKind.AssemblyReference &&
@@ -140,19 +141,20 @@ public sealed class CliParityTests
     {
         InWorkspace(directory =>
         {
-            string sourceDirectory = Path.GetDirectoryName(FindCli(selfHost: true))!;
-            string tools = Path.Join(directory, "native-tools");
-            Directory.CreateDirectory(tools);
-            foreach (string file in new[] { "calac-selfhost.dll", "calac-selfhost.deps.json", "calac-selfhost.runtimeconfig.json",
-                "Caladesi.Compiler.SelfHost.dll", "Caladesi.Runtime.SelfHost.dll" })
+            var sourceDirectory = Path.GetDirectoryName(FindCli(selfHost: true))!;
+            var tools = Path.Join(directory, "native-tools");
+            _ = Directory.CreateDirectory(tools);
+            string[] nativeFiles = ["calac-selfhost.dll", "calac-selfhost.deps.json", "calac-selfhost.runtimeconfig.json",
+                "Caladesi.Compiler.SelfHost.dll", "Caladesi.Runtime.SelfHost.dll"];
+            foreach (var file in nativeFiles)
             {
                 File.Copy(Path.Join(sourceDirectory, file), Path.Join(tools, file));
             }
 
-            string source = Path.Join(directory, "input.cala");
-            string output = Path.Join(directory, "native-app.dll");
+            var source = Path.Join(directory, "input.cala");
+            var output = Path.Join(directory, "native-app.dll");
             File.WriteAllText(source, "function main(): int { const value: int | string = 42; Console.WriteLine(value); return 42; }");
-            Result result = RunCompiler(Path.Join(tools, "calac-selfhost.dll"),
+            var result = RunCompiler(Path.Join(tools, "calac-selfhost.dll"),
                 ["-out:" + output, "-projectdir:" + directory,
                     .. TestReferences.Paths.Select(path => "-ref:" + path),
                     "-ref:" + Path.Join(tools, "Caladesi.Runtime.SelfHost.dll"), source]);
@@ -160,19 +162,18 @@ public sealed class CliParityTests
             Assert.AreEqual("", result.Stdout);
             Assert.AreEqual("", result.Stderr);
             Assert.IsTrue(File.Exists(output));
-            using (FileStream stream = File.OpenRead(output))
+            using (var stream = File.OpenRead(output))
             using (PEReader reader = new(stream))
             {
-                MetadataReader metadata = reader.GetMetadataReader();
-                string[] references = metadata.AssemblyReferences
-                    .Select(handle => metadata.GetString(metadata.GetAssemblyReference(handle).Name)).ToArray();
+                var metadata = reader.GetMetadataReader();
+                string[] references = [.. metadata.AssemblyReferences.Select(handle => metadata.GetString(metadata.GetAssemblyReference(handle).Name))];
                 CollectionAssert.Contains(references, "Caladesi.Runtime.SelfHost");
                 CollectionAssert.DoesNotContain(references, "Caladesi.Runtime");
             }
 
             File.Copy(Path.Join(tools, "calac-selfhost.runtimeconfig.json"), Path.Join(directory, "native-app.runtimeconfig.json"));
             File.Copy(Path.Join(tools, "Caladesi.Runtime.SelfHost.dll"), Path.Join(directory, "Caladesi.Runtime.SelfHost.dll"));
-            Result program = RunCompiler(output, []);
+            var program = RunCompiler(output, []);
             Assert.AreEqual(42, program.ExitCode, program.Stderr);
             Assert.AreEqual("42" + Environment.NewLine, program.Stdout);
             Assert.AreEqual("", program.Stderr);
@@ -182,7 +183,7 @@ public sealed class CliParityTests
     [TestMethod]
     public void Version_PrecedesOptionErrors()
     {
-        Result result = AssertParity(["--VERSION", "-not-an-option", "-version:invalid"], 0);
+        var result = AssertParity(["--VERSION", "-not-an-option", "-version:invalid"], 0);
         StringAssert.StartsWith(result.Stdout, "calac ");
         Assert.AreEqual("", result.Stderr);
     }
@@ -190,7 +191,7 @@ public sealed class CliParityTests
     [TestMethod]
     public void Arguments_ReportAllErrorsInOrder()
     {
-        Result result = AssertParity(["-target:invalid", "-version:bad", "-unknown:value"], 1);
+        var result = AssertParity(["-target:invalid", "-version:bad", "-unknown:value"], 1);
         StringAssert.Contains(result.Stderr, "unknown target 'invalid'");
         StringAssert.Contains(result.Stderr, "invalid version 'bad'");
         StringAssert.Contains(result.Stderr, "unknown option '-unknown:value'");
@@ -221,8 +222,8 @@ public sealed class CliParityTests
     {
         InWorkspace(directory =>
         {
-            string[] arguments = CompileArguments(directory, "Console.WriteLine(unknownName);");
-            Result result = AssertParity(arguments, 1);
+            var arguments = CompileArguments(directory, "Console.WriteLine(unknownName);");
+            var result = AssertParity(arguments, 1);
             StringAssert.Contains(result.Stderr, "input.cala(");
             Assert.IsFalse(File.Exists(Path.Join(directory, "app.dll")));
             arguments = CompileArguments(directory, "Console.WriteLine(1);", "-ref:" + Path.Join(directory, "missing.dll"));
@@ -237,13 +238,13 @@ public sealed class CliParityTests
         InWorkspace(directory =>
         {
             const string source = "const x: int = 1; Console.WriteLine(x instanceof string);";
-            Result warning = AssertParity(CompileArguments(directory, source, "-warnaserror:-", "-optimize:-"), 0);
+            var warning = AssertParity(CompileArguments(directory, source, "-warnaserror:-", "-optimize:-"), 0);
             StringAssert.Contains(warning.Stdout, "warning CAL0241");
             Assert.AreEqual("", warning.Stderr);
-            Result error = AssertParity(CompileArguments(directory, source, "-warnaserror"), 1);
+            var error = AssertParity(CompileArguments(directory, source, "-warnaserror"), 1);
             StringAssert.Contains(error.Stderr, "error CAL0241");
             Assert.AreEqual("", error.Stdout);
-            Result suppressed = AssertParity(CompileArguments(directory, source, "-warnaserror", "-nowarn:CAL0241"), 0);
+            var suppressed = AssertParity(CompileArguments(directory, source, "-warnaserror", "-nowarn:CAL0241"), 0);
             Assert.AreEqual("", suppressed.Stdout);
             Assert.AreEqual("", suppressed.Stderr);
         });
@@ -258,9 +259,9 @@ public sealed class CliParityTests
     {
         InWorkspace(directory =>
         {
-            string source = hasEntryPoint ? "Console.WriteLine(1);" : "export class LibraryType {}";
-            AssertParity(CompileArguments(directory, source, "-target:" + target), 0);
-            using FileStream stream = File.OpenRead(Path.Join(directory, "app.dll"));
+            var source = hasEntryPoint ? "Console.WriteLine(1);" : "export class LibraryType {}";
+            _ = AssertParity(CompileArguments(directory, source, "-target:" + target), 0);
+            using var stream = File.OpenRead(Path.Join(directory, "app.dll"));
             using PEReader reader = new(stream);
             Assert.AreEqual(hasEntryPoint, reader.PEHeaders.CorHeader!.EntryPointTokenOrRelativeVirtualAddress != 0);
         });
@@ -272,8 +273,8 @@ public sealed class CliParityTests
         InWorkspace(directory =>
         {
             const string source = "let text: string = null; Console.WriteLine(text);";
-            AssertParity(CompileArguments(directory, source, "-nullable:enable"), 1);
-            AssertParity(CompileArguments(directory, source, "-nullable:DISABLE"), 1);
+            _ = AssertParity(CompileArguments(directory, source, "-nullable:enable"), 1);
+            _ = AssertParity(CompileArguments(directory, source, "-nullable:DISABLE"), 1);
         });
     }
 
@@ -282,7 +283,7 @@ public sealed class CliParityTests
     {
         InWorkspace(directory =>
         {
-            Result result = AssertParity(CompileArguments(directory, "", "-testentry", "-testhook:Missing.Hook"), 1);
+            var result = AssertParity(CompileArguments(directory, "", "-testentry", "-testhook:Missing.Hook"), 1);
             Assert.IsNotEmpty(result.Stderr);
         });
     }
@@ -292,10 +293,10 @@ public sealed class CliParityTests
     {
         InWorkspace(directory =>
         {
-            string[] arguments = CompileArguments(directory, "Console.WriteLine(42);");
-            string response = Path.Join(directory, "arguments with spaces.rsp");
+            var arguments = CompileArguments(directory, "Console.WriteLine(42);");
+            var response = Path.Join(directory, "arguments with spaces.rsp");
             File.WriteAllLines(response, ["  # ignored", "", .. arguments.Select(argument => "  \"" + argument + "\"  ")]);
-            AssertParity(["@" + response], 0);
+            _ = AssertParity(["@" + response], 0);
             Assert.IsTrue(File.Exists(Path.Join(directory, "app.dll")));
             File.WriteAllText(response, "@nested.rsp");
             StringAssert.Contains(AssertParity(["-out:unused.dll", "@" + response], 1).Stderr, "CALC0004");
@@ -307,9 +308,9 @@ public sealed class CliParityTests
     {
         InWorkspace(directory =>
         {
-            string output = Path.Join(directory, "app.dll");
-            string pdb = Path.Join(directory, "app.pdb");
-            string[] arguments = CompileArguments(directory,
+            var output = Path.Join(directory, "app.dll");
+            var pdb = Path.Join(directory, "app.pdb");
+            var arguments = CompileArguments(directory,
                 "function main(args: string[]): int { Console.WriteLine(new StringBuilder(\"hello\").ToString()); return args.Length + 6; }",
                 "-target:console", "-assemblyname:Parity", "-rootnamespace:Port",
                 "-globalimport:System.Text", "-globalimport:", "-define:CLI_PORT",
@@ -317,29 +318,30 @@ public sealed class CliParityTests
                 "-optimize:true", "-testentry:false", "-testhook:Unused.Hook",
                 "-targetframework:.NETCoreApp,Version=v10.0", "-targetframeworkdisplay:CLI parity",
                 "-version:2.3.4.5", "-pdb:" + pdb);
-            AssertParity(arguments, 0);
-            using (FileStream stream = File.OpenRead(output))
+            _ = AssertParity(arguments, 0);
+            using (var stream = File.OpenRead(output))
             using (PEReader reader = new(stream))
             {
-                MetadataReader metadata = reader.GetMetadataReader();
-                AssemblyDefinition assembly = metadata.GetAssemblyDefinition();
+                var metadata = reader.GetMetadataReader();
+                var assembly = metadata.GetAssemblyDefinition();
                 Assert.AreEqual("Parity", metadata.GetString(assembly.Name));
                 Assert.AreEqual(new Version(2, 3, 4, 5), assembly.Version);
             }
 
-            using (FileStream stream = File.OpenRead(pdb))
-            using (MetadataReaderProvider provider = MetadataReaderProvider.FromPortablePdbStream(stream))
+            using (var stream = File.OpenRead(pdb))
+            using (var provider = MetadataReaderProvider.FromPortablePdbStream(stream))
             {
                 Assert.IsNotEmpty(provider.GetMetadataReader().Documents);
             }
 
             File.WriteAllText(Path.Join(directory, "app.runtimeconfig.json"),
-                """{"runtimeOptions":{"tfm":"net10.0","framework":{"name":"Microsoft.NETCore.App","version":"10.0.0"}}}""");
+                                     /*lang=json,strict*/
+                                     """{"runtimeOptions":{"tfm":"net10.0","framework":{"name":"Microsoft.NETCore.App","version":"10.0.0"}}}""");
             ProcessStartInfo start = new("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true };
             start.ArgumentList.Add(output);
-            using Process process = Process.Start(start)!;
-            string stdout = process.StandardOutput.ReadToEnd();
-            string stderr = process.StandardError.ReadToEnd();
+            using var process = Process.Start(start)!;
+            var stdout = process.StandardOutput.ReadToEnd();
+            var stderr = process.StandardError.ReadToEnd();
             process.WaitForExit();
             Assert.AreEqual(6, process.ExitCode, stderr);
             Assert.AreEqual("hello" + Environment.NewLine, stdout);
@@ -351,13 +353,13 @@ public sealed class CliParityTests
     {
         InWorkspace(directory =>
         {
-            string[] arguments = CompileArguments(directory, "", "-target:dll");
-            Directory.CreateDirectory(Path.Join(directory, "blocked"));
+            var arguments = CompileArguments(directory, "", "-target:dll");
+            _ = Directory.CreateDirectory(Path.Join(directory, "blocked"));
             arguments[0] = "-out:" + Path.Join(directory, "blocked");
             StringAssert.Contains(AssertParity(arguments, 1).Stderr, "CALC0005");
             arguments[0] = "-out:";
             StringAssert.Contains(AssertParity(arguments, 2).Stderr, "CALC9999: internal compiler error: ArgumentException:");
-            string blocker = Path.Join(directory, "blocker");
+            var blocker = Path.Join(directory, "blocker");
             File.WriteAllText(blocker, "");
             arguments[0] = "-out:" + Path.Join(blocker, "app.dll");
             StringAssert.Contains(AssertParity(arguments, 1).Stderr, "CALC0005");
@@ -369,13 +371,13 @@ public sealed class CliParityTests
     {
         InWorkspace(directory =>
         {
-            string output = Path.Join(directory, "nested", "app.dll");
-            string[] arguments = CompileArguments(directory, "", "-target:library");
+            var output = Path.Join(directory, "nested", "app.dll");
+            var arguments = CompileArguments(directory, "", "-target:library");
             arguments[0] = "-out:" + output;
-            AssertParity(arguments, 0);
+            _ = AssertParity(arguments, 0);
             Assert.IsTrue(File.Exists(output));
-            string pdb = Path.Join(directory, "missing-directory", "app.pdb");
-            Result result = AssertParity([.. arguments, "-pdb:" + pdb], 1);
+            var pdb = Path.Join(directory, "missing-directory", "app.pdb");
+            var result = AssertParity([.. arguments, "-pdb:" + pdb], 1);
             StringAssert.Contains(result.Stderr, "CALC0005");
             Assert.IsTrue(File.Exists(output));
             Assert.IsFalse(File.Exists(pdb));

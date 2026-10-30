@@ -42,7 +42,11 @@ internal sealed class AttributeBinder(Compilation compilation, SourceFile file)
         return e switch
         {
             _ when e.ConstantValue is { } cv => cv.Value,
-            BoundConversion { Kind: ConversionKind.Boxing or ConversionKind.ImplicitReference or ConversionKind.Identity } c => ConstantOf(c.Operand),
+            BoundConversion
+            {
+                Kind: ConversionKind.Boxing or ConversionKind.ImplicitReference or ConversionKind.Identity or
+                ConversionKind.ToNullable or ConversionKind.TypeOnly
+            } c => ConstantOf(c.Operand),
             _ => null,
         };
     }

@@ -6,6 +6,42 @@ namespace Caladesi.Compiler.Symbols.Metadata;
 
 internal static class Nullability
 {
+    public static TypeSymbol ApplySignature(TypeSymbol type, MetadataReader reader, CustomAttributeHandleCollection attributes, byte fallback)
+    {
+        CustomAttribute? attribute = MetadataHelpers.FindAttribute(reader, attributes, "System.Runtime.CompilerServices", "NullableAttribute");
+        if (attribute == null)
+        {
+            return Apply(type, fallback);
+        }
+        BlobReader blob = reader.GetBlobReader(attribute.Value.Value);
+        if (blob.ReadUInt16() != 1)
+        {
+            throw new BadImageFormatException("Invalid NullableAttribute prolog.");
+        }
+        byte[] flags = blob.Length == 5 ? [blob.ReadByte()] : blob.ReadBytes(blob.ReadInt32());
+        int position = 0;
+        return Decode(type);
+
+        TypeSymbol Decode(TypeSymbol current)
+        {
+            byte flag = fallback;
+            if (current.IsReferenceType || current is TypeParameterSymbol || current is NamedTypeSymbol { TypeArguments.Length: > 0 })
+            {
+                flag = position < flags.Length ? flags[position] : fallback;
+                position++;
+            }
+            if (current is ArrayTypeSymbol array)
+            {
+                current = new ArrayTypeSymbol(Decode(array.ElementType), array.BaseType, array.Rank);
+            }
+            else if (current is NamedTypeSymbol { TypeArguments.Length: > 0 } named)
+            {
+                current = named.OriginalDefinition.Construct(named.TypeArguments.Select(Decode).ToImmutableArray());
+            }
+            return Apply(current, flag);
+        }
+    }
+
     public static TypeSymbol Apply(TypeSymbol t, byte flag)
     {
         return flag != 2
@@ -183,7 +219,9 @@ public sealed class MetadataMethodSymbol : MethodSymbol
             retFlag = NullableFlagOf(retRow.GetCustomAttributes(), ctxFlag);
         }
 
-        _returnType = Nullability.Apply(rt, retFlag);
+        _returnType = paramRows.TryGetValue(0, out retRow)
+            ? Nullability.ApplySignature(rt, r, retRow.GetCustomAttributes(), ctxFlag)
+            : Nullability.Apply(rt, retFlag);
 
         bool isExt = IsExtensionMethod;
         ImmutableArray<ParameterSymbol>.Builder b = ImmutableArray.CreateBuilder<ParameterSymbol>(sig.ParameterTypes.Length);
@@ -226,7 +264,9 @@ public sealed class MetadataMethodSymbol : MethodSymbol
                     def ??= ReadAttributeDefault(r, pa);
                 }
             }
-            pt = Nullability.Apply(pt, flag);
+            pt = paramRows.TryGetValue(i + 1, out Parameter nullableRow)
+                ? Nullability.ApplySignature(pt, r, nullableRow.GetCustomAttributes(), ctxFlag)
+                : Nullability.Apply(pt, flag);
             if (isParams)
             {
                 pt = pt.StripNullable();
@@ -353,7 +393,7 @@ public sealed class MetadataFieldSymbol : FieldSymbol
                     flag = MetadataHelpers.ReadNullableFlag(_container.Reader, ca.Value.Value);
                 }
             }
-            field = Nullability.Apply(field, flag);
+            field = Nullability.ApplySignature(field, _container.Reader, _def.GetCustomAttributes(), flag);
             return field;
         }
     }

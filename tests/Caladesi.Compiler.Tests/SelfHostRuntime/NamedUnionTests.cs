@@ -1,4 +1,3 @@
-using Caladesi.Compiler.Symbols;
 using Caladesi.Compiler.Syntax;
 using Caladesi.Compiler.Tests.Emit;
 
@@ -10,7 +9,7 @@ public sealed class NamedUnionTests
     [TestMethod]
     public void NamedUnions_TypedEqualityOperatorsAndHashRemainConsistent()
     {
-        (string output, int exitCode) = EmitHarness.Run("""
+        (var output, var exitCode) = EmitHarness.Run("""
             import { HashCode } from "System";
             type Choice = int | string;
             function check(first: Choice, same: Choice, other: Choice): void {
@@ -29,7 +28,7 @@ public sealed class NamedUnionTests
     [TestMethod]
     public void GenericDeclarations_DifferentAritiesCoexistButExactDuplicatesAreRejected()
     {
-        (string output, int exitCode) = EmitHarness.Run("""
+        (var output, var exitCode) = EmitHarness.Run("""
             type Choice<T1, T2> = T1 | T2;
             type Choice<T1, T2, T3> = T1 | T2 | T3;
             function tags(pair: Choice<int, string>, triple: Choice<int, string, bool>): void {
@@ -40,7 +39,7 @@ public sealed class NamedUnionTests
             """);
         Assert.AreEqual(0, exitCode);
         Assert.AreEqual("1\n3\n", output);
-        Compilation compilation = TestCompiler.Create("""
+        var compilation = TestCompiler.Create("""
             type Choice<T1, T2> = T1 | T2;
             type Choice<T1, T2> = T1 | T2;
             """);
@@ -50,7 +49,7 @@ public sealed class NamedUnionTests
     [TestMethod]
     public void WellKnownTypes_SourceMetadataNamesTakePrecedenceOverReferences()
     {
-        Compilation compilation = Compilation.Create(
+        var compilation = Compilation.Create(
             new CompilationOptions { RootNamespace = "Caladesi.Runtime", ProjectDirectory = "/proj" },
             [SyntaxTree.ParseText("""
                 import { Attribute } from "System";
@@ -70,7 +69,7 @@ public sealed class NamedUnionTests
     [TestMethod]
     public void WellKnownTypes_DeclarationLookupPreservesDeferredCrossFileConstraints()
     {
-        Compilation compilation = Compilation.Create(
+        var compilation = Compilation.Create(
             new CompilationOptions { RootNamespace = "Test", ProjectDirectory = "/proj" },
             [
                 SyntaxTree.ParseText("""
@@ -81,8 +80,8 @@ public sealed class NamedUnionTests
                 SyntaxTree.ParseText("export class Marker {}", "/proj/marker.cala"),
             ],
             TestCompiler.References);
-        NamedTypeSymbol generic = compilation.GetWellKnownType("Test.Box`1")!;
-        NamedTypeSymbol plain = compilation.GetWellKnownType("Test.Box")!;
+        var generic = compilation.GetWellKnownType("Test.Box`1")!;
+        var plain = compilation.GetWellKnownType("Test.Box")!;
         Assert.AreEqual(1, generic.Arity);
         Assert.AreEqual(0, plain.Arity);
         Assert.AreEqual("Marker", generic.TypeParameters[0].ConstraintTypes.Single().Name);

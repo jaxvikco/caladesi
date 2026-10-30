@@ -7,7 +7,6 @@ using Caladesi.Compiler.Text;
 using SelfBag = SelfHost::Caladesi.Compiler.Diagnostics.DiagnosticBag;
 using SelfLexer = SelfHost::Caladesi.Compiler.Syntax.Lexer;
 using SelfText = SelfHost::Caladesi.Compiler.Text.SourceText;
-using SelfToken = SelfHost::Caladesi.Compiler.Syntax.SyntaxToken;
 
 namespace Caladesi.Compiler.Tests.SelfHost;
 
@@ -55,7 +54,7 @@ public sealed class LexerParityTests
             "9999999999999999999999999999999999999999n", "0xffffffffffffffffffffn",
             "1bad", "1ff", "1uu", "1ll", "1abc", "0x123g", "0x123f", "0x123d",
         ];
-        foreach (string literal in literals)
+        foreach (var literal in literals)
         {
             AssertParity(literal);
             AssertParity("a " + literal + "; // value\nb");
@@ -65,11 +64,11 @@ public sealed class LexerParityTests
     [TestMethod]
     public void Lexer_AllRepositoryCaladesiFilesMatchBootstrap()
     {
-        string root = FindRepositoryRoot();
-        int count = 0;
-        foreach (string folder in new[] { "samples", "src", "tests", "playground" })
+        var root = FindRepositoryRoot();
+        var count = 0;
+        foreach (var folder in new[] { "samples", "src", "tests", "playground" })
         {
-            foreach (string path in Directory.EnumerateFiles(Path.Combine(root, folder), "*.cala", SearchOption.AllDirectories))
+            foreach (var path in Directory.EnumerateFiles(Path.Combine(root, folder), "*.cala", SearchOption.AllDirectories))
             {
                 if (path.Split(Path.DirectorySeparatorChar).Any(p => p is "obj" or "bin"))
                 {
@@ -90,13 +89,13 @@ public sealed class LexerParityTests
     {
         const string alphabet = "abcXYZ09_ $'\"`{}[]()/\\*+-.?=;:\r\n\t\u2028\u0085α😀";
         Random random = new(0xCA1A);
-        for (int sample = 0; sample < 2_000; sample++)
+        for (var sample = 0; sample < 2_000; sample++)
         {
             StringBuilder source = new();
-            int length = random.Next(100);
-            for (int i = 0; i < length; i++)
+            var length = random.Next(100);
+            for (var i = 0; i < length; i++)
             {
-                source.Append(alphabet[random.Next(alphabet.Length)]);
+                _ = source.Append(alphabet[random.Next(alphabet.Length)]);
             }
 
             AssertParity(source.ToString());
@@ -107,15 +106,15 @@ public sealed class LexerParityTests
     {
         DiagnosticBag expectedDiagnostics = new();
         SelfBag actualDiagnostics = new();
-        List<SyntaxToken> expected = new Lexer(SourceText.From(source), path, expectedDiagnostics).LexAll();
-        List<SelfToken> actual = new SelfLexer(SelfText.From(source), path, actualDiagnostics).LexAll();
+        var expected = new Lexer(SourceText.From(source), path, expectedDiagnostics).LexAll();
+        var actual = new SelfLexer(SelfText.From(source), path, actualDiagnostics).LexAll();
         Assert.HasCount(expected.Count, actual, source);
         StringBuilder reconstructed = new();
-        for (int i = 0; i < expected.Count; i++)
+        for (var i = 0; i < expected.Count; i++)
         {
-            SyntaxToken left = expected[i];
-            SelfToken right = actual[i];
-            string context = $"Token {i}, source: {source}";
+            var left = expected[i];
+            var right = actual[i];
+            var context = $"Token {i}, source: {source}";
             Assert.AreEqual((int)left.Kind, (int)right.Kind, context);
             Assert.AreEqual(left.Text, right.Text, context);
             Assert.AreEqual(left.Value?.GetType(), right.Value?.GetType(), context);
@@ -132,27 +131,27 @@ public sealed class LexerParityTests
             Assert.AreEqual(left.ToString(), right.ToString(), context);
             Assert.HasCount(left.LeadingTrivia.Length, right.LeadingTrivia, context);
             Assert.HasCount(left.TrailingTrivia.Length, right.TrailingTrivia, context);
-            for (int j = 0; j < left.LeadingTrivia.Length; j++)
+            for (var j = 0; j < left.LeadingTrivia.Length; j++)
             {
                 Assert.AreEqual((int)left.LeadingTrivia[j].Kind, (int)right.LeadingTrivia[j].Kind, context);
                 Assert.AreEqual(left.LeadingTrivia[j].Text, right.LeadingTrivia[j].Text, context);
             }
 
-            for (int j = 0; j < left.TrailingTrivia.Length; j++)
+            for (var j = 0; j < left.TrailingTrivia.Length; j++)
             {
                 Assert.AreEqual((int)left.TrailingTrivia[j].Kind, (int)right.TrailingTrivia[j].Kind, context);
                 Assert.AreEqual(left.TrailingTrivia[j].Text, right.TrailingTrivia[j].Text, context);
             }
 
-            reconstructed.Append(right.ToFullString());
+            _ = reconstructed.Append(right.ToFullString());
         }
 
         Assert.AreEqual(source, reconstructed.ToString());
         Assert.AreEqual(expectedDiagnostics.Count, actualDiagnostics.Count, source);
-        for (int i = 0; i < expectedDiagnostics.Count; i++)
+        for (var i = 0; i < expectedDiagnostics.Count; i++)
         {
-            Diagnostic left = expectedDiagnostics.Items[i];
-            SelfHost::Caladesi.Compiler.Diagnostics.Diagnostic right = actualDiagnostics.Items[i];
+            var left = expectedDiagnostics.Items[i];
+            var right = actualDiagnostics.Items[i];
             Assert.AreEqual(left.Id, right.Id, source);
             Assert.AreEqual(left.Message, right.Message, source);
             Assert.AreEqual(left.FilePath, right.FilePath, source);

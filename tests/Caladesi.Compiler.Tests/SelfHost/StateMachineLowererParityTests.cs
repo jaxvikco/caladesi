@@ -29,8 +29,8 @@ public sealed class StateMachineLowererParityTests
         Fixture f = new(returnType, async: true);
         f.Lower(f.Block(f.Statement(f.Await()), f.Node("BoundReturn", payload ? f.Literal(42) : null)));
         f.Compare();
-        HS.NamedTypeSymbol machine = f.Machine;
-        HS.NamedTypeSymbol builderType = (HS.NamedTypeSymbol)machine.GetMembers().OfType<HS.FieldSymbol>()
+        var machine = f.Machine;
+        var builderType = (HS.NamedTypeSymbol)machine.GetMembers().OfType<HS.FieldSymbol>()
             .Single(field => field.Name == "<>t__builder").Type;
         Assert.AreEqual(builder, builderType.OriginalDefinition.MetadataName);
         Assert.AreEqual(payload, machine.GetMembers().Any(member => member.Name == "<>s__retval"));
@@ -51,12 +51,12 @@ public sealed class StateMachineLowererParityTests
     {
         ArgumentNullException.ThrowIfNull(returnType);
         Fixture f = new(returnType, iterator: true);
-        Pair parameter = f.AddParameter("value");
-        Pair first = f.Node("BoundParameter", parameter);
-        Pair second = f.Literal(2);
+        var parameter = f.AddParameter("value");
+        var first = f.Node("BoundParameter", parameter);
+        var second = f.Literal(2);
         if (!returnType.Contains('`'))
         {
-            Pair objectType = f.Type("System.Object");
+            var objectType = f.Type("System.Object");
             first = f.Node("BoundConversion", first, (int)ConversionKind.Boxing, objectType);
             second = f.Node("BoundConversion", second, (int)ConversionKind.Boxing, objectType);
         }
@@ -66,10 +66,10 @@ public sealed class StateMachineLowererParityTests
         Assert.HasCount(enumerable ? 5 : 3, f.Machine.Interfaces);
         Assert.AreEqual(enumerable, f.Machine.GetMembers().Any(member => member.Name == "<>3__value"));
         Assert.AreEqual(enumerable, f.Machine.GetMembers().Any(member => member.Name == "GetEnumerator"));
-        HS.MethodSymbol explicitCurrent = f.Machine.GetMembers().OfType<HS.MethodSymbol>()
+        var explicitCurrent = f.Machine.GetMembers().OfType<HS.MethodSymbol>()
             .Single(method => method.Name == "System.Collections.IEnumerator.get_Current");
         Assert.HasCount(1, explicitCurrent.ExplicitInterfaceImplementations);
-        HB.BoundConversion current = (HB.BoundConversion)((HB.BoundReturn)f.Program.Bodies[explicitCurrent].Statements.Single()).Expression!;
+        var current = (HB.BoundConversion)((HB.BoundReturn)f.Program.Bodies[explicitCurrent].Statements.Single()).Expression!;
         Assert.AreEqual(returnType.Contains('`') ? HB.ConversionKind.Boxing : HB.ConversionKind.ImplicitReference, current.Kind);
         Assert.IsTrue(f.Program.Bodies.Keys.Any(method => method.Name == "Reset"));
         Assert.IsTrue(f.Program.Bodies.Keys.Any(method => method.Name == "Dispose"));
@@ -83,7 +83,7 @@ public sealed class StateMachineLowererParityTests
     {
         ArgumentNullException.ThrowIfNull(returnType);
         Fixture f = new(returnType, async: true, iterator: true);
-        Pair parameter = f.AddParameter("value");
+        var parameter = f.AddParameter("value");
         f.Lower(f.Block(f.Statement(f.Await()),
             f.Node("BoundYieldReturn", f.Node("BoundParameter", parameter)),
             f.Statement(f.Await()), f.Node("BoundYieldBreak")));
@@ -91,8 +91,8 @@ public sealed class StateMachineLowererParityTests
         Assert.HasCount(enumerable ? 3 : 2, f.Machine.Interfaces);
         Assert.AreEqual(enumerable, f.Machine.GetMembers().Any(member => member.Name == "GetAsyncEnumerator"));
         Assert.AreEqual(enumerable, f.Machine.GetMembers().Any(member => member.Name == "<>3__value"));
-        HS.MethodSymbol move = f.Program.Bodies.Keys.Single(method => method.Name == "MoveNextAsync");
-        HS.MethodSymbol dispose = f.Program.Bodies.Keys.Single(method => method.Name == "DisposeAsync");
+        var move = f.Program.Bodies.Keys.Single(method => method.Name == "MoveNextAsync");
+        var dispose = f.Program.Bodies.Keys.Single(method => method.Name == "DisposeAsync");
         Assert.AreEqual("ValueTask`1", ((HS.NamedTypeSymbol)move.ReturnType).OriginalDefinition.MetadataName);
         Assert.AreEqual("ValueTask", dispose.ReturnType.Name);
         Assert.IsTrue(Fixture.Walk(f.Program.Bodies[dispose]).OfType<HB.BoundCall>().Any(call => call.Method.Name == "AsTask"));
@@ -106,17 +106,17 @@ public sealed class StateMachineLowererParityTests
     public void NestedAwaitExpressions_HoistLocalsParametersThisAndReuseAwaiterFields(bool valueTask)
     {
         Fixture f = new("System.Threading.Tasks.Task`1", async: true, isStatic: false);
-        Pair parameter = f.AddParameter("value");
-        Pair local = f.Local("saved");
-        Pair sum = f.Node("BoundBinary", (int)BinaryOperatorKind.Add,
+        var parameter = f.AddParameter("value");
+        var local = f.Local("saved");
+        var sum = f.Node("BoundBinary", (int)BinaryOperatorKind.Add,
             f.Node("BoundParameter", parameter), f.Await(valueTask), f.Int, f.Int);
-        Pair nested = f.Node("BoundBinary", (int)BinaryOperatorKind.Add, sum, f.Await(valueTask), f.Int, f.Int);
+        var nested = f.Node("BoundBinary", (int)BinaryOperatorKind.Add, sum, f.Await(valueTask), f.Int, f.Int);
         f.Lower(f.Block([local],
             f.Node("BoundLocalDeclaration", local, nested),
             f.Statement(f.Node("BoundThis", f.Container)),
             f.Node("BoundReturn", f.Node("BoundLocal", local))));
         f.Compare();
-        HS.FieldSymbol[] fields = f.Machine.GetMembers().OfType<HS.FieldSymbol>().ToArray();
+        HS.FieldSymbol[] fields = [.. f.Machine.GetMembers().OfType<HS.FieldSymbol>()];
         Assert.HasCount(1, fields.Where(field => field.Name.StartsWith("<>u__", StringComparison.Ordinal)));
         Assert.IsTrue(fields.Any(field => field.Name == "value"));
         Assert.IsTrue(fields.Any(field => field.Name.StartsWith("<saved>5__", StringComparison.Ordinal)));
@@ -135,12 +135,12 @@ public sealed class StateMachineLowererParityTests
         Fixture f = new("System.Threading.Tasks.Task", async: true);
         f.Lower(f.Block(f.Statement(f.StaticAwait(critical)), f.Node("BoundReturn", (object?)null)));
         f.Compare();
-        string continuation = critical ? "AwaitUnsafeOnCompleted" : "AwaitOnCompleted";
-        HB.BoundCall registration = f.MoveNextNodes.OfType<HB.BoundCall>()
+        var continuation = critical ? "AwaitUnsafeOnCompleted" : "AwaitOnCompleted";
+        var registration = f.MoveNextNodes.OfType<HB.BoundCall>()
             .Single(call => call.Method.Name == continuation);
         Assert.HasCount(2, registration.Arguments);
         Assert.IsTrue(registration.Arguments.All(argument => argument is HB.BoundAddressOf));
-        HB.BoundCall getAwaiter = f.MoveNextNodes.OfType<HB.BoundCall>()
+        var getAwaiter = f.MoveNextNodes.OfType<HB.BoundCall>()
             .Single(call => call.Method.Name == "GetAwaiter");
         Assert.IsNull(getAwaiter.Receiver);
         Assert.HasCount(1, getAwaiter.Arguments);
@@ -151,8 +151,8 @@ public sealed class StateMachineLowererParityTests
     public void MixedAndVoidAwaits_UseDistinctAwaiterFieldsAndPreserveConditionalEvaluation()
     {
         Fixture f = new("System.Threading.Tasks.Task`1", async: true);
-        Pair condition = f.Node("BoundLiteral", f.Create("Symbols.ConstantValue", true), f.Type("System.Boolean"));
-        Pair conditional = f.Node("BoundConditional", condition, f.Await(), f.Await(valueTask: true), f.Int);
+        var condition = f.Node("BoundLiteral", f.Create("Symbols.ConstantValue", true), f.Type("System.Boolean"));
+        var conditional = f.Node("BoundConditional", condition, f.Await(), f.Await(valueTask: true), f.Int);
         f.Lower(f.Block(f.Statement(f.Await(voidResult: true)), f.Node("BoundReturn", conditional)));
         f.Compare();
         Assert.HasCount(3, f.Machine.GetMembers().OfType<HS.FieldSymbol>()
@@ -170,16 +170,16 @@ public sealed class StateMachineLowererParityTests
         Fixture f = new(iterator ? asyncIterator ? "System.Collections.Generic.IAsyncEnumerable`1" :
             "System.Collections.Generic.IEnumerable`1" : "System.Threading.Tasks.Task`1",
             async: !iterator || asyncIterator, iterator: iterator);
-        Pair caught = f.Local("caught", f.Type("System.Exception"));
-        Pair suspension = iterator ? f.Node("BoundYieldReturn", f.Literal(1)) : f.Statement(f.Await());
-        Pair handler = f.Create("Bound.BoundCatch", caught, f.Type("System.Exception"),
+        var caught = f.Local("caught", f.Type("System.Exception"));
+        var suspension = iterator ? f.Node("BoundYieldReturn", f.Literal(1)) : f.Statement(f.Await());
+        var handler = f.Create("Bound.BoundCatch", caught, f.Type("System.Exception"),
             f.Block(iterator ? f.Node("BoundYieldReturn", f.Literal(2)) : f.Statement(f.Await()),
                 f.Node("BoundThrow", (object?)null)));
-        Pair inner = f.Node("BoundTry", f.Block(suspension,
+        var inner = f.Node("BoundTry", f.Block(suspension,
                 iterator ? f.Node("BoundYieldBreak") : f.Node("BoundReturn", f.Literal(3))),
             Fixture.Array("Bound.BoundCatch", handler),
             f.Block(f.Statement(!iterator || asyncIterator ? f.Await() : f.Literal(9))));
-        Pair outer = f.Node("BoundTry", f.Block(inner), Fixture.Array("Bound.BoundCatch"),
+        var outer = f.Node("BoundTry", f.Block(inner), Fixture.Array("Bound.BoundCatch"),
             f.Block(f.Statement(f.Literal(10))));
         f.Lower(f.Block(outer));
         f.Compare();
@@ -187,7 +187,10 @@ public sealed class StateMachineLowererParityTests
         Assert.IsTrue(f.MoveNextNodes.OfType<HB.BoundCall>().Any(call => call.Method.Name == "Throw"));
         Assert.IsGreaterThanOrEqualTo(2, f.MoveNextNodes.OfType<HB.BoundTry>().Count());
         if (iterator)
+        {
             Assert.IsTrue(f.MoveNextNodes.OfType<HB.BoundFieldAccess>().Any(access => access.Field.Name == "<>__disposing"));
+        }
+
         f.AssertDispatch(iterator && !asyncIterator ? 2 : 3);
     }
 
@@ -200,18 +203,18 @@ public sealed class StateMachineLowererParityTests
         ArgumentNullException.ThrowIfNull(returnType);
         Fixture f = new(returnType, async: !iterator || returnType.Contains("Async", StringComparison.Ordinal),
             iterator: iterator, generic: true, isStatic: false);
-        Pair parameter = f.AddParameter("value", f.MethodParameter);
-        Pair expression = f.Node("BoundParameter", parameter);
+        var parameter = f.AddParameter("value", f.MethodParameter);
+        var expression = f.Node("BoundParameter", parameter);
         f.Lower(f.Block(iterator ? f.Node("BoundYieldReturn", expression) : f.Node("BoundReturn", expression)));
         f.Compare();
-        HSS.SynthesizedNamedType machine = (HSS.SynthesizedNamedType)f.Machine;
+        var machine = (HSS.SynthesizedNamedType)f.Machine;
         Assert.AreEqual(2, machine.Arity);
         Assert.AreEqual(1, machine.OwnArity);
         Assert.AreEqual(1, machine.MethodTypeParameterMap![(HS.TypeParameterSymbol)f.MethodParameter!.Actual]);
         Assert.IsTrue(machine.TypeParameters.All(typeParameter => ReferenceEquals(typeParameter.ContainingSymbol, machine)));
-        HB.BoundObjectCreation creation = Fixture.Walk(f.Program.Bodies[(HS.MethodSymbol)f.Method.Actual])
+        var creation = Fixture.Walk(f.Program.Bodies[(HS.MethodSymbol)f.Method.Actual])
             .OfType<HB.BoundObjectCreation>().Single();
-        HS.NamedTypeSymbol closedMachine = (HS.NamedTypeSymbol)creation.Type!;
+        var closedMachine = (HS.NamedTypeSymbol)creation.Type!;
         Assert.AreSame(machine, closedMachine.OriginalDefinition);
         Assert.AreSame(f.MethodParameter!.Actual, closedMachine.TypeArguments[1]);
         Assert.IsEmpty(f.Program.ClassTypeParameterMaps);
@@ -229,14 +232,17 @@ public sealed class StateMachineLowererParityTests
         Assert.AreSame(f.Method.Actual, f.Program.EntryPoint);
         Assert.HasCount(source ? 1 : 0, f.Program.MethodFiles);
         if (source)
+        {
             Assert.AreSame(f.File, f.Program.MethodFiles[(HS.MethodSymbol)f.Method.Actual]);
+        }
+
         f.AssertDispatch(0);
     }
 
     [TestMethod]
     public void SelfHostLibrary_HasNoBootstrapDependencyAndPassesWholeLibraryILVerification()
     {
-        Assembly assembly = typeof(HE.LoweredProgram<>).Assembly;
+        var assembly = typeof(HE.LoweredProgram<>).Assembly;
         Assert.IsFalse(assembly.GetReferencedAssemblies().Any(reference => reference.Name == "Caladesi.Compiler"));
         Assert.IsEmpty(ILVerifier.Verify(assembly.GetName().Name!, File.ReadAllBytes(assembly.Location)));
     }
@@ -246,13 +252,13 @@ public sealed class StateMachineLowererParityTests
     private sealed class Fixture
     {
         private readonly Compilation compilation = TestCompiler.Create("", OutputKind.DynamicallyLinkedLibrary);
-        private static readonly Lazy<SelfHost::Caladesi.Compiler.Symbols.Metadata.ReferenceSet> s_references =
-            new(() => SelfHost::Caladesi.Compiler.Symbols.Metadata.ReferenceSet.Create(TestReferences.Paths));
+        private static readonly Lazy<HS.Metadata.ReferenceSet> s_references =
+            new(() => HS.Metadata.ReferenceSet.Create(TestReferences.Paths));
         private readonly Dictionary<object, object> identities = new(ReferenceEqualityComparer.Instance);
         private readonly Dictionary<object, object> generatedSymbols = new(ReferenceEqualityComparer.Instance);
         private readonly object expectedProgram = Activator.CreateInstance(
             typeof(Compilation).Assembly.GetType("Caladesi.Compiler.Emit.LoweredProgram", true)!, nonPublic: true)!;
-        private readonly Pair syntax = new(Caladesi.Compiler.Syntax.SyntaxTree.ParseText("yield return 1;").Root,
+        private readonly Pair syntax = new(Compiler.Syntax.SyntaxTree.ParseText("yield return 1;").Root,
             SelfHost::Caladesi.Compiler.Syntax.SyntaxTree.ParseText("yield return 1;").Root);
         public HE.LoweredProgram<SourceFile> Program { get; } = new();
         public Pair Container { get; }
@@ -267,7 +273,7 @@ public sealed class StateMachineLowererParityTests
         public Fixture(string returnType, bool async = false, bool iterator = false, bool isStatic = true,
             bool generic = false, bool source = true)
         {
-            Remember(syntax);
+            _ = Remember(syntax);
             Int = Type("System.Int32");
             Container = Create("Symbols.Source.SynthesizedNamedType", "Container", null, 0);
             Method = Create("Symbols.Source.SynthesizedMethodSymbol", Container, "Run", 0, 0, isStatic,
@@ -276,16 +282,19 @@ public sealed class StateMachineLowererParityTests
             Set(Method, "IsIteratorMethod", iterator);
             if (generic)
             {
-                Pair classParameter = Create("Symbols.TypeParameterSymbol", "T", 0, Container, 0);
+                var classParameter = Create("Symbols.TypeParameterSymbol", "T", 0, Container, 0);
                 Call(Container, "SetTypeParameters", Array("Symbols.TypeParameterSymbol", classParameter));
                 MethodParameter = Create("Symbols.TypeParameterSymbol", "U", 0, Method, 0);
                 Call(Method, "SetTypeParameters", Array("Symbols.TypeParameterSymbol", MethodParameter));
             }
-            Pair result = Type(returnType);
+            var result = Type(returnType);
             if (returnType.Contains('`'))
+            {
                 result = Construct(result, MethodParameter ?? Int);
+            }
+
             Call(Method, "SetReturnType", result);
-            File = new SourceFile(compilation, Caladesi.Compiler.Syntax.SyntaxTree.ParseText("", "machine.cala"));
+            File = new SourceFile(compilation, Compiler.Syntax.SyntaxTree.ParseText("", "machine.cala"));
             if (source)
             {
                 ((IDictionary)Get(expectedProgram, "MethodFiles")!).Add(Method.Expected, File);
@@ -302,129 +311,186 @@ public sealed class StateMachineLowererParityTests
             return Remember(pair);
         }
 
-        private Pair Construct(Pair definition, Pair argument) => Remember(new(
+        private Pair Construct(Pair definition, Pair argument)
+        {
+            return Remember(new(
             ((NamedTypeSymbol)definition.Expected).Construct(new TypeSymbol[] { (TypeSymbol)argument.Expected }),
             ((HS.NamedTypeSymbol)definition.Actual).Construct(new HS.TypeSymbol[] { (HS.TypeSymbol)argument.Actual })));
+        }
 
         private Pair Remember(Pair pair)
         {
-            if (identities.TryGetValue(pair.Expected, out object? known))
+            if (identities.TryGetValue(pair.Expected, out var known))
+            {
                 Assert.AreSame(known, pair.Actual);
+            }
             else
+            {
                 identities.Add(pair.Expected, pair.Actual);
+            }
+
             return pair;
         }
 
-        public Pair Local(string name, Pair? type = null) =>
-            Create("Symbols.LocalSymbol", name, type ?? Int, false, Method, null);
+        public Pair Local(string name, Pair? type = null)
+        {
+            return Create("Symbols.LocalSymbol", name, type ?? Int, false, Method, null);
+        }
+
         public Pair AddParameter(string name, Pair? type = null)
         {
-            Pair parameter = Create("Symbols.ParameterSymbol", name, type ?? Int, 0, Method);
+            var parameter = Create("Symbols.ParameterSymbol", name, type ?? Int, 0, Method);
             Call(Method, "SetParameters", Array("Symbols.ParameterSymbol", parameter));
             return parameter;
         }
-        public Pair Literal(int value) => Node("BoundLiteral", Create("Symbols.ConstantValue", value), Int);
-        public Pair Statement(Pair expression) => Node("BoundExpressionStatement", expression);
-        public Pair Block(params Pair[] statements) => Block([], statements);
-        public Pair Block(Pair[] locals, params Pair[] statements) =>
-            Node("BoundBlock", Array("Symbols.LocalSymbol", locals), Array("Bound.BoundStatement", statements));
+        public Pair Literal(int value)
+        {
+            return Node("BoundLiteral", Create("Symbols.ConstantValue", value), Int);
+        }
+
+        public Pair Statement(Pair expression)
+        {
+            return Node("BoundExpressionStatement", expression);
+        }
+
+        public Pair Block(params Pair[] statements)
+        {
+            return Block([], statements);
+        }
+
+        public Pair Block(Pair[] locals, params Pair[] statements)
+        {
+            return Node("BoundBlock", Array("Symbols.LocalSymbol", locals), Array("Bound.BoundStatement", statements));
+        }
+
         public Pair Node(string name, params object?[] arguments)
         {
-            Pair node = Create("Bound." + name, arguments);
+            var node = Create("Bound." + name, arguments);
             Set(node, "Syntax", syntax);
             return node;
         }
 
         public Pair Await(bool valueTask = false, bool voidResult = false)
         {
-            Pair task = Type(valueTask ? voidResult ? "System.Threading.Tasks.ValueTask" : "System.Threading.Tasks.ValueTask`1" :
+            var task = Type(valueTask ? voidResult ? "System.Threading.Tasks.ValueTask" : "System.Threading.Tasks.ValueTask`1" :
                 voidResult ? "System.Threading.Tasks.Task" : "System.Threading.Tasks.Task`1");
             if (!voidResult)
+            {
                 task = Construct(task, Int);
-            Pair getAwaiter = Members(task, "GetAwaiter");
-            Pair awaiter = Remember(new(((MethodSymbol)getAwaiter.Expected).ReturnType, ((HS.MethodSymbol)getAwaiter.Actual).ReturnType));
-            Pair info = Create("Bound.AwaitInfo", getAwaiter, null, Members(awaiter, "get_IsCompleted"),
+            }
+
+            var getAwaiter = Members(task, "GetAwaiter");
+            var awaiter = Remember(new(((MethodSymbol)getAwaiter.Expected).ReturnType, ((HS.MethodSymbol)getAwaiter.Actual).ReturnType));
+            var info = Create("Bound.AwaitInfo", getAwaiter, null, Members(awaiter, "get_IsCompleted"),
                 Members(awaiter, "GetResult"), awaiter);
             return Node("BoundAwait", Node("BoundDefaultValue", task), info, voidResult ? Type("System.Void") : Int);
         }
 
         public Pair StaticAwait(bool critical)
         {
-            Pair awaiter = Create("Symbols.Source.SynthesizedNamedType", "Awaiter", Container, 1);
+            var awaiter = Create("Symbols.Source.SynthesizedNamedType", "Awaiter", Container, 1);
             Call(awaiter, "AddInterface", Type(critical ? "System.Runtime.CompilerServices.ICriticalNotifyCompletion" :
                 "System.Runtime.CompilerServices.INotifyCompletion"));
-            Pair getAwaiter = Create("Symbols.Source.SynthesizedMethodSymbol", Container, "GetAwaiter", 0, 0,
+            var getAwaiter = Create("Symbols.Source.SynthesizedMethodSymbol", Container, "GetAwaiter", 0, 0,
                 true, awaiter, Array("Symbols.ParameterSymbol"));
-            Pair parameter = Create("Symbols.ParameterSymbol", "operand", Int, 0, getAwaiter);
+            var parameter = Create("Symbols.ParameterSymbol", "operand", Int, 0, getAwaiter);
             Call(getAwaiter, "SetParameters", Array("Symbols.ParameterSymbol", parameter));
-            Pair completed = Create("Symbols.Source.SynthesizedMethodSymbol", awaiter, "get_IsCompleted", 0, 0,
+            var completed = Create("Symbols.Source.SynthesizedMethodSymbol", awaiter, "get_IsCompleted", 0, 0,
                 false, Type("System.Boolean"), Array("Symbols.ParameterSymbol"));
-            Pair result = Create("Symbols.Source.SynthesizedMethodSymbol", awaiter, "GetResult", 0, 0,
+            var result = Create("Symbols.Source.SynthesizedMethodSymbol", awaiter, "GetResult", 0, 0,
                 false, Int, Array("Symbols.ParameterSymbol"));
-            Pair info = Create("Bound.AwaitInfo", getAwaiter, null, completed, result, awaiter);
+            var info = Create("Bound.AwaitInfo", getAwaiter, null, completed, result, awaiter);
             return Node("BoundAwait", Literal(1), info, Int);
         }
 
-        private Pair Members(Pair type, string name) => Remember(new(
+        private Pair Members(Pair type, string name)
+        {
+            return Remember(new(
             ((NamedTypeSymbol)type.Expected).GetMembers(name).OfType<MethodSymbol>().First(method => method.Parameters.IsEmpty),
             ((HS.NamedTypeSymbol)type.Actual).GetMembers(name).OfType<HS.MethodSymbol>().First(method => method.Parameters.IsEmpty)));
+        }
 
         public void Lower(Pair body)
         {
-            MethodInfo oracle = typeof(Compilation).Assembly.GetType("Caladesi.Compiler.Emit.StateMachineLowerer", true)!
+            var oracle = typeof(Compilation).Assembly.GetType("Caladesi.Compiler.Emit.StateMachineLowerer", true)!
                 .GetMethod("Lower")!;
-            oracle.Invoke(null, [compilation, expectedProgram, Method.Expected, Container.Expected, 7, body.Expected]);
-            MethodInfo actual = typeof(HE.LoweredProgram<>).Assembly.GetType("Caladesi.Compiler.Emit.StateMachineLowerer`1", true)!
+            _ = oracle.Invoke(null, [compilation, expectedProgram, Method.Expected, Container.Expected, 7, body.Expected]);
+            var actual = typeof(HE.LoweredProgram<>).Assembly.GetType("Caladesi.Compiler.Emit.StateMachineLowerer`1", true)!
                 .MakeGenericType(typeof(SourceFile)).GetMethod("Lower")!;
             Func<HS.SpecialType, HS.NamedTypeSymbol> getSpecial = special => s_references.Value.GetSpecialType(special)!;
             Func<string, HS.NamedTypeSymbol?> getWellKnown = s_references.Value.FindType;
-            actual.Invoke(null, [getSpecial, getWellKnown, Program, Method.Actual, Container.Actual, 7, body.Actual]);
+            _ = actual.Invoke(null, [getSpecial, getWellKnown, Program, Method.Actual, Container.Actual, 7, body.Actual]);
         }
 
         public void Compare()
         {
-            foreach (string property in new[] { "Types", "Bodies", "ExtraMembers", "ClassTypeParameterMaps", "MethodFiles", "EntryPoint" })
+            foreach (var property in new[] { "Types", "Bodies", "ExtraMembers", "ClassTypeParameterMaps", "MethodFiles", "EntryPoint" })
+            {
                 Equivalent(Get(expectedProgram, property), Get(Program, property), property);
+            }
+
             Assert.AreEqual("<Run>d__7", Machine.Name);
             Assert.AreSame(Container.Actual, Machine.ContainingSymbol);
             Assert.IsTrue(Machine.IsSealed);
             Assert.AreEqual(HS.Accessibility.Private, Machine.DeclaredAccessibility);
             Assert.IsFalse(MoveNextNodes.Any(node => node is HB.BoundAwait or HB.BoundYieldReturn or HB.BoundYieldBreak));
-            foreach (HS.MethodSymbol method in Program.Bodies.Keys.Where(method => !ReferenceEquals(method, Method.Actual)))
+            foreach (var method in Program.Bodies.Keys.Where(method => !ReferenceEquals(method, Method.Actual)))
+            {
                 Assert.IsTrue(Program.MembersOf(Machine).Any(member => ReferenceEquals(member, method)));
+            }
         }
 
         public void AssertDispatch(int states)
         {
-            HB.BoundNode[] nodes = MoveNextNodes.ToArray();
-            HB.BoundConditionalGoto[] dispatch = nodes.OfType<HB.BoundConditionalGoto>().ToArray();
+            HB.BoundNode[] nodes = [.. MoveNextNodes];
+            HB.BoundConditionalGoto[] dispatch = [.. nodes.OfType<HB.BoundConditionalGoto>()];
             Assert.IsGreaterThanOrEqualTo(states, dispatch.Length);
             Assert.HasCount(states, nodes.OfType<HB.BoundLabel>().Where(node => node.Label.Name == "<resume>"));
-            HashSet<HS.LabelSymbol> labels = nodes.OfType<HB.BoundLabel>().Select(node => node.Label).ToHashSet();
-            foreach (HB.BoundConditionalGoto branch in dispatch)
+            HashSet<HS.LabelSymbol> labels = [.. nodes.OfType<HB.BoundLabel>().Select(node => node.Label)];
+            foreach (var branch in dispatch)
+            {
                 CollectionAssert.Contains(labels.ToArray(), branch.Label, "Dispatch target must be defined in MoveNext.");
-            int[] numbers = dispatch.Select(branch => branch.Condition).OfType<HB.BoundBinary>()
+            }
+
+            int[] numbers = [.. dispatch.Select(branch => branch.Condition).OfType<HB.BoundBinary>()
                 .Select(binary => binary.Right).OfType<HB.BoundLiteral>()
-                .Select(literal => literal.Value.Value).OfType<int>().Where(value => value >= 0).Distinct().Order().ToArray();
+                .Select(literal => literal.Value.Value).OfType<int>().Where(value => value >= 0).Distinct().Order()];
             CollectionAssert.AreEqual(Enumerable.Range(0, states).ToArray(), numbers);
         }
 
         public static IEnumerable<HB.BoundNode> Walk(HB.BoundNode node)
         {
             yield return node;
-            foreach (PropertyInfo property in node.GetType().GetProperties())
+            foreach (var property in node.GetType().GetProperties())
             {
-                object? value = property.GetValue(node);
+                var value = property.GetValue(node);
                 if (value is HB.BoundNode child)
-                    foreach (HB.BoundNode descendant in Walk(child)) yield return descendant;
-                else if (value is IEnumerable sequence && value is not string)
-                    foreach (object? item in sequence)
+                {
+                    foreach (var descendant in Walk(child))
+                    {
+                        yield return descendant;
+                    }
+                }
+                else if (value is IEnumerable sequence and not string)
+                {
+                    foreach (var item in sequence)
                     {
                         if (item is HB.BoundNode itemNode)
-                            foreach (HB.BoundNode descendant in Walk(itemNode)) yield return descendant;
+                        {
+                            foreach (var descendant in Walk(itemNode))
+                            {
+                                yield return descendant;
+                            }
+                        }
                         else if (item is HB.BoundCatch handler)
-                            foreach (HB.BoundNode descendant in Walk(handler.Body)) yield return descendant;
+                        {
+                            foreach (var descendant in Walk(handler.Body))
+                            {
+                                yield return descendant;
+                            }
+                        }
                     }
+                }
             }
         }
 
@@ -433,26 +499,30 @@ public sealed class StateMachineLowererParityTests
             if (expected == null) { Assert.IsNull(actual, path); return; }
             Assert.IsNotNull(actual, path);
             if (ReferenceEquals(expected, File)) { Assert.AreSame(File, actual, path); return; }
-            if (identities.TryGetValue(expected, out object? known)) { Assert.AreSame(known, actual, path); return; }
+            if (identities.TryGetValue(expected, out var known)) { Assert.AreSame(known, actual, path); return; }
             if (expected is Enum) { Assert.AreEqual(Convert.ToInt32(expected), Convert.ToInt32(actual), path); return; }
             if (expected is string || expected.GetType().IsPrimitive) { Assert.AreEqual(expected, actual, path); return; }
             if (expected is IDictionary dictionary)
             {
-                IDictionary other = (IDictionary)actual;
+                var other = (IDictionary)actual;
                 Assert.HasCount(dictionary.Count, other, path);
                 foreach (DictionaryEntry entry in dictionary)
                 {
-                    Assert.IsTrue(identities.TryGetValue(entry.Key, out object? key), path + ": unmapped key " + entry.Key);
+                    Assert.IsTrue(identities.TryGetValue(entry.Key, out var key), path + ": unmapped key " + entry.Key);
                     CollectionAssert.Contains(other.Keys, key, path);
-                    Equivalent(entry.Value, other[key!], path + "[" + entry.Key + "]");
+                    Equivalent(entry.Value, other[key], path + "[" + entry.Key + "]");
                 }
                 return;
             }
             if (expected is IEnumerable sequence)
             {
-                object[] left = sequence.Cast<object>().ToArray(), right = ((IEnumerable)actual).Cast<object>().ToArray();
+                object[] left = [.. sequence.Cast<object>()], right = [.. ((IEnumerable)actual).Cast<object>()];
                 Assert.HasCount(left.Length, right, path);
-                for (int i = 0; i < left.Length; i++) Equivalent(left[i], right[i], path + "[" + i + "]");
+                for (var i = 0; i < left.Length; i++)
+                {
+                    Equivalent(left[i], right[i], path + "[" + i + "]");
+                }
+
                 return;
             }
             Assert.AreEqual(expected.GetType().Name, actual.GetType().Name, path);
@@ -462,7 +532,7 @@ public sealed class StateMachineLowererParityTests
                 generatedSymbols.Add(actual, expected);
             }
             identities.Add(expected, actual);
-            if (expected is NamedTypeSymbol named && expected is not SynthesizedNamedType)
+            if (expected is NamedTypeSymbol named and not SynthesizedNamedType)
             {
                 Assert.AreEqual(named.ToMetadataString(), ((HS.NamedTypeSymbol)actual).ToMetadataString(), path);
                 Equivalent(named.SpecialType, ((HS.NamedTypeSymbol)actual).SpecialType, path + ".SpecialType");
@@ -490,24 +560,41 @@ public sealed class StateMachineLowererParityTests
                         "HasValueTypeConstraint", "HasConstructorConstraint", "HasNotNullConstraint", "ConstraintTypes"],
                     _ => ["Name", "ContainingSymbol"]
                 };
-                foreach (string property in properties) Equivalent(Get(expected, property), Get(actual, property), path + "." + property);
+                foreach (var property in properties)
+                {
+                    Equivalent(Get(expected, property), Get(actual, property), path + "." + property);
+                }
+
                 if (expected is SynthesizedNamedType type)
+                {
                     Equivalent(type.GetMembers(), ((HS.NamedTypeSymbol)actual).GetMembers(), path + ".Members");
+                }
+
                 if (expected is SynthesizedMethodSymbol)
-                    foreach (string property in new[] { "SourceMethod", "LambdaOrigin", "SynthesizedKind" })
+                {
+                    foreach (var property in new[] { "SourceMethod", "LambdaOrigin", "SynthesizedKind" })
+                    {
                         Equivalent(Get(expected, property), Get(actual, property), path + "." + property);
+                    }
+                }
+
                 return;
             }
-            foreach (PropertyInfo property in expected.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public))
+            foreach (var property in expected.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public))
+            {
                 Equivalent(property.GetValue(expected), Get(actual, property.Name), path + "." + property.Name);
+            }
         }
 
         private static object? Get(object target, string name)
         {
-            for (Type? type = target.GetType(); type != null; type = type.BaseType)
+            for (var type = target.GetType(); type != null; type = type.BaseType)
             {
-                PropertyInfo? property = type.GetProperty(name, BindingFlags.DeclaredOnly | BindingFlags.Instance | BindingFlags.Public);
-                if (property != null) return property.GetValue(target);
+                var property = type.GetProperty(name, BindingFlags.DeclaredOnly | BindingFlags.Instance | BindingFlags.Public);
+                if (property != null)
+                {
+                    return property.GetValue(target);
+                }
             }
             throw new InvalidOperationException("Missing property: " + name);
         }
@@ -515,19 +602,27 @@ public sealed class StateMachineLowererParityTests
         {
             object Build(bool self)
             {
-                Assembly assembly = self ? typeof(HB.BoundNode).Assembly : typeof(BoundNode).Assembly;
-                Type type = assembly.GetType("Caladesi.Compiler." + name, true)!;
-                ConstructorInfo ctor = type.GetConstructors()
+                var assembly = self ? typeof(HB.BoundNode).Assembly : typeof(BoundNode).Assembly;
+                var type = assembly.GetType("Caladesi.Compiler." + name, true)!;
+                var ctor = type.GetConstructors()
                     .Where(candidate => candidate.GetParameters().Length >= arguments.Length &&
                         candidate.GetParameters().Skip(arguments.Length).All(parameter => parameter.HasDefaultValue))
                     .OrderBy(candidate => candidate.GetParameters().Length).First();
-                object?[] values = ctor.GetParameters().Select((parameter, index) =>
+                object?[] values = [.. ctor.GetParameters().Select((parameter, index) =>
                 {
-                    object? value = index < arguments.Length ? arguments[index] : parameter.DefaultValue;
-                    if (value is Pair pair) value = self ? pair.Actual : pair.Expected;
-                    if (value != null && parameter.ParameterType.IsEnum) value = Enum.ToObject(parameter.ParameterType, value);
+                    var value = index < arguments.Length ? arguments[index] : parameter.DefaultValue;
+                    if (value is Pair pair)
+                    {
+                        value = self ? pair.Actual : pair.Expected;
+                    }
+
+                    if (value != null && parameter.ParameterType.IsEnum)
+                    {
+                        value = Enum.ToObject(parameter.ParameterType, value);
+                    }
+
                     return value;
-                }).ToArray();
+                })];
                 return ctor.Invoke(values);
             }
             return Remember(new(Build(false), Build(true)));
@@ -535,9 +630,9 @@ public sealed class StateMachineLowererParityTests
 
         private static void Call(Pair target, string name, Pair argument)
         {
-            target.Expected.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!
+            _ = target.Expected.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!
                 .Invoke(target.Expected, [argument.Expected]);
-            target.Actual.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!
+            _ = target.Actual.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!
                 .Invoke(target.Actual, [argument.Actual]);
         }
         private static void Set(Pair target, string name, object value)
@@ -549,11 +644,15 @@ public sealed class StateMachineLowererParityTests
         {
             object Build(bool self)
             {
-                Assembly assembly = self ? typeof(HB.BoundNode).Assembly : typeof(BoundNode).Assembly;
-                Type element = assembly.GetType("Caladesi.Compiler." + name, true)!;
-                System.Array values = System.Array.CreateInstance(element, items.Length);
-                for (int i = 0; i < items.Length; i++) values.SetValue(self ? items[i].Actual : items[i].Expected, i);
-                MethodInfo create = typeof(ImmutableArray).GetMethods().Single(method => method.Name == "Create" &&
+                var assembly = self ? typeof(HB.BoundNode).Assembly : typeof(BoundNode).Assembly;
+                var element = assembly.GetType("Caladesi.Compiler." + name, true)!;
+                var values = System.Array.CreateInstance(element, items.Length);
+                for (var i = 0; i < items.Length; i++)
+                {
+                    values.SetValue(self ? items[i].Actual : items[i].Expected, i);
+                }
+
+                var create = typeof(ImmutableArray).GetMethods().Single(method => method.Name == "Create" &&
                     method.IsGenericMethodDefinition && method.GetParameters().Length == 1 && method.GetParameters()[0].ParameterType.IsArray);
                 return create.MakeGenericMethod(element).Invoke(null, [values])!;
             }

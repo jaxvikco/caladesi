@@ -3,7 +3,7 @@ import { Compilation, SourceFile } from "Caladesi.Compiler";
 import { Formatter } from "Caladesi.Compiler.Formatting";
 import { SemanticModel, SymbolAt, SymbolReference, CompletionKind, CompletionEntry, SignatureEntry, DocumentSymbolKind, DocumentSymbolInfo, DocumentOutline, SemanticTokenInfo } from "Caladesi.Compiler.Semantics";
 import { SyntaxTree, SyntaxFacts, SyntaxKind } from "Caladesi.Compiler.Syntax";
-import { SourceText, TextSpan, LinePosition, LinePositionSpan } from "Caladesi.Compiler.Text";
+import { SourceText, TextSpan, TextSpans, LinePosition, LinePositionSpan } from "Caladesi.Compiler.Text";
 import { Workspace, OpenDocument } from "../Workspace";
 import { CompilationUnit } from "../Projects/CompilationUnit";
 import { Json } from "../Protocol/Json";
@@ -74,7 +74,7 @@ export sealed class DocumentFeatures {
     if (at == null) return null;
     const definition: SymbolReference? = model.GetDefinition(at.Symbol);
     if (definition == null) return null;
-    return w => this.WriteLocation(w, definition.Value);
+    return w => this.WriteLocation(w, definition);
   }
 
   References(p: JsonElement): Action<Utf8JsonWriter>? {
@@ -124,7 +124,7 @@ export sealed class DocumentFeatures {
     for (const reference: SymbolReference of ImportReferences.Find(model, c.Compilation, at.Symbol, true)) {
       const path: string = reference.Tree.FilePath;
       if (!this._workspace.IsWorkspaceFile(path)) continue;
-      if (reference.Span.End > reference.Tree.Text.Length || reference.Tree.Text.ToString(reference.Span) != oldName) continue;
+      if (TextSpans.End(reference.Span) > reference.Tree.Text.Length || reference.Tree.Text.ToString(reference.Span) != oldName) continue;
       const [hasSeen, positions] = seen.TryGetValue(path);
       const starts: HashSet<int> = hasSeen ? positions : new HashSet<int>();
       if (!hasSeen) seen[path] = starts;
@@ -277,7 +277,7 @@ export sealed class DocumentFeatures {
 
   private static WriteDocumentSymbol(w: Utf8JsonWriter, tree: SyntaxTree, symbol: DocumentSymbolInfo): void {
     const range: LinePositionSpan = DocumentFeatures.ToRange(tree, symbol.Span);
-    const selection: LinePositionSpan = symbol.SelectionSpan.Start >= symbol.Span.Start && symbol.SelectionSpan.End <= symbol.Span.End
+    const selection: LinePositionSpan = symbol.SelectionSpan.Start >= symbol.Span.Start && TextSpans.End(symbol.SelectionSpan) <= TextSpans.End(symbol.Span)
       ? DocumentFeatures.ToRange(tree, symbol.SelectionSpan) : range;
     w.WriteStartObject();
     w.WriteString("name", string.IsNullOrEmpty(symbol.Name) ? "<anonymous>" : symbol.Name);
@@ -314,7 +314,7 @@ export sealed class DocumentFeatures {
       data.Add(token.Modifiers as int);
       previousLine = position.Line;
       previousCharacter = position.Character;
-      previousEnd = token.Span.End;
+      previousEnd = TextSpans.End(token.Span);
     }
     return w => {
       w.WriteStartObject();

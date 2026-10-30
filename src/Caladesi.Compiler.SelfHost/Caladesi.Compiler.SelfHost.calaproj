@@ -17,8 +17,8 @@
 
   <ItemGroup>
     <!-- Stage zero builds this library; it must never reference this project back. -->
-    <ProjectReference Include="../Caladesi.Cli/Caladesi.Cli.csproj" ReferenceOutputAssembly="false" />
-    <ProjectReference Include="../Caladesi.Build.Tasks/Caladesi.Build.Tasks.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../Caladesi.Cli/Caladesi.Cli.csproj" ReferenceOutputAssembly="false" Condition="'$(BootstrapDirectory)' == ''" />
+    <ProjectReference Include="../Caladesi.Build.Tasks/Caladesi.Build.Tasks.csproj" ReferenceOutputAssembly="false" Condition="'$(BootstrapDirectory)' == ''" />
     <ProjectReference Include="../Caladesi.Runtime.SelfHost/Caladesi.Runtime.SelfHost.calaproj" />
     <CustomAdditionalCompileInputs Include="$(CaladesiRepoRoot)src/Caladesi.Cli/bin/$(Configuration)/net10.0/*.dll" />
   </ItemGroup>

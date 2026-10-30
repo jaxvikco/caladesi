@@ -15,26 +15,26 @@ public sealed class CaladesiCompileParityTests
     [TestMethod]
     public void Task_PublicContractAttributesDefaultsAndProtectedOverridesMatchBootstrap()
     {
-        Type original = typeof(CaladesiCompile);
-        Type migrated = typeof(MigratedTask);
+        var original = typeof(CaladesiCompile);
+        var migrated = typeof(MigratedTask);
         Assert.AreEqual(original.FullName, migrated.FullName);
         Assert.AreEqual(original.BaseType, migrated.BaseType);
         Assert.AreEqual(original.IsSealed, migrated.IsSealed);
         const BindingFlags publicFlags = BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly;
-        PropertyInfo[] expected = original.GetProperties(publicFlags);
-        PropertyInfo[] actual = migrated.GetProperties(publicFlags);
+        var expected = original.GetProperties(publicFlags);
+        var actual = migrated.GetProperties(publicFlags);
         CollectionAssert.AreEquivalent(expected.Select(p => p.Name).ToArray(), actual.Select(p => p.Name).ToArray());
         CaladesiCompile bootstrap = new();
         MigratedTask selfHost = new();
-        foreach (PropertyInfo property in expected)
+        foreach (var property in expected)
         {
-            PropertyInfo counterpart = migrated.GetProperty(property.Name)!;
+            var counterpart = migrated.GetProperty(property.Name)!;
             Assert.AreEqual(property.PropertyType, counterpart.PropertyType, property.Name);
             Assert.AreEqual(property.CanRead, counterpart.CanRead, property.Name);
             Assert.AreEqual(property.CanWrite, counterpart.CanWrite, property.Name);
             Assert.AreEqual(property.IsDefined(typeof(RequiredAttribute)), counterpart.IsDefined(typeof(RequiredAttribute)), property.Name);
-            object? value = property.GetValue(bootstrap);
-            object? other = counterpart.GetValue(selfHost);
+            var value = property.GetValue(bootstrap);
+            var other = counterpart.GetValue(selfHost);
             if (value is Array array)
             {
                 CollectionAssert.AreEqual(array, (Array)other!, property.Name);
@@ -46,9 +46,9 @@ public sealed class CaladesiCompileParityTests
         }
 
         const BindingFlags protectedFlags = BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.DeclaredOnly;
-        foreach (MethodInfo method in original.GetMethods(protectedFlags).Where(m => m.IsFamily))
+        foreach (var method in original.GetMethods(protectedFlags).Where(m => m.IsFamily))
         {
-            MethodInfo counterpart = migrated.GetMethod(method.Name, protectedFlags)!;
+            var counterpart = migrated.GetMethod(method.Name, protectedFlags)!;
             Assert.IsNotNull(counterpart, method.Name);
             Assert.AreEqual(method.ReturnType, counterpart.ReturnType, method.Name);
             Assert.AreEqual(method.IsFamily, counterpart.IsFamily, method.Name);
@@ -77,6 +77,7 @@ public sealed class CaladesiCompileParityTests
             NoWarn = "CAL0001;\n CAL0002,\r\n\tCAL0003 ",
             GlobalImports = [new TaskItem("System"), new TaskItem("System.Collections.Generic")],
             Version = "2.3.4.5",
+            InformationalVersion = "2.3.4-preview.5+build",
             TargetFrameworkMoniker = ".NETCoreApp,Version=v10.0",
             TargetFrameworkDisplayName = ".NET 10.0",
             Optimize = true,
@@ -89,9 +90,9 @@ public sealed class CaladesiCompileParityTests
             ],
             Sources = [new TaskItem(Path.GetFullPath("one.cala")), new TaskItem(Path.GetFullPath("with spaces/two.cala"))],
         };
-        MigratedTask migrated = CopyParameters(original);
+        var migrated = CopyParameters(original);
         AssertResponses(original, migrated);
-        string response = Invoke<string>(migrated, "GenerateResponseFileCommands");
+        var response = Invoke<string>(migrated, "GenerateResponseFileCommands");
         Assert.EndsWith("\n", response);
         StringAssert.Contains(response, "-target:exe\n");
         StringAssert.Contains(response, "-projectdir:/project with spaces\n");
@@ -118,7 +119,7 @@ public sealed class CaladesiCompileParityTests
             NoWarn = " \t\r\n;,",
             TestHooks = [],
         };
-        MigratedTask migrated = CopyParameters(original);
+        var migrated = CopyParameters(original);
         AssertResponses(original, migrated);
         StringAssert.Contains(Invoke<string>(migrated, "GenerateResponseFileCommands"), "-target:" + target + "\n");
         Assert.AreEqual(Invoke<string>(original, "GenerateFullPathToTool"), Invoke<string>(migrated, "GenerateFullPathToTool"));
@@ -148,11 +149,11 @@ public sealed class CaladesiCompileParityTests
     [DataRow("export class Example { value: MissingType; }", false)]
     public void Task_ExecutesCompilerAndParsesCanonicalDiagnosticsLikeBootstrap(string source, bool succeeds)
     {
-        string work = Path.Join(RepositoryRoot(), ".artifacts", "selfhost-build-tests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(work);
+        var work = Path.Join(RepositoryRoot(), ".artifacts", "selfhost-build-tests", Guid.NewGuid().ToString("N"));
+        _ = Directory.CreateDirectory(work);
         try
         {
-            string input = Path.Join(work, "source with spaces.cala");
+            var input = Path.Join(work, "source with spaces.cala");
             File.WriteAllText(input, source);
             CaladesiCompile original = new()
             {
@@ -163,16 +164,16 @@ public sealed class CaladesiCompileParityTests
                 AssemblyName = "Parity",
                 RootNamespace = "Parity",
                 ProjectDirectory = work,
-                References = TestReferences.Paths.Select(p => (ITaskItem)new TaskItem(p)).ToArray(),
+                References = [.. TestReferences.Paths.Select(p => (ITaskItem)new TaskItem(p))],
                 Sources = [new TaskItem(input)],
             };
-            MigratedTask migrated = CopyParameters(original);
+            var migrated = CopyParameters(original);
             RecordingEngine originalEngine = new();
             RecordingEngine migratedEngine = new();
             original.BuildEngine = originalEngine;
             migrated.BuildEngine = migratedEngine;
             Assert.AreEqual(succeeds, original.Execute(), string.Join("\n", originalEngine.Errors.Select(e => e.Message)));
-            byte[]? expectedAssembly = succeeds ? File.ReadAllBytes(original.OutputAssembly) : null;
+            var expectedAssembly = succeeds ? File.ReadAllBytes(original.OutputAssembly) : null;
             if (succeeds)
             {
                 File.Delete(original.OutputAssembly);
@@ -209,7 +210,7 @@ public sealed class CaladesiCompileParityTests
     private static MigratedTask CopyParameters(CaladesiCompile original)
     {
         MigratedTask result = new();
-        foreach (PropertyInfo property in typeof(CaladesiCompile).GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+        foreach (var property in typeof(CaladesiCompile).GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
         {
             typeof(MigratedTask).GetProperty(property.Name)!.SetValue(result, property.GetValue(original));
         }
@@ -233,8 +234,7 @@ public sealed class CaladesiCompileParityTests
 
     private static string CompilerPath()
     {
-        DirectoryInfo output = new(AppContext.BaseDirectory);
-        return Path.Join(RepositoryRoot(), "src", "Caladesi.Cli", "bin", output.Parent!.Name, output.Name, "calac.dll");
+        return SelfHostCli.CliParityTests.FindCli(selfHost: false);
     }
 
     private sealed class RecordingEngine : IBuildEngine
@@ -244,10 +244,17 @@ public sealed class CaladesiCompileParityTests
         public int LineNumberOfTaskNode => 0;
         public int ColumnNumberOfTaskNode => 0;
         public string ProjectFileOfTaskNode => "";
-        public void LogErrorEvent(BuildErrorEventArgs e) => Errors.Add(e);
+        public void LogErrorEvent(BuildErrorEventArgs e)
+        {
+            Errors.Add(e);
+        }
+
         public void LogWarningEvent(BuildWarningEventArgs e) { }
         public void LogMessageEvent(BuildMessageEventArgs e) { }
         public void LogCustomEvent(CustomBuildEventArgs e) { }
-        public bool BuildProjectFile(string projectFileName, string[] targetNames, IDictionary globalProperties, IDictionary targetOutputs) => false;
+        public bool BuildProjectFile(string projectFileName, string[] targetNames, IDictionary globalProperties, IDictionary targetOutputs)
+        {
+            return false;
+        }
     }
 }

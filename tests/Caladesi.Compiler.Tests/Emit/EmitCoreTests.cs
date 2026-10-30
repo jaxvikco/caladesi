@@ -88,6 +88,22 @@ public class EmitCoreTests
     }
 
     [TestMethod]
+    public void ConditionalCollectionsAndNullParameterDefaults()
+    {
+        Check("""
+        function pick(flag: bool): void {
+          const values = flag ? ["left"] : ["right", "other"];
+          Console.WriteLine(values[0]);
+        }
+        function optional(value: string? = null): void { Console.WriteLine(value ?? "none"); }
+        pick(true);
+        pick(false);
+        optional();
+        optional("some");
+        """, "left\nright\nnone\nsome\n");
+    }
+
+    [TestMethod]
     public void NullableOps()
     {
         Check("""

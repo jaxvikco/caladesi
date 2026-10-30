@@ -49,6 +49,13 @@ export class NativeCorpusCoreTests {
     NativeCorpusHarness.Check("const a = [1, 2, 3];\na[1] = 10;\nlet t = 0;\nfor (const v of a) t += v;\nConsole.WriteLine(t);\nConsole.WriteLine(a.Length);", "14\n3\n");
   }
   @TestMethod
+  ConditionalCollectionsAndNullParameterDefaults(): void {
+    NativeCorpusHarness.Check(
+      "function pick(flag: bool): void { const values = flag ? [\"left\"] : [\"right\", \"other\"]; Console.WriteLine(values[0]); }\n" +
+      "function optional(value: string? = null): void { Console.WriteLine(value ?? \"none\"); }\n" +
+      "pick(true); pick(false); optional(); optional(\"some\");", "left\nright\nnone\nsome\n");
+  }
+  @TestMethod
   NullableOps(): void {
     NativeCorpusHarness.Check("function f(s: string | null): int { return s?.Length ?? -1; }\nConsole.WriteLine(f(null));\nConsole.WriteLine(f(\"abcd\"));", "-1\n4\n");
   }
@@ -234,7 +241,7 @@ export class NativeCorpusCoreTests {
             const info = debug.GetMethodDebugInformation(handle);
             if (info.SequencePointsBlob.IsNil) continue;
             const definition = metadata.GetMethodDefinition(MetadataTokens.MethodDefinitionHandle(MetadataTokens.GetRowNumber(handle)));
-            const bodyLength = image.GetMethodBody(definition.RelativeVirtualAddress).GetILContent().Length;
+            const bodyLength = PEReaderExtensions.GetMethodBody(image, definition.RelativeVirtualAddress).GetILContent().Length;
             let previous = -1;
             for (const point of info.GetSequencePoints()) {
               if (point.Offset <= previous || point.Offset >= bodyLength || point.Document.IsNil) throw new Exception("Invalid sequence point offset/document");

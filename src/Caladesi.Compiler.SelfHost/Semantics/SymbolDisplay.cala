@@ -12,7 +12,7 @@ import { FileModuleSymbol } from "../FileScope";
 export static class SymbolDisplay<TFile> {
   static Describe(symbol: Symbol): string {
     ArgumentNullException.ThrowIfNull(symbol);
-    const original = symbol.OriginalSymbolDefinition;
+    const original = Symbol.OriginalDefinitionOf(symbol);
     if (original instanceof NamespaceSymbol) return "namespace " + (original as NamespaceSymbol).ToDisplayString();
     if (original instanceof NamedTypeSymbol) return SymbolDisplay<TFile>.DescribeType(original as NamedTypeSymbol);
     if (original instanceof MethodSymbol) return SymbolDisplay<TFile>.DescribeMethod(original as MethodSymbol);

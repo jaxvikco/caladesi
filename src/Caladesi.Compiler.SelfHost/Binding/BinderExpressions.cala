@@ -1637,9 +1637,14 @@ export sealed class BinderExpressions<TFile> {
         return this.At(new BoundTypeExpression(symbol as TypeParameterSymbol), at);
     }
     for (const symbol of all) {
-      if (symbol instanceof NamespaceSymbol) return this.At(new BoundNamespaceExpression(symbol as NamespaceSymbol), at);
-      if (symbol instanceof FileModuleSymbol<TFile>)
+      if (symbol instanceof NamespaceSymbol) {
+        this.binder.Record(at, symbol);
+        return this.At(new BoundNamespaceExpression(symbol as NamespaceSymbol), at);
+      }
+      if (symbol instanceof FileModuleSymbol<TFile>) {
+        this.binder.Record(at, symbol);
         return this.At(new BinderExpressionModule<TFile>((symbol as FileModuleSymbol<TFile>).File), at);
+      }
     }
     for (const symbol of all) if (symbol instanceof NamedTypeSymbol) {
       this.binder.Report(types.Length == 0 ? Descriptors.TypeRequiresArguments : Descriptors.TypeNotGeneric,

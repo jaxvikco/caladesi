@@ -107,7 +107,7 @@ export class TypeInferenceTests {
       ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("lambda", new InferenceTestDelegate(invoke), 0, t)), t);
     const lambda = new BoundUnbound(TypeInferenceTests.NoSyntax, target => new BoundDefaultValue(a));
     lambda.IsLambda = true;
-    lambda.Lambda = new LambdaInfo(0, ImmutableArray<TypeSymbol>.Empty, (inputs, output, speculative) => TypeInferenceTests.NoLambda, inputs => a);
+    lambda.Lambda = new LambdaInfo(0, ImmutableArray<TypeSymbol?>.Empty, (inputs, output, speculative) => TypeInferenceTests.NoLambda, inputs => a);
     const inferred = engine.InferTypeArguments(lambdaMethod, ImmutableArray.Create<BoundExpression>(lambda), false, 0, TypeInferenceTests.NoType);
     if (inferred.IsDefault || !inferred[0].Equals(a)) throw new Exception("Lambda output");
   }

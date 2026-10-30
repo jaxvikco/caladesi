@@ -3,7 +3,7 @@ import { KeyValuePair } from "System.Collections.Generic";
 import { SyntaxTree } from "../Syntax/SyntaxTree";
 import { TextSpan } from "../Text/TextSpan";
 import { NamedTypeSymbol } from "./NamedTypeSymbol";
-import { MethodSymbol } from "./MemberSymbols";
+import { MethodSymbol, FieldSymbol, PropertySymbol } from "./MemberSymbols";
 import { NamespaceSymbol } from "./NamespaceSymbol";
 
 export enum SymbolKind {
@@ -18,6 +18,12 @@ export sealed class SourceLocation {
 }
 
 export abstract class Symbol {
+  static OriginalDefinitionOf(symbol: Symbol): Symbol {
+    // Match the oracle's Symbol slot, not the hidden typed properties.
+    if (symbol instanceof NamedTypeSymbol || symbol instanceof MethodSymbol ||
+        symbol instanceof FieldSymbol || symbol instanceof PropertySymbol) return symbol;
+    return symbol.OriginalSymbolDefinition;
+  }
   abstract get Kind(): SymbolKind;
   abstract get Name(): string;
   get ContainingSymbol(): Symbol? { return null; }

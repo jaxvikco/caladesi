@@ -58,6 +58,8 @@ class AssemblyEmissionEnum extends NamedTypeSymbol {
   override get DeclaredAccessibility(): Accessibility { return Accessibility.Public; }
   override get BaseType(): NamedTypeSymbol? { return this.systemEnum; }
   override get EnumUnderlyingType(): NamedTypeSymbol? { return this.integer; }
+  override get TypeParameters(): ImmutableArray<TypeParameterSymbol> { return []; }
+  override get TypeArguments(): ImmutableArray<TypeSymbol> { return []; }
   override GetMembers(): ImmutableArray<Symbol> { return this.Members; }
 }
 
@@ -129,7 +131,7 @@ export class AssemblyEmissionTests {
     const local = new LocalSymbol("answer", fixture.Special(SpecialType.Int32), false, method);
     fixture.Context.Bodies[method] = new BoundBlock([local], [
       new BoundLocalDeclaration(local, fixture.Integer(42)),
-      new BoundSequencePoint(new BoundReturn(new BoundLocal(local)), fixture.File.Root.Statements[0])]);
+      new BoundSequencePoint(new BoundReturn(new BoundLocal(local)), fixture.File.Root.Statements.Get(0))]);
     const image = fixture.Emit();
     const repeated = fixture.Emit();
     AssemblyEmissionFixture.EqualBytes(image.PE, repeated.PE);
@@ -241,7 +243,7 @@ export class AssemblyEmissionTests {
     constant.ConstantFactory = source => new ConstantValue(99);
     fixture.Owner.AddMember(constant);
     const tree = SyntaxTree.ParseText("@Obsolete(\"old\") function Old(value: int): int { return value; }", "decorated.cala");
-    const method = fixture.SourceMethod("Old", integer, MethodKind.Ordinary, SynthesizedBodyKind.Custom, true, tree.Root.Statements[0]);
+    const method = fixture.SourceMethod("Old", integer, MethodKind.Ordinary, SynthesizedBodyKind.Custom, true, tree.Root.Statements.Get(0));
     const argument = new ParameterSymbol("value", integer, 0, method, RefKind.None, false, new ConstantValue(7));
     const rest = new ParameterSymbol("rest", new ArrayTypeSymbol(integer, (null as (NamedTypeSymbol | null))!), 1,
       method, RefKind.None, true, (null as (ConstantValue | null))!);
@@ -381,7 +383,7 @@ export class AssemblyEmissionTests {
   closureConversionEmitsCapturedEnvironmentAndAsyncLambdaStateMachine(): void {
     const fixture = new AssemblyEmissionFixture();
     const integer = fixture.Special(SpecialType.Int32);
-    const func = fixture.Source.References.FindType("System.Func`1")!.Construct([integer]);
+    const func = fixture.Source.References.FindType("System.Func`1")!.Construct(ImmutableArray.Create<TypeSymbol>(integer));
     const method = fixture.Method("Capture", func);
     const parameter = new ParameterSymbol("seed", integer, 0, method);
     method.SetParameters([parameter]);
@@ -389,8 +391,8 @@ export class AssemblyEmissionTests {
     lambda.ReturnTypeValue = integer;
     fixture.Context.Bodies[method] = fixture.Block(new BoundReturn(
       new BoundLambda(lambda, fixture.Block(new BoundReturn(new BoundParameter(parameter))), func)));
-    const task = fixture.Special(SpecialType.TaskT).Construct([integer]);
-    const asyncFunc = fixture.Source.References.FindType("System.Func`1")!.Construct([task]);
+    const task = fixture.Special(SpecialType.TaskT).Construct(ImmutableArray.Create<TypeSymbol>(integer));
+    const asyncFunc = fixture.Source.References.FindType("System.Func`1")!.Construct(ImmutableArray.Create<TypeSymbol>(task));
     const factory = fixture.Method("AsyncLambda", asyncFunc);
     const asyncLambda = new LambdaSymbol(factory, "asyncLambda", true, false);
     asyncLambda.ReturnTypeValue = task;
@@ -408,7 +410,7 @@ export class AssemblyEmissionTests {
   @TestMethod
   asyncMethodSuspendsResumesAndEntryBridgeReturnsTaskResult(): void {
     const fixture = new AssemblyEmissionFixture();
-    const taskType = fixture.Special(SpecialType.TaskT).Construct([fixture.Special(SpecialType.Int32)]);
+    const taskType = fixture.Special(SpecialType.TaskT).Construct(ImmutableArray.Create<TypeSymbol>(fixture.Special(SpecialType.Int32)));
     const method = fixture.Method("Await", taskType);
     method.IsAsyncMethod = true;
     const parameter = new ParameterSymbol("pending", taskType, 0, method);
@@ -435,7 +437,7 @@ export class AssemblyEmissionTests {
     if (task.IsCompleted) throw new Exception("Async method must suspend on incomplete task");
     completion.SetResult(19);
     if (task.GetAwaiter().GetResult() != 19) throw new Exception("Async resumed result");
-    if (assembly.EntryPoint!.Name != "<Main>" || (assembly.EntryPoint.Invoke(null, Array.Empty<object>()) as int) != 42)
+    if (assembly.EntryPoint!.Name != "<Main>" || (assembly.EntryPoint!.Invoke(null, Array.Empty<object>()) as int) != 42)
       throw new Exception("Synchronous CLR bridge for async entry point");
   }
 
@@ -443,7 +445,7 @@ export class AssemblyEmissionTests {
   iteratorLoweringExecutesEnumerationAndDispose(): void {
     const fixture = new AssemblyEmissionFixture();
     const enumerable = fixture.Source.References.FindType("System.Collections.Generic.IEnumerable`1")!
-      .Construct([fixture.Special(SpecialType.Int32)]);
+      .Construct(ImmutableArray.Create<TypeSymbol>(fixture.Special(SpecialType.Int32)));
     const method = fixture.Method("Numbers", enumerable);
     method.IsIteratorMethod = true;
     fixture.Context.Bodies[method] = fixture.Block(new BoundYieldReturn(fixture.Integer(5)),
@@ -464,7 +466,7 @@ export class AssemblyEmissionTests {
   asyncIteratorEmitsValueTaskSupportAndExecutesEnumeration(): void {
     const fixture = new AssemblyEmissionFixture();
     const enumerable = fixture.Source.References.FindType("System.Collections.Generic.IAsyncEnumerable`1")!
-      .Construct([fixture.Special(SpecialType.Int32)]);
+      .Construct(ImmutableArray.Create<TypeSymbol>(fixture.Special(SpecialType.Int32)));
     const method = fixture.Method("AsyncNumbers", enumerable);
     method.IsIteratorMethod = true;
     method.IsAsyncMethod = true;
@@ -485,7 +487,7 @@ export class AssemblyEmissionTests {
     for (const shape of shapes) {
       const fixture = new AssemblyEmissionFixture();
       const returnsValue = shape == SpecialType.TaskT || shape == SpecialType.ValueTaskT;
-      const type = returnsValue ? fixture.Special(shape).Construct([fixture.Special(SpecialType.Int32)]) : fixture.Special(shape);
+      const type = returnsValue ? fixture.Special(shape).Construct(ImmutableArray.Create<TypeSymbol>(fixture.Special(SpecialType.Int32))) : fixture.Special(shape);
       const method = fixture.Method("UserMain", type);
       method.IsAsyncMethod = true;
       fixture.Context.Bodies[method] = returnsValue ? fixture.Block(new BoundReturn(fixture.Integer(55))) : fixture.Block();
@@ -493,7 +495,7 @@ export class AssemblyEmissionTests {
       fixture.Context.Options.OutputKind = OutputKind.ConsoleApplication;
       const assembly = fixture.Emit().Load();
       const result = assembly.EntryPoint!.Invoke(null, Array.Empty<object>());
-      if (assembly.EntryPoint.Name != "<Main>" || (returnsValue ? (result as int) != 55 : result != null))
+      if (assembly.EntryPoint!.Name != "<Main>" || (returnsValue ? (result as int) != 55 : result != null))
         throw new Exception("Async entry return shape " + shape);
     }
   }
@@ -503,7 +505,7 @@ export class AssemblyEmissionTests {
     const fixture = new AssemblyEmissionFixture();
     const method = fixture.SourceMethod("Unsupported", fixture.Special(SpecialType.Void), MethodKind.Ordinary, SynthesizedBodyKind.Custom);
     method.SyntheticBodyFactory = source => {
-      throw new LoweringNotSupportedException("unsupported lowering", fixture.File.Root.Statements[0]);
+      throw new LoweringNotSupportedException("unsupported lowering", fixture.File.Root.Statements.Get(0));
     };
     const pe = new MemoryStream();
     const pdb = new MemoryStream();

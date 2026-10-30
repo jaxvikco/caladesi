@@ -40,10 +40,10 @@ public sealed class SyntaxTreeParityTests
     public void Tree_WithTextPreservesPathDiagnosticsAndOriginalOwnership()
     {
         const string path = "nested/invalid.cala";
-        SyntaxTree expected = SyntaxTree.ParseText("let original = 1;", path);
-        SelfTree actual = SelfTree.ParseText("let original = 1;", path);
-        SyntaxTree expectedChanged = expected.WithText("let changed: = ;\n$");
-        SelfTree actualChanged = actual.WithText("let changed: = ;\n$");
+        var expected = SyntaxTree.ParseText("let original = 1;", path);
+        var actual = SelfTree.ParseText("let original = 1;", path);
+        var expectedChanged = expected.WithText("let changed: = ;\n$");
+        var actualChanged = actual.WithText("let changed: = ;\n$");
 
         Assert.AreNotSame(expected, expectedChanged);
         Assert.AreNotSame(actual, actualChanged);
@@ -106,7 +106,7 @@ public sealed class SyntaxTreeParityTests
         Assert.AreEqual(expected.FilePath, actual.FilePath);
         Assert.AreEqual(expected.Text.ToString(), actual.Text.ToString());
         Assert.HasCount(expected.Diagnostics.Length, actual.Diagnostics);
-        for (int i = 0; i < expected.Diagnostics.Length; i++)
+        for (var i = 0; i < expected.Diagnostics.Length; i++)
         {
             var left = expected.Diagnostics[i];
             var right = actual.Diagnostics[i];
@@ -128,7 +128,7 @@ public sealed class SyntaxTreeParityTests
         }
 
         AssertNavigation(pairs);
-        for (int position = -1; position <= expected.Text.Length + 1; position++)
+        for (var position = -1; position <= expected.Text.Length + 1; position++)
         {
             AssertMapped(expected.Root.FindToken(position), actual.Root.FindToken(position), pairs);
             AssertMapped(expected.Root.FindNode(new TextSpan(position, 0)),
@@ -165,13 +165,13 @@ public sealed class SyntaxTreeParityTests
             return;
         }
 
-        SyntaxNode left = (SyntaxNode)expected;
-        SelfNode right = (SelfNode)actual;
+        var left = (SyntaxNode)expected;
+        var right = (SelfNode)actual;
         Assert.AreEqual(left.SlotCount, right.SlotCount);
-        for (int i = 0; i < left.SlotCount; i++)
+        for (var i = 0; i < left.SlotCount; i++)
         {
-            SyntaxElement? child = left.Slot(i);
-            SelfElement? actualChild = right.Slot(i);
+            var child = left.Slot(i);
+            var actualChild = right.Slot(i);
             if (child == null)
             {
                 Assert.IsNull(actualChild);
@@ -187,7 +187,7 @@ public sealed class SyntaxTreeParityTests
 
     private static void AssertElementParity(SyntaxElement expected, SelfElement actual)
     {
-        string context = $"{expected.Kind}: {expected.ToFullString()}";
+        var context = $"{expected.Kind}: {expected.ToFullString()}";
         Assert.AreEqual((int)expected.Kind, (int)actual.Kind, context);
         Assert.AreEqual(expected.FullStart, actual.FullStart, context);
         Assert.AreEqual(expected.FullStart, actual.FullStart, "Cached FullStart: " + context);
@@ -219,13 +219,13 @@ public sealed class SyntaxTreeParityTests
         Assert.AreEqual(expected.Value?.GetType(), actual.Value?.GetType());
         Assert.HasCount(expected.LeadingTrivia.Length, actual.LeadingTrivia);
         Assert.HasCount(expected.TrailingTrivia.Length, actual.TrailingTrivia);
-        for (int i = 0; i < expected.LeadingTrivia.Length; i++)
+        for (var i = 0; i < expected.LeadingTrivia.Length; i++)
         {
             Assert.AreEqual((int)expected.LeadingTrivia[i].Kind, (int)actual.LeadingTrivia[i].Kind);
             Assert.AreEqual(expected.LeadingTrivia[i].Text, actual.LeadingTrivia[i].Text);
         }
 
-        for (int i = 0; i < expected.TrailingTrivia.Length; i++)
+        for (var i = 0; i < expected.TrailingTrivia.Length; i++)
         {
             Assert.AreEqual((int)expected.TrailingTrivia[i].Kind, (int)actual.TrailingTrivia[i].Kind);
             Assert.AreEqual(expected.TrailingTrivia[i].Text, actual.TrailingTrivia[i].Text);
@@ -237,7 +237,7 @@ public sealed class SyntaxTreeParityTests
 
     private static void AssertNavigation(Dictionary<SyntaxElement, SelfElement> pairs)
     {
-        foreach (var (left, right) in pairs)
+        foreach ((var left, var right) in pairs)
         {
             AssertMapped(left.Parent, right.Parent, pairs);
             AssertMapped(left.FirstAncestorOrSelf(_ => true), right.FirstAncestorOrSelf(_ => true), pairs);
@@ -251,15 +251,15 @@ public sealed class SyntaxTreeParityTests
                 right.FirstAncestorOrSelf<SelfHost::Caladesi.Compiler.Syntax.ExpressionSyntax>(), pairs);
             AssertMapped(left.FirstAncestorOrSelf<BlockSyntax>(),
                 right.FirstAncestorOrSelf<SelfHost::Caladesi.Compiler.Syntax.BlockSyntax>(), pairs);
-            Assert.ThrowsExactly<ArgumentNullException>(() => left.FirstAncestorOrSelf(null!));
-            Assert.ThrowsExactly<ArgumentNullException>(() => right.FirstAncestorOrSelf(null!));
+            _ = Assert.ThrowsExactly<ArgumentNullException>(() => left.FirstAncestorOrSelf(null!));
+            _ = Assert.ThrowsExactly<ArgumentNullException>(() => right.FirstAncestorOrSelf(null!));
 
             if (left is not SyntaxNode node)
             {
                 continue;
             }
 
-            SelfNode actual = (SelfNode)right;
+            var actual = (SelfNode)right;
             AssertSequence(node.Children(), actual.Children(), pairs);
             AssertSequence(node.ChildNodes(), actual.ChildNodes(), pairs);
             AssertSequence(node.DescendantTokens(), actual.DescendantTokens(), pairs);
@@ -267,7 +267,7 @@ public sealed class SyntaxTreeParityTests
             AssertSequence(node.DescendantNodesAndSelf(), actual.DescendantNodesAndSelf(), pairs);
             AssertMapped(node.GetFirstToken(), actual.GetFirstToken(), pairs);
             AssertMapped(node.GetLastToken(), actual.GetLastToken(), pairs);
-            foreach (int position in new[] { node.FullStart - 1, node.FullStart, node.Start, node.End, node.FullEnd, node.FullEnd + 1 })
+            foreach (var position in new[] { node.FullStart - 1, node.FullStart, node.Start, node.End, node.FullEnd, node.FullEnd + 1 })
             {
                 AssertMapped(node.FindToken(position), actual.FindToken(position), pairs);
             }
@@ -287,12 +287,12 @@ public sealed class SyntaxTreeParityTests
 
     private static void AssertAccessors(SyntaxNode expected, SelfNode actual, Dictionary<SyntaxElement, SelfElement> pairs)
     {
-        foreach (PropertyInfo property in expected.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+        foreach (var property in expected.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
         {
-            object? left = property.GetValue(expected);
-            PropertyInfo? actualProperty = actual.GetType().GetProperty(property.Name);
+            var left = property.GetValue(expected);
+            var actualProperty = actual.GetType().GetProperty(property.Name);
             Assert.IsNotNull(actualProperty, $"{expected.GetType().Name}.{property.Name}");
-            object? right = actualProperty.GetValue(actual);
+            var right = actualProperty.GetValue(actual);
             if (left is SyntaxElement element)
             {
                 AssertMapped(element, (SelfElement?)right, pairs);
@@ -310,8 +310,8 @@ public sealed class SyntaxTreeParityTests
                     right.GetType().GetProperty("Count")!.GetValue(right));
                 AssertMapped((SyntaxElement?)property.PropertyType.GetProperty("Node")!.GetValue(left),
                     (SelfElement?)right.GetType().GetProperty("Node")!.GetValue(right), pairs);
-                int count = (int)property.PropertyType.GetProperty("Count")!.GetValue(left)!;
-                for (int i = 0; i < count; i++)
+                var count = (int)property.PropertyType.GetProperty("Count")!.GetValue(left)!;
+                for (var i = 0; i < count; i++)
                 {
                     AssertMapped((SyntaxElement?)property.PropertyType.GetProperty("Item")!.GetValue(left, [i]),
                         (SelfElement?)right.GetType().GetMethod("Get")!.Invoke(right, [i]), pairs);
@@ -333,8 +333,8 @@ public sealed class SyntaxTreeParityTests
         AssertMapped(expected.Node, actual.Node, pairs);
         AssertMapped(expected.FirstOrDefault(), actual.FirstOrDefault(), pairs);
         AssertMapped(expected.LastOrDefault(), actual.LastOrDefault(), pairs);
-        using IEnumerator<SelfElement> iterator = actual.GetEnumerator();
-        for (int i = 0; i < expected.Count; i++)
+        using var iterator = actual.GetEnumerator();
+        for (var i = 0; i < expected.Count; i++)
         {
             AssertMapped(expected[i], actual.Get(i), pairs);
             Assert.IsTrue(iterator.MoveNext());
@@ -351,8 +351,8 @@ public sealed class SyntaxTreeParityTests
         Assert.AreEqual(expected.Count, actual.Count);
         Assert.AreEqual(expected.SeparatorCount, actual.SeparatorCount);
         AssertMapped(expected.Node, actual.Node, pairs);
-        using IEnumerator<SelfElement> iterator = actual.GetEnumerator();
-        for (int i = 0; i < expected.Count; i++)
+        using var iterator = actual.GetEnumerator();
+        for (var i = 0; i < expected.Count; i++)
         {
             AssertMapped(expected[i], actual.Get(i), pairs);
             Assert.IsTrue(iterator.MoveNext());
@@ -360,7 +360,7 @@ public sealed class SyntaxTreeParityTests
         }
 
         Assert.IsFalse(iterator.MoveNext());
-        for (int i = 0; i < expected.SeparatorCount; i++)
+        for (var i = 0; i < expected.SeparatorCount; i++)
         {
             if (expected.Node!.Slot((i * 2) + 1) is SyntaxToken)
             {
@@ -372,8 +372,8 @@ public sealed class SyntaxTreeParityTests
     private static void AssertSequence(IEnumerable<SyntaxElement> expected, IEnumerable<SelfElement> actual,
         Dictionary<SyntaxElement, SelfElement> pairs)
     {
-        using IEnumerator<SelfElement> iterator = actual.GetEnumerator();
-        foreach (SyntaxElement element in expected)
+        using var iterator = actual.GetEnumerator();
+        foreach (var element in expected)
         {
             Assert.IsTrue(iterator.MoveNext());
             AssertMapped(element, iterator.Current, pairs);

@@ -379,7 +379,11 @@ export sealed class Binder<TFile> extends ConversionBindingContext {
     previous: ImmutableArray<SourceFieldSymbol<TFile>>): ConstantValue? {
     this.PushScope(BinderScopeKind.Block);
     try {
-      for (const field of previous) this.Scope.Symbols[field.Name] = field;
+      for (const field of previous) {
+        const constant = new LocalSymbol(field.Name, this.IntType, true, owner);
+        constant.ConstantValue = field.ConstantValue;
+        this.Scope.Symbols[field.Name] = constant;
+      }
       return this.TryEvaluateConstant(expression, this.IntType);
     } finally { this.PopScope(); }
   }

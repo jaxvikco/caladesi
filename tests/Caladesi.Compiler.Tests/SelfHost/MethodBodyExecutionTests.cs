@@ -85,7 +85,7 @@ public sealed class MethodBodyExecutionTests
     public void NumericAndBoxingConversions_ExecuteWithRealTypeTokens(int input, int expected)
     {
         Fixture f = new();
-        HS.NamedTypeSymbol byteType = f.Special(HS.SpecialType.Byte);
+        var byteType = f.Special(HS.SpecialType.Byte);
         HB.BoundConversion narrowed = new(f.Argument, HB.ConversionKind.ExplicitNumeric, byteType);
         HB.BoundConversion boxed = new(narrowed, HB.ConversionKind.Boxing, f.Special(HS.SpecialType.Object));
         HB.BoundConversion unboxed = new(boxed, HB.ConversionKind.Unboxing, byteType);
@@ -94,8 +94,10 @@ public sealed class MethodBodyExecutionTests
         Assert.AreEqual(expected, f.Execute(new([], [new HB.BoundReturn(result)]), input));
     }
 
-    private static HB.BoundExpressionStatement Assign(HS.LocalSymbol local, HB.BoundExpression value) =>
-        new(new HB.BoundAssignment(new HB.BoundLocal(local), value) { IsDiscarded = true });
+    private static HB.BoundExpressionStatement Assign(HS.LocalSymbol local, HB.BoundExpression value)
+    {
+        return new(new HB.BoundAssignment(new HB.BoundLocal(local), value) { IsDiscarded = true });
+    }
 
     private sealed class Fixture
     {
@@ -117,24 +119,32 @@ public sealed class MethodBodyExecutionTests
             Argument = new(parameter);
         }
 
-        public HS.NamedTypeSymbol Special(HS.SpecialType special) => references.GetSpecialType(special)!;
+        public HS.NamedTypeSymbol Special(HS.SpecialType special)
+        {
+            return references.GetSpecialType(special)!;
+        }
 
-        public HB.BoundLiteral Integer(int value) => new(new HS.ConstantValue(value), Int32);
+        public HB.BoundLiteral Integer(int value)
+        {
+            return new(new HS.ConstantValue(value), Int32);
+        }
 
         public HB.BoundBinary Binary(HB.BinaryOperatorKind kind, HB.BoundExpression left,
-            HB.BoundExpression right, bool comparison = false) =>
-            new(kind, left, right, comparison ? Special(HS.SpecialType.Boolean) : Int32, Int32);
+            HB.BoundExpression right, bool comparison = false)
+        {
+            return new(kind, left, right, comparison ? Special(HS.SpecialType.Boolean) : Int32, Int32);
+        }
 
         public int Execute(HB.BoundBlock body, int input)
         {
-            string assemblyName = "MethodBodyExecution_" + Guid.NewGuid().ToString("N");
-            MetadataBuilder md = metadata.Metadata;
-            md.AddModule(0, md.GetOrAddString(assemblyName + ".dll"), md.GetOrAddGuid(Guid.NewGuid()), default, default);
-            md.AddAssembly(md.GetOrAddString(assemblyName), new Version(1, 0, 0, 0),
+            var assemblyName = "MethodBodyExecution_" + Guid.NewGuid().ToString("N");
+            var md = metadata.Metadata;
+            _ = md.AddModule(0, md.GetOrAddString(assemblyName + ".dll"), md.GetOrAddGuid(Guid.NewGuid()), default, default);
+            _ = md.AddAssembly(md.GetOrAddString(assemblyName), new Version(1, 0, 0, 0),
                 default, default, 0, AssemblyHashAlgorithm.None);
-            md.AddTypeDefinition(default, default, md.GetOrAddString("<Module>"), default,
+            _ = md.AddTypeDefinition(default, default, md.GetOrAddString("<Module>"), default,
                 MetadataTokens.FieldDefinitionHandle(1), MetadataTokens.MethodDefinitionHandle(1));
-            TypeDefinitionHandle type = md.AddTypeDefinition(
+            var type = md.AddTypeDefinition(
                 TypeAttributes.Public | TypeAttributes.Abstract | TypeAttributes.Sealed,
                 default, md.GetOrAddString(owner.Name), metadata.GetTypeEntity(Special(HS.SpecialType.Object)),
                 MetadataTokens.FieldDefinitionHandle(1), MetadataTokens.MethodDefinitionHandle(1));
@@ -147,32 +157,35 @@ public sealed class MethodBodyExecutionTests
             if (il.Locals.Count > 0)
             {
                 BlobBuilder signature = new();
-                LocalVariablesEncoder encoder = new BlobEncoder(signature).LocalVariableSignature(il.Locals.Count);
-                foreach (H.LocalSlot slot in il.Locals)
+                var encoder = new BlobEncoder(signature).LocalVariableSignature(il.Locals.Count);
+                foreach (var slot in il.Locals)
+                {
                     metadata.EncodeType(encoder.AddVariable().Type(), slot.Type);
+                }
+
                 locals = md.AddStandaloneSignature(md.GetOrAddBlob(signature));
             }
 
             BlobBuilder methodBodies = new();
-            int offset = new MethodBodyStreamEncoder(methodBodies).AddMethodBody(
+            var offset = new MethodBodyStreamEncoder(methodBodies).AddMethodBody(
                 il.Encoder, il.MaxStack, locals, MethodBodyAttributes.InitLocals);
-            ParameterHandle parameter = md.AddParameter(ParameterAttributes.None, md.GetOrAddString("value"), 1);
-            md.AddMethodDefinition(MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.HideBySig,
+            var parameter = md.AddParameter(ParameterAttributes.None, md.GetOrAddString("value"), 1);
+            _ = md.AddMethodDefinition(MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.HideBySig,
                 MethodImplAttributes.IL | MethodImplAttributes.Managed, md.GetOrAddString(Method.Name),
                 metadata.EncodeMethodSignature(Method), offset, parameter);
             ManagedPEBuilder pe = new(PEHeaderBuilder.CreateLibraryHeader(), new MetadataRootBuilder(md),
                 methodBodies, flags: CorFlags.ILOnly);
             BlobBuilder image = new();
-            pe.Serialize(image);
-            byte[] bytes = image.ToArray();
+            _ = pe.Serialize(image);
+            var bytes = image.ToArray();
             Assert.IsEmpty(ILVerifier.Verify(assemblyName, bytes));
 
             AssemblyLoadContext context = new(assemblyName, isCollectible: true);
             try
             {
                 using MemoryStream stream = new(bytes);
-                Assembly assembly = context.LoadFromStream(stream);
-                Func<int, int> evaluate = assembly.GetType(owner.Name, throwOnError: true)!
+                var assembly = context.LoadFromStream(stream);
+                var evaluate = assembly.GetType(owner.Name, throwOnError: true)!
                     .GetMethod(Method.Name)!.CreateDelegate<Func<int, int>>();
                 return evaluate(input);
             }

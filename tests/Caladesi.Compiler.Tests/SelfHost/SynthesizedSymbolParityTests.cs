@@ -26,9 +26,9 @@ public sealed class SynthesizedSymbolParityTests
     {
         AssertField(new SynthesizedFieldSymbol(ErrorTypeSymbol.Instance, "f", NullTypeSymbol.Instance),
             new SS.SynthesizedFieldSymbol(S.ErrorTypeSymbol.Instance, "f", S.NullTypeSymbol.Instance));
-        foreach (Accessibility accessibility in Enum.GetValues<Accessibility>())
+        foreach (var accessibility in Enum.GetValues<Accessibility>())
         {
-            for (int flags = 0; flags < 4; flags++)
+            for (var flags = 0; flags < 4; flags++)
             {
                 SynthesizedFieldSymbol expected = new(ErrorTypeSymbol.Instance, "field", NullTypeSymbol.Instance,
                     (flags & 1) != 0, accessibility, (flags & 2) != 0);
@@ -47,9 +47,9 @@ public sealed class SynthesizedSymbolParityTests
     [TestMethod]
     public void Methods_KindsFlagsDefaultsAndMetadataMatchBootstrap()
     {
-        foreach (MethodKind kind in Enum.GetValues<MethodKind>())
+        foreach (var kind in Enum.GetValues<MethodKind>())
         {
-            for (int flags = 0; flags < 32; flags++)
+            for (var flags = 0; flags < 32; flags++)
             {
                 SynthesizedMethodSymbol expected = new(ErrorTypeSymbol.Instance, "method", kind, Accessibility.Protected,
                     (flags & 1) != 0, NullTypeSymbol.Instance, [], (flags & 2) != 0, (flags & 4) != 0,
@@ -66,18 +66,25 @@ public sealed class SynthesizedSymbolParityTests
         SynthesizedMethodSymbol withMetadata = new(ErrorTypeSymbol.Instance, "generated", MethodKind.LocalFunction,
             Accessibility.Private, false, ErrorTypeSymbol.Instance, [])
         {
-            SourceMethod = origin, LambdaOrigin = origin, SynthesizedKind = SynthesizedBodyKind.Custom,
-            IsAsyncMethod = true, IsIteratorMethod = true, Associated = origin, Overrides = [origin]
+            SourceMethod = origin,
+            LambdaOrigin = origin,
+            SynthesizedKind = SynthesizedBodyKind.Custom,
+            IsAsyncMethod = true,
+            IsIteratorMethod = true,
+            Associated = origin,
+            Overrides = [origin]
         };
         SS.SynthesizedMethodSymbol selfMetadata = new(S.ErrorTypeSymbol.Instance, "generated", S.MethodKind.LocalFunction,
-            S.Accessibility.Private, false, S.ErrorTypeSymbol.Instance, []);
-        selfMetadata.SourceMethod = selfOrigin;
-        selfMetadata.LambdaOrigin = selfOrigin;
-        selfMetadata.SynthesizedKind = SS.SynthesizedBodyKind.Custom;
-        selfMetadata.IsAsyncMethod = true;
-        selfMetadata.IsIteratorMethod = true;
-        selfMetadata.Associated = selfOrigin;
-        selfMetadata.Overrides = [selfOrigin];
+            S.Accessibility.Private, false, S.ErrorTypeSymbol.Instance, [])
+        {
+            SourceMethod = selfOrigin,
+            LambdaOrigin = selfOrigin,
+            SynthesizedKind = SS.SynthesizedBodyKind.Custom,
+            IsAsyncMethod = true,
+            IsIteratorMethod = true,
+            Associated = selfOrigin,
+            Overrides = [selfOrigin]
+        };
         AssertMethod(withMetadata, selfMetadata);
         Assert.AreSame(selfOrigin, selfMetadata.SourceMethod);
         Assert.AreSame(selfOrigin, selfMetadata.LambdaOrigin);
@@ -103,8 +110,8 @@ public sealed class SynthesizedSymbolParityTests
         actual.SetParameters([new S.ParameterSymbol("value", selfParameter, 0, actual)]);
         AssertMethod(expected, actual);
         Assert.AreSame(selfParameter, actual.TypeArguments[0]);
-        MethodSymbol constructed = expected.Construct([NeverTypeSymbol.Instance]);
-        S.MethodSymbol selfConstructed = actual.Construct([S.NeverTypeSymbol.Instance]);
+        var constructed = expected.Construct([NeverTypeSymbol.Instance]);
+        var selfConstructed = actual.Construct([S.NeverTypeSymbol.Instance]);
         Assert.AreEqual(constructed.ReturnType.Name, selfConstructed.ReturnType.Name);
         Assert.AreEqual(constructed.Parameters[0].Type.Name, selfConstructed.Parameters[0].Type.Name);
         Assert.AreSame(selfConstructed, selfConstructed.Parameters[0].ContainingSymbol);
@@ -114,26 +121,30 @@ public sealed class SynthesizedSymbolParityTests
     [TestMethod]
     public void NamedTypes_DefaultsKindsFlagsAndNullableConstructorsMatchBootstrap()
     {
-        foreach (TypeKind kind in Enum.GetValues<TypeKind>())
+        foreach (var kind in Enum.GetValues<TypeKind>())
         {
             SynthesizedNamedType expected = new("Generated", null, kind);
             SS.SynthesizedNamedType actual = new("Generated", null, (S.TypeKind)(int)kind);
             AssertType(expected, actual);
             Assert.AreEqual(expected.IsCompilerGenerated, actual.IsCompilerGenerated);
             Assert.IsNull(actual.MethodTypeParameterMap);
-            for (int flags = 0; flags < 8; flags++)
+            for (var flags = 0; flags < 8; flags++)
             {
                 SynthesizedNamedType flagged = new("Generated", null, kind, Accessibility.Public)
                 {
-                    IsSealedFlag = (flags & 1) != 0, IsAbstractFlag = (flags & 2) != 0, IsStaticFlag = (flags & 4) != 0
+                    IsSealedFlag = (flags & 1) != 0,
+                    IsAbstractFlag = (flags & 2) != 0,
+                    IsStaticFlag = (flags & 4) != 0
                 };
                 actual.IsSealedFlag = (flags & 1) != 0;
                 actual.IsAbstractFlag = (flags & 2) != 0;
                 actual.IsStaticFlag = (flags & 4) != 0;
-                SS.SynthesizedNamedType selfFlagged = new("Generated", null, (S.TypeKind)(int)kind, S.Accessibility.Public);
-                selfFlagged.IsSealedFlag = actual.IsSealedFlag;
-                selfFlagged.IsAbstractFlag = actual.IsAbstractFlag;
-                selfFlagged.IsStaticFlag = actual.IsStaticFlag;
+                SS.SynthesizedNamedType selfFlagged = new("Generated", null, (S.TypeKind)(int)kind, S.Accessibility.Public)
+                {
+                    IsSealedFlag = actual.IsSealedFlag,
+                    IsAbstractFlag = actual.IsAbstractFlag,
+                    IsStaticFlag = actual.IsStaticFlag
+                };
                 AssertType(flagged, selfFlagged);
             }
         }
@@ -148,10 +159,10 @@ public sealed class SynthesizedSymbolParityTests
     {
         SynthesizedNamedType expected = new("Closure", ErrorTypeSymbol.Instance, TypeKind.Class);
         SS.SynthesizedNamedType actual = new("Closure", S.ErrorTypeSymbol.Instance, S.TypeKind.Class);
-        IReadOnlyList<Symbol> liveMembers = expected.Members;
-        IReadOnlyList<S.Symbol> selfLiveMembers = actual.Members;
-        ImmutableArray<Symbol> snapshot = expected.GetMembers();
-        ImmutableArray<S.Symbol> selfSnapshot = actual.GetMembers();
+        var liveMembers = expected.Members;
+        var selfLiveMembers = actual.Members;
+        var snapshot = expected.GetMembers();
+        var selfSnapshot = actual.GetMembers();
         TypeParameterSymbol outer = new("Outer", 0, expected, VarianceKind.None);
         TypeParameterSymbol own = new("T", 1, expected, VarianceKind.None);
         S.TypeParameterSymbol selfOuter = new("Outer", 0, actual, S.VarianceKind.None);
@@ -159,7 +170,7 @@ public sealed class SynthesizedSymbolParityTests
         expected.SetTypeParameters([outer, own]);
         actual.SetTypeParameters([selfOuter, selfOwn]);
         AssertType(expected, actual);
-        foreach (int ownArity in new[] { -3, -1, 0, 1, 2 })
+        foreach (var ownArity in new[] { -3, -1, 0, 1, 2 })
         {
             expected.OwnArityValue = ownArity;
             actual.OwnArityValue = ownArity;
@@ -185,13 +196,13 @@ public sealed class SynthesizedSymbolParityTests
         Assert.IsEmpty(selfSnapshot);
         Assert.AreSame(selfField, actual.GetMembers()[0]);
         Assert.HasCount(expected.GetMembers("value").Length, actual.GetMembers("value"));
-        ImmutableArray<S.Symbol> laterSnapshot = actual.GetMembers();
+        var laterSnapshot = actual.GetMembers();
         actual.AddMember(selfOwn);
         expected.AddMember(own);
         Assert.HasCount(2, laterSnapshot);
         expected.SetBase(ErrorTypeSymbol.Instance);
         actual.SetBase(S.ErrorTypeSymbol.Instance);
-        ImmutableArray<S.NamedTypeSymbol> interfaceSnapshot = actual.Interfaces;
+        var interfaceSnapshot = actual.Interfaces;
         expected.AddInterface(ErrorTypeSymbol.Instance);
         actual.AddInterface(S.ErrorTypeSymbol.Instance);
         expected.AddInterface(ErrorTypeSymbol.Instance);
@@ -199,8 +210,8 @@ public sealed class SynthesizedSymbolParityTests
         Assert.IsEmpty(interfaceSnapshot);
         Assert.HasCount(expected.Interfaces.Length, actual.Interfaces);
         AssertType(expected, actual);
-        NamedTypeSymbol constructed = expected.Construct(ImmutableArray.Create<TypeSymbol>(NullTypeSymbol.Instance, NeverTypeSymbol.Instance));
-        S.NamedTypeSymbol selfConstructed = actual.Construct(ImmutableArray.Create<S.TypeSymbol>(S.NullTypeSymbol.Instance, S.NeverTypeSymbol.Instance));
+        var constructed = expected.Construct(ImmutableArray.Create<TypeSymbol>(NullTypeSymbol.Instance, NeverTypeSymbol.Instance));
+        var selfConstructed = actual.Construct(ImmutableArray.Create<S.TypeSymbol>(S.NullTypeSymbol.Instance, S.NeverTypeSymbol.Instance));
         Assert.AreEqual(((FieldSymbol)constructed.GetMembers()[0]).Type.Name,
             ((S.FieldSymbol)selfConstructed.GetMembers()[0]).Type.Name);
         Assert.IsTrue(ReferenceEquals(actual, actual.Construct(ImmutableArray.Create<S.TypeSymbol>(selfOuter, selfOwn))));
@@ -208,7 +219,7 @@ public sealed class SynthesizedSymbolParityTests
 
     private static void Mutate(object symbol, string method, object value)
     {
-        MethodInfo mutator = symbol.GetType().GetMethod(method, BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var mutator = symbol.GetType().GetMethod(method, BindingFlags.Instance | BindingFlags.NonPublic)!;
         _ = mutator.Invoke(symbol, [value]);
     }
 

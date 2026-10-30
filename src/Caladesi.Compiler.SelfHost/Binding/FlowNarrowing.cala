@@ -25,11 +25,7 @@ export sealed class NarrowPath implements IEquatable<NarrowPath> {
   get Root(): Symbol { return this.Parts[0]; }
   Append(symbol: Symbol): NarrowPath { return new NarrowPath(this.Parts.Add(symbol)); }
   private static Definition(symbol: Symbol): Symbol {
-    // The oracle reads Symbol's slot. These families hide it with a new typed
-    // OriginalDefinition; the self-host bridge must not change that dispatch.
-    if (symbol instanceof NamedTypeSymbol || symbol instanceof MethodSymbol ||
-        symbol instanceof FieldSymbol || symbol instanceof PropertySymbol) return symbol;
-    return symbol.OriginalSymbolDefinition;
+    return Symbol.OriginalDefinitionOf(symbol);
   }
   private static SameSymbol(a: Symbol, b: Symbol): bool {
     return Object.ReferenceEquals(a, b) || Object.ReferenceEquals(NarrowPath.Definition(a), NarrowPath.Definition(b));

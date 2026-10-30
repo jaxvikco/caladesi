@@ -5,7 +5,8 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 rid="${AOT_RID:-linux-x64}"
 config="${CONFIG:-Release}"
-manifest="${CALADESI_AOT_MANIFEST:-$root/artifacts/selfhost/${config,,}/verified.txt}"
+pivot="$(printf '%s' "$config" | tr '[:upper:]' '[:lower:]')"
+manifest="${CALADESI_AOT_MANIFEST:-$root/artifacts/selfhost/$pivot/verified.txt}"
 fail() { echo "$*" >&2; exit 1; }
 [[ "$rid" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "Invalid AOT_RID: $rid"
 [[ "$config" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail "Invalid CONFIG: $config"
@@ -28,7 +29,6 @@ identity="$(manifest_value SelfHostReleaseIdentity)"
 stage_root="$(manifest_value ArtifactsRoot)"
 [[ -d "$stage_root/stage3" ]] || fail "Native proof stage3 directory is missing."
 stage_root="$(cd "$stage_root" && pwd)"
-pivot="${config,,}"
 compiler_name="Caladesi.Compiler.SelfHost"
 runtime_name="Caladesi.Runtime.SelfHost"
 task_name="Caladesi.Build.Tasks.SelfHost"
@@ -61,8 +61,9 @@ done
 for file in "${proof_files[@]}"; do
   expected="$(awk -F'|' -v path="$file" '$1 == "SHA256" && $2 == path { sub(/\r$/, "", $3); print $3 }' "$manifest")"
   [[ "$expected" =~ ^[0-9A-Fa-f]{64}$ && -f "$file" ]] || fail "Native proof is missing or duplicates $file."
-  actual="$(sha256sum -- "$file")"
-  [[ "${actual%% *}" == "${expected,,}" ]] || fail "Native artifact changed after verification: $file"
+  actual="$(shasum -a 256 "$file")"
+  expected="$(printf '%s' "$expected" | tr '[:upper:]' '[:lower:]')"
+  [[ "${actual%% *}" == "$expected" ]] || fail "Native artifact changed after verification: $file"
 done
 verified_cli="$stage_root/stage3/bin/Caladesi.Cli.SelfHost/$pivot"
 verified_tasks="$stage_root/stage3/bin/Caladesi.Build.Tasks.SelfHost/$pivot/$task_name.dll"
@@ -81,6 +82,7 @@ common=(-c "$config" --nologo -p:Version="$version" -p:BuildProjectReferences=fa
   -p:UseArtifactsOutput=true -p:ArtifactsPath="$work" -p:ArtifactsPivots="$pivot"
   -p:CaladesiCompilerPath="$verified_cli/$cli_name.dll" -p:CaladesiTasksAssembly="$verified_tasks"
   -p:SelfHostReleaseIdentity="$identity" -p:CaladesiImplicitRuntimeReference=false
+  -p:BootstrapDirectory="$verified_cli"
   -p:EnableAotAnalyzer=true -p:EnableTrimAnalyzer=true -p:TreatWarningsAsErrors=true
   -p:UseAppHost=false)
 projects=(
@@ -117,5 +119,6 @@ for name in "${projects[@]}"; do
     echo "AOT/trim warnings in $name:"; grep -E "warning (IL2|IL3)[0-9]{3}" "$log" | sort -u; status=1
   fi
 done
+echo "Native AOT logs and outputs: $work"
 if [ $status -eq 0 ]; then echo "Native AOT check passed"; fi
 exit $status

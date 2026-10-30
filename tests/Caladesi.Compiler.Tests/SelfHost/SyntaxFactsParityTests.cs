@@ -13,9 +13,9 @@ public sealed class SyntaxFactsParityTests
     public void SyntaxKind_AllNamesAndNumericIdentitiesMatch()
     {
         CollectionAssert.AreEqual(Enum.GetNames<SyntaxKind>(), Enum.GetNames<PortKind>());
-        foreach (SyntaxKind kind in Enum.GetValues<SyntaxKind>())
+        foreach (var kind in Enum.GetValues<SyntaxKind>())
         {
-            PortKind port = Enum.Parse<PortKind>(kind.ToString());
+            var port = Enum.Parse<PortKind>(kind.ToString());
             Assert.AreEqual((int)kind, (int)port, kind.ToString());
         }
     }
@@ -23,7 +23,7 @@ public sealed class SyntaxFactsParityTests
     [TestMethod]
     public void GetText_AllEnumValuesMatch()
     {
-        foreach (SyntaxKind kind in Enum.GetValues<SyntaxKind>())
+        foreach (var kind in Enum.GetValues<SyntaxKind>())
         {
             Assert.AreEqual(SyntaxFacts.GetText(kind), PortFacts.GetText((PortKind)(int)kind), kind.ToString());
         }
@@ -32,7 +32,7 @@ public sealed class SyntaxFactsParityTests
     [TestMethod]
     public void ClassificationsAndPrecedence_AllEnumValuesMatch()
     {
-        foreach (SyntaxKind kind in Enum.GetValues<SyntaxKind>())
+        foreach (var kind in Enum.GetValues<SyntaxKind>())
         {
             AssertFactsMatch(kind);
         }
@@ -41,9 +41,9 @@ public sealed class SyntaxFactsParityTests
     [TestMethod]
     public void GetKeywordKind_AllKeywordsAndPunctuationMatch()
     {
-        foreach (SyntaxKind kind in Enum.GetValues<SyntaxKind>())
+        foreach (var kind in Enum.GetValues<SyntaxKind>())
         {
-            string text = SyntaxFacts.GetText(kind);
+            var text = SyntaxFacts.GetText(kind);
             AssertKeywordMatches(text);
             if (SyntaxFacts.IsKeyword(kind))
             {
@@ -81,8 +81,8 @@ public sealed class SyntaxFactsParityTests
     [TestMethod]
     public void GetKeywordKind_NullThrowsLikeOriginal()
     {
-        Assert.ThrowsExactly<ArgumentNullException>(() => SyntaxFacts.GetKeywordKind(null!));
-        Assert.ThrowsExactly<ArgumentNullException>(() => PortFacts.GetKeywordKind(null!));
+        _ = Assert.ThrowsExactly<ArgumentNullException>(() => SyntaxFacts.GetKeywordKind(null!));
+        _ = Assert.ThrowsExactly<ArgumentNullException>(() => PortFacts.GetKeywordKind(null!));
     }
 
     [TestMethod]
@@ -92,7 +92,7 @@ public sealed class SyntaxFactsParityTests
     [DataRow(int.MaxValue)]
     public void Facts_UndefinedEnumValuesMatch(int value)
     {
-        SyntaxKind kind = (SyntaxKind)value;
+        var kind = (SyntaxKind)value;
         Assert.AreEqual(SyntaxFacts.GetText(kind), PortFacts.GetText((PortKind)value));
         AssertFactsMatch(kind);
     }
@@ -104,8 +104,8 @@ public sealed class SyntaxFactsParityTests
 
     private static void AssertFactsMatch(SyntaxKind kind)
     {
-        PortKind port = (PortKind)(int)kind;
-        string message = kind.ToString();
+        var port = (PortKind)(int)kind;
+        var message = kind.ToString();
         Assert.AreEqual(SyntaxFacts.IsKeyword(kind), PortFacts.IsKeyword(port), message);
         Assert.AreEqual(SyntaxFacts.IsReservedKeyword(kind), PortFacts.IsReservedKeyword(port), message);
         Assert.AreEqual(SyntaxFacts.IsContextualKeyword(kind), PortFacts.IsContextualKeyword(port), message);

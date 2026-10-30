@@ -3,6 +3,7 @@
   <Import Project="$(CaladesiRepoRoot)eng/Aot.props" />
   <PropertyGroup>
     <OutputType>Exe</OutputType>
+    <RollForward>Major</RollForward>
     <TargetFramework>net10.0</TargetFramework>
     <AssemblyName>cala-ls-selfhost</AssemblyName>
     <AssemblyName Condition="'$(SelfHostReleaseIdentity)' == 'true'">cala-ls</AssemblyName>
@@ -22,8 +23,8 @@
     <CaladesiImplicitRuntimeReference>false</CaladesiImplicitRuntimeReference>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../Caladesi.Cli/Caladesi.Cli.csproj" ReferenceOutputAssembly="false" />
-    <ProjectReference Include="../Caladesi.Build.Tasks/Caladesi.Build.Tasks.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../Caladesi.Cli/Caladesi.Cli.csproj" ReferenceOutputAssembly="false" Condition="'$(BootstrapDirectory)' == ''" />
+    <ProjectReference Include="../Caladesi.Build.Tasks/Caladesi.Build.Tasks.csproj" ReferenceOutputAssembly="false" Condition="'$(BootstrapDirectory)' == ''" />
     <ProjectReference Include="../Caladesi.Compiler.SelfHost/Caladesi.Compiler.SelfHost.calaproj" />
     <ProjectReference Include="../Caladesi.Runtime.SelfHost/Caladesi.Runtime.SelfHost.calaproj" ReferenceOutputAssembly="false" OutputItemType="CaladesiRuntimeAssembly" />
     <CustomAdditionalCompileInputs Include="$([System.IO.Path]::GetDirectoryName('$(CaladesiCompilerPath)'))/*.dll" />

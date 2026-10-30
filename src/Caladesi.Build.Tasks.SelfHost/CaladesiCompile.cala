@@ -23,6 +23,7 @@ export sealed class CaladesiCompile extends ToolTask {
   public TreatWarningsAsErrors: bool = false;
   public NoWarn: string? = null;
   public Version: string? = null;
+  public InformationalVersion: string? = null;
   public TargetFrameworkMoniker: string? = null;
   public TargetFrameworkDisplayName: string? = null;
   public Optimize: bool = false;
@@ -99,6 +100,9 @@ export sealed class CaladesiCompile extends ToolTask {
     }
     if (!string.IsNullOrEmpty(this.Version)) {
       CaladesiCompile.Add(sb, "-version:" + this.Version);
+    }
+    if (!string.IsNullOrEmpty(this.InformationalVersion)) {
+      CaladesiCompile.Add(sb, "-informationalversion:" + this.InformationalVersion);
     }
     if (!string.IsNullOrEmpty(this.TargetFrameworkMoniker)) {
       CaladesiCompile.Add(sb, "-targetframework:" + this.TargetFrameworkMoniker);

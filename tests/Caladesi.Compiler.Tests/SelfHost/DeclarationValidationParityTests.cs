@@ -17,55 +17,64 @@ public sealed class DeclarationValidationParityTests
     [TestMethod]
     public void Implementation_SearchAccessibilityOverridesCaseAndInheritanceMatchOracle()
     {
-        foreach (Accessibility accessibility in Enum.GetValues<Accessibility>())
-        foreach (bool isOverride in new[] { false, true })
-        foreach (bool inherited in new[] { false, true })
-        foreach (bool requireOverride in new[] { false, true })
+        foreach (var accessibility in Enum.GetValues<Accessibility>())
         {
-            var value = new OriginalType("Value");
-            var selfValue = new NativeType("Value");
-            var target = new OriginalMethod("Run", value);
-            var selfTarget = new NativeMethod("Run", selfValue);
-            var candidate = new OriginalMethod("run", value, accessibility, isOverride);
-            var selfCandidate = new NativeMethod("run", selfValue, (H.Accessibility)(int)accessibility, isOverride);
-            var owner = new OriginalType("Owner") { Members = [candidate] };
-            var selfOwner = new NativeType("Owner") { Members = [selfCandidate] };
-            NamedTypeSymbol type = inherited ? new OriginalType("Derived") { Base = owner } : owner;
-            H.NamedTypeSymbol selfType = inherited ? new NativeType("Derived") { Base = selfOwner } : selfOwner;
-            MethodSymbol? expected = DeclarationChecker.FindImplementation(type, target, requireOverride);
-            H.MethodSymbol? actual = C.DeclarationChecker<string>.FindImplementation(selfType, selfTarget, requireOverride);
-            Assert.AreEqual(expected?.Name, actual?.Name, $"{accessibility}/{isOverride}/{inherited}/{requireOverride}");
-            Assert.AreEqual(expected is null, actual is null);
-            if (actual is not null) Assert.AreSame(selfCandidate, actual);
+            foreach (var isOverride in new[] { false, true })
+            {
+                foreach (var inherited in new[] { false, true })
+                {
+                    foreach (var requireOverride in new[] { false, true })
+                    {
+                        OriginalType value = new("Value");
+                        NativeType selfValue = new("Value");
+                        OriginalMethod target = new("Run", value);
+                        NativeMethod selfTarget = new("Run", selfValue);
+                        OriginalMethod candidate = new("run", value, accessibility, isOverride);
+                        NativeMethod selfCandidate = new("run", selfValue, (H.Accessibility)(int)accessibility, isOverride);
+                        OriginalType owner = new("Owner") { Members = [candidate] };
+                        NativeType selfOwner = new("Owner") { Members = [selfCandidate] };
+                        NamedTypeSymbol type = inherited ? new OriginalType("Derived") { Base = owner } : owner;
+                        H.NamedTypeSymbol selfType = inherited ? new NativeType("Derived") { Base = selfOwner } : selfOwner;
+                        var expected = DeclarationChecker.FindImplementation(type, target, requireOverride);
+                        var actual = C.DeclarationChecker<string>.FindImplementation(selfType, selfTarget, requireOverride);
+                        Assert.AreEqual(expected?.Name, actual?.Name, $"{accessibility}/{isOverride}/{inherited}/{requireOverride}");
+                        Assert.AreEqual(expected is null, actual is null);
+                        if (actual is not null)
+                        {
+                            Assert.AreSame(selfCandidate, actual);
+                        }
+                    }
+                }
+            }
         }
     }
 
     [TestMethod]
     public void Implementation_ReferenceNullabilityAndMethodParameterOrdinalsMatchOracle()
     {
-        var value = new OriginalType("Value");
-        var selfValue = new NativeType("Value");
-        var method = new OriginalMethod("Run", new NullableTypeSymbol(value))
+        OriginalType value = new("Value");
+        NativeType selfValue = new("Value");
+        OriginalMethod method = new("Run", new NullableTypeSymbol(value))
         {
             Arguments = [new ParameterSymbol("value", new NullableTypeSymbol(value), 0, null)]
         };
-        var selfMethod = new NativeMethod("Run", new H.NullableTypeSymbol(selfValue))
+        NativeMethod selfMethod = new("Run", new H.NullableTypeSymbol(selfValue))
         {
             Arguments = [new H.ParameterSymbol("value", new H.NullableTypeSymbol(selfValue), 0, null)]
         };
-        var owner = new OriginalType("Owner") { Members = [method] };
-        var selfOwner = new NativeType("Owner") { Members = [selfMethod] };
-        var target = new OriginalMethod("Run", value)
+        OriginalType owner = new("Owner") { Members = [method] };
+        NativeType selfOwner = new("Owner") { Members = [selfMethod] };
+        OriginalMethod target = new("Run", value)
         {
             Arguments = [new ParameterSymbol("value", value, 0, null)]
         };
-        var selfTarget = new NativeMethod("Run", selfValue)
+        NativeMethod selfTarget = new("Run", selfValue)
         {
             Arguments = [new H.ParameterSymbol("value", selfValue, 0, null)]
         };
         Assert.AreSame(method, DeclarationChecker.FindImplementation(owner, target, false));
         Assert.AreSame(selfMethod, C.DeclarationChecker<string>.FindImplementation(selfOwner, selfTarget, false));
-        foreach (int ordinal in new[] { 0, 1 })
+        foreach (var ordinal in new[] { 0, 1 })
         {
             method.Arguments = [new ParameterSymbol("x", new TypeParameterSymbol("T", 0, method, VarianceKind.None), 0, method)];
             target.Arguments = [new ParameterSymbol("x", new TypeParameterSymbol("U", ordinal, target, VarianceKind.None), 0, target)];
@@ -79,130 +88,152 @@ public sealed class DeclarationValidationParityTests
     [TestMethod]
     public void Implementation_MethodKindsStaticAbstractAndGenericArityMatchOracle()
     {
-        foreach (MethodKind kind in Enum.GetValues<MethodKind>())
-        foreach (bool isStatic in new[] { false, true })
-        foreach (bool isAbstract in new[] { false, true })
-        foreach (bool generic in new[] { false, true })
+        foreach (var kind in Enum.GetValues<MethodKind>())
         {
-            var value = new OriginalType("Value");
-            var selfValue = new NativeType("Value");
-            var candidate = new OriginalMethod("Run", value)
+            foreach (var isStatic in new[] { false, true })
             {
-                Kind = kind, StaticFlag = isStatic, AbstractFlag = isAbstract
-            };
-            var selfCandidate = new NativeMethod("Run", selfValue)
-            {
-                Kind = (H.MethodKind)(int)kind, StaticFlag = isStatic, AbstractFlag = isAbstract
-            };
-            if (generic)
-            {
-                candidate.GenericParameters = [new TypeParameterSymbol("T", 0, candidate, VarianceKind.None)];
-                selfCandidate.GenericParameters = [new H.TypeParameterSymbol("T", 0, selfCandidate, H.VarianceKind.None)];
+                foreach (var isAbstract in new[] { false, true })
+                {
+                    foreach (var generic in new[] { false, true })
+                    {
+                        OriginalType value = new("Value");
+                        NativeType selfValue = new("Value");
+                        OriginalMethod candidate = new("Run", value)
+                        {
+                            Kind = kind,
+                            StaticFlag = isStatic,
+                            AbstractFlag = isAbstract
+                        };
+                        NativeMethod selfCandidate = new("Run", selfValue)
+                        {
+                            Kind = (H.MethodKind)(int)kind,
+                            StaticFlag = isStatic,
+                            AbstractFlag = isAbstract
+                        };
+                        if (generic)
+                        {
+                            candidate.GenericParameters = [new TypeParameterSymbol("T", 0, candidate, VarianceKind.None)];
+                            selfCandidate.GenericParameters = [new H.TypeParameterSymbol("T", 0, selfCandidate, H.VarianceKind.None)];
+                        }
+                        OriginalMethod target = new("Run", value);
+                        NativeMethod selfTarget = new("Run", selfValue);
+                        OriginalType owner = new("Owner") { Members = [candidate] };
+                        NativeType selfOwner = new("Owner") { Members = [selfCandidate] };
+                        Assert.AreEqual(DeclarationChecker.FindImplementation(owner, target, false)?.Name,
+                            C.DeclarationChecker<string>.FindImplementation(selfOwner, selfTarget, false)?.Name,
+                            $"{kind}/{isStatic}/{isAbstract}/{generic}");
+                        Assert.AreEqual(DeclarationChecker.FindBridgeTarget(owner, target)?.Name,
+                            C.DeclarationChecker<string>.FindBridgeTarget(selfOwner, selfTarget)?.Name);
+                    }
+                }
             }
-            var target = new OriginalMethod("Run", value);
-            var selfTarget = new NativeMethod("Run", selfValue);
-            var owner = new OriginalType("Owner") { Members = [candidate] };
-            var selfOwner = new NativeType("Owner") { Members = [selfCandidate] };
-            Assert.AreEqual(DeclarationChecker.FindImplementation(owner, target, false)?.Name,
-                C.DeclarationChecker<string>.FindImplementation(selfOwner, selfTarget, false)?.Name,
-                $"{kind}/{isStatic}/{isAbstract}/{generic}");
-            Assert.AreEqual(DeclarationChecker.FindBridgeTarget(owner, target)?.Name,
-                C.DeclarationChecker<string>.FindBridgeTarget(selfOwner, selfTarget)?.Name);
         }
     }
 
     [TestMethod]
     public void Bridges_ReferenceCovarianceInterfacesValueTypesAndParametersMatchOracle()
     {
-        foreach (bool valueType in new[] { false, true })
-        foreach (bool throughInterface in new[] { false, true })
-        foreach (bool parameterMatches in new[] { false, true })
+        foreach (var valueType in new[] { false, true })
         {
-            var result = new OriginalType("Result");
-            var selfResult = new NativeType("Result");
-            var derived = new OriginalType("Derived", valueType ? TypeKind.Struct : TypeKind.Class);
-            var selfDerived = new NativeType("Derived", valueType ? H.TypeKind.Struct : H.TypeKind.Class);
-            if (throughInterface) { derived.Implemented = [result]; selfDerived.Implemented = [selfResult]; }
-            else { derived.Base = result; selfDerived.Base = selfResult; }
-            var argument = new OriginalType("Argument");
-            var selfArgument = new NativeType("Argument");
-            var candidate = new OriginalMethod("Get", derived)
+            foreach (var throughInterface in new[] { false, true })
             {
-                Arguments = [new ParameterSymbol("x", parameterMatches ? result : argument, 0, null)]
-            };
-            var selfCandidate = new NativeMethod("Get", selfDerived)
-            {
-                Arguments = [new H.ParameterSymbol("x", parameterMatches ? selfResult : selfArgument, 0, null)]
-            };
-            var target = new OriginalMethod("Get", result) { Arguments = [new ParameterSymbol("x", result, 0, null)] };
-            var selfTarget = new NativeMethod("Get", selfResult) { Arguments = [new H.ParameterSymbol("x", selfResult, 0, null)] };
-            var owner = new OriginalType("Owner") { Members = [candidate] };
-            var selfOwner = new NativeType("Owner") { Members = [selfCandidate] };
-            Assert.AreEqual(DeclarationChecker.FindBridgeTarget(owner, target)?.Name,
-                C.DeclarationChecker<string>.FindBridgeTarget(selfOwner, selfTarget)?.Name);
-            Assert.AreEqual(!valueType && parameterMatches,
-                C.DeclarationChecker<string>.FindBridgeTarget(selfOwner, selfTarget) is not null);
+                foreach (var parameterMatches in new[] { false, true })
+                {
+                    OriginalType result = new("Result");
+                    NativeType selfResult = new("Result");
+                    OriginalType derived = new("Derived", valueType ? TypeKind.Struct : TypeKind.Class);
+                    NativeType selfDerived = new("Derived", valueType ? H.TypeKind.Struct : H.TypeKind.Class);
+                    if (throughInterface) { derived.Implemented = [result]; selfDerived.Implemented = [selfResult]; }
+                    else { derived.Base = result; selfDerived.Base = selfResult; }
+                    OriginalType argument = new("Argument");
+                    NativeType selfArgument = new("Argument");
+                    OriginalMethod candidate = new("Get", derived)
+                    {
+                        Arguments = [new ParameterSymbol("x", parameterMatches ? result : argument, 0, null)]
+                    };
+                    NativeMethod selfCandidate = new("Get", selfDerived)
+                    {
+                        Arguments = [new H.ParameterSymbol("x", parameterMatches ? selfResult : selfArgument, 0, null)]
+                    };
+                    OriginalMethod target = new("Get", result) { Arguments = [new ParameterSymbol("x", result, 0, null)] };
+                    NativeMethod selfTarget = new("Get", selfResult) { Arguments = [new H.ParameterSymbol("x", selfResult, 0, null)] };
+                    OriginalType owner = new("Owner") { Members = [candidate] };
+                    NativeType selfOwner = new("Owner") { Members = [selfCandidate] };
+                    Assert.AreEqual(DeclarationChecker.FindBridgeTarget(owner, target)?.Name,
+                        C.DeclarationChecker<string>.FindBridgeTarget(selfOwner, selfTarget)?.Name);
+                    Assert.AreEqual(!valueType && parameterMatches,
+                        C.DeclarationChecker<string>.FindBridgeTarget(selfOwner, selfTarget) is not null);
+                }
+            }
         }
     }
 
     [TestMethod]
     public void PropertyAccessors_ImplementationBridgesAndOverrideLookupMatchOracle()
     {
-        foreach (bool setter in new[] { false, true })
-        foreach (bool covariance in new[] { false, true })
-        foreach (bool requireOverride in new[] { false, true })
+        foreach (var setter in new[] { false, true })
         {
-            var value = new OriginalType("Value");
-            var selfValue = new NativeType("Value");
-            var derived = new OriginalType("Derived") { Base = value };
-            var selfDerived = new NativeType("Derived") { Base = selfValue };
-            var property = new OriginalProperty("value", covariance ? derived : value);
-            var selfProperty = new NativeProperty("value", covariance ? selfDerived : selfValue);
-            var candidate = new OriginalMethod(setter ? "set_value" : "get_value", value, Accessibility.Private, true)
+            foreach (var covariance in new[] { false, true })
             {
-                Kind = setter ? MethodKind.PropertySet : MethodKind.PropertyGet, Associated = property
-            };
-            var selfCandidate = new NativeMethod(setter ? "set_value" : "get_value", selfValue, H.Accessibility.Private, true)
-            {
-                Kind = setter ? H.MethodKind.PropertySet : H.MethodKind.PropertyGet, Associated = selfProperty
-            };
-            if (setter) { property.Setter = candidate; selfProperty.Setter = selfCandidate; }
-            else { property.Getter = candidate; selfProperty.Getter = selfCandidate; }
-            var targetProperty = new OriginalProperty("Value", value);
-            var selfTargetProperty = new NativeProperty("Value", selfValue);
-            var target = new OriginalMethod("target", value)
-            {
-                Kind = candidate.Kind, Associated = targetProperty
-            };
-            var selfTarget = new NativeMethod("target", selfValue)
-            {
-                Kind = selfCandidate.Kind, Associated = selfTargetProperty
-            };
-            var owner = new OriginalType("Owner") { Members = [property] };
-            var selfOwner = new NativeType("Owner") { Members = [selfProperty] };
-            Assert.AreEqual(DeclarationChecker.FindImplementation(owner, target, requireOverride)?.Name,
-                C.DeclarationChecker<string>.FindImplementation(selfOwner, selfTarget, requireOverride)?.Name);
-            Assert.AreEqual(DeclarationChecker.FindBridgeTarget(owner, target)?.Name,
-                C.DeclarationChecker<string>.FindBridgeTarget(selfOwner, selfTarget)?.Name);
-            var subclass = new OriginalType("Subclass") { Base = owner };
-            var selfSubclass = new NativeType("Subclass") { Base = selfOwner };
-            Assert.AreEqual(DeclarationChecker.FindOverriddenProperty(subclass, targetProperty)?.Name,
-                C.DeclarationChecker<string>.FindOverriddenProperty(selfSubclass, selfTargetProperty)?.Name);
-            Assert.AreSame(selfProperty,
-                C.DeclarationChecker<string>.FindOverriddenProperty(selfSubclass, selfTargetProperty));
+                foreach (var requireOverride in new[] { false, true })
+                {
+                    OriginalType value = new("Value");
+                    NativeType selfValue = new("Value");
+                    OriginalType derived = new("Derived") { Base = value };
+                    NativeType selfDerived = new("Derived") { Base = selfValue };
+                    OriginalProperty property = new("value", covariance ? derived : value);
+                    NativeProperty selfProperty = new("value", covariance ? selfDerived : selfValue);
+                    OriginalMethod candidate = new(setter ? "set_value" : "get_value", value, Accessibility.Private, true)
+                    {
+                        Kind = setter ? MethodKind.PropertySet : MethodKind.PropertyGet,
+                        Associated = property
+                    };
+                    NativeMethod selfCandidate = new(setter ? "set_value" : "get_value", selfValue, H.Accessibility.Private, true)
+                    {
+                        Kind = setter ? H.MethodKind.PropertySet : H.MethodKind.PropertyGet,
+                        Associated = selfProperty
+                    };
+                    if (setter) { property.Setter = candidate; selfProperty.Setter = selfCandidate; }
+                    else { property.Getter = candidate; selfProperty.Getter = selfCandidate; }
+                    OriginalProperty targetProperty = new("Value", value);
+                    NativeProperty selfTargetProperty = new("Value", selfValue);
+                    OriginalMethod target = new("target", value)
+                    {
+                        Kind = candidate.Kind,
+                        Associated = targetProperty
+                    };
+                    NativeMethod selfTarget = new("target", selfValue)
+                    {
+                        Kind = selfCandidate.Kind,
+                        Associated = selfTargetProperty
+                    };
+                    OriginalType owner = new("Owner") { Members = [property] };
+                    NativeType selfOwner = new("Owner") { Members = [selfProperty] };
+                    Assert.AreEqual(DeclarationChecker.FindImplementation(owner, target, requireOverride)?.Name,
+                        C.DeclarationChecker<string>.FindImplementation(selfOwner, selfTarget, requireOverride)?.Name);
+                    Assert.AreEqual(DeclarationChecker.FindBridgeTarget(owner, target)?.Name,
+                        C.DeclarationChecker<string>.FindBridgeTarget(selfOwner, selfTarget)?.Name);
+                    OriginalType subclass = new("Subclass") { Base = owner };
+                    NativeType selfSubclass = new("Subclass") { Base = selfOwner };
+                    Assert.AreEqual(DeclarationChecker.FindOverriddenProperty(subclass, targetProperty)?.Name,
+                        C.DeclarationChecker<string>.FindOverriddenProperty(selfSubclass, selfTargetProperty)?.Name);
+                    Assert.AreSame(selfProperty,
+                        C.DeclarationChecker<string>.FindOverriddenProperty(selfSubclass, selfTargetProperty));
+                }
+            }
         }
     }
 
     [TestMethod]
     public void NativeEmptyOwnership_DeclarationPhasesAndEntryPointOptions()
     {
-        var context = new EmptyContext();
+        EmptyContext context = new();
         var declarations = new C.DeclarationChecker<string>(context);
         declarations.CheckAll();
         Assert.IsEmpty(declarations.Diagnostics);
         var entry = new C.EntryPointChecker<string>(context);
         Assert.IsNull(entry.FindEntryPoint());
-        Assert.AreEqual(SelfHost::Caladesi.Compiler.Diagnostics.Descriptors.NoEntryPoint.Id, entry.Check().Single().Id);
+        Assert.AreEqual(HD.Descriptors.NoEntryPoint.Id, entry.Check().Single().Id);
         context.Options.GenerateTestEntryPoint = true;
         Assert.IsEmpty(entry.Check());
         context.Options.GenerateTestEntryPoint = false;
@@ -213,9 +244,9 @@ public sealed class DeclarationValidationParityTests
     [TestMethod]
     public void BaseTypesAndSelf_EnumeratesNearestFirstWithoutDroppingSelf()
     {
-        var root = new NativeType("Root");
-        var middle = new NativeType("Middle") { Base = root };
-        var leaf = new NativeType("Leaf") { Base = middle };
+        NativeType root = new("Root");
+        NativeType middle = new("Middle") { Base = root };
+        NativeType leaf = new("Leaf") { Base = middle };
         CollectionAssert.AreEqual(new H.NamedTypeSymbol[] { leaf, middle, root },
             C.TypeExtensions.BaseTypesAndSelf(leaf).ToArray());
     }
@@ -235,12 +266,12 @@ public sealed class DeclarationValidationParityTests
             }
             @Obsolete("function") function run(): void {}
             """;
-        string[] expected = SyntaxTree.ParseText(source).Root.DescendantNodesAndSelf()
+        string[] expected = [.. SyntaxTree.ParseText(source).Root.DescendantNodesAndSelf()
             .SelectMany(DecoratorSyntaxHelper.Of)
-            .Select(d => $"{d.Span.Start}:{d.Span.Length}").ToArray();
-        string[] actual = HX.SyntaxTree.ParseText(source).Root.DescendantNodesAndSelf()
+            .Select(d => $"{d.Span.Start}:{d.Span.Length}")];
+        string[] actual = [.. HX.SyntaxTree.ParseText(source).Root.DescendantNodesAndSelf()
             .SelectMany(C.DecoratorSyntaxHelper.Of)
-            .Select(d => $"{d.Span.Start}:{d.Span.Length}").ToArray();
+            .Select(d => $"{d.Span.Start}:{d.Span.Length}")];
         CollectionAssert.AreEqual(expected, actual);
         Assert.IsGreaterThan(0, actual.Length);
     }
@@ -260,17 +291,17 @@ public sealed class DeclarationValidationParityTests
             "type Record = { value: int; }; type Alias = Record; class C {}",
             "class C { generic<T extends object>(value: T): T { return value; } }"
         ];
-        foreach (string source in sources)
+        foreach (var source in sources)
         {
-            var fixture = new CompilationFixture([source], OutputKind.DynamicallyLinkedLibrary);
-            var expected = new DeclarationChecker(fixture.Original);
+            CompilationFixture fixture = new([source], OutputKind.DynamicallyLinkedLibrary);
+            DeclarationChecker expected = new(fixture.Original);
             var actual = new C.DeclarationChecker<C.SourceFile>(fixture);
             expected.CheckAll();
             actual.CheckAll();
             CollectionAssert.AreEqual(expected.Diagnostics.Select(Format).ToArray(),
                 actual.Diagnostics.Select(Format).ToArray(), source);
             CollectionAssert.AreEqual(
-                fixture.Original.AllSourceTypes.SelectMany(t => t.GetMembers()).OfType<Symbols.Source.SourceMethodSymbol>()
+                fixture.Original.AllSourceTypes.SelectMany(t => t.GetMembers()).OfType<Compiler.Symbols.Source.SourceMethodSymbol>()
                     .Select(m => m.MetadataName).ToArray(),
                 fixture.Native.AllSourceTypes.SelectMany(t => t.GetMembers()).OfType<HS.SourceMethodSymbol<C.SourceFile>>()
                     .Select(m => m.MetadataName).ToArray(), source);
@@ -280,7 +311,7 @@ public sealed class DeclarationValidationParityTests
     [TestMethod]
     public void FullCheckAll_UsesFreshOwnershipSnapshotsAndDelegatesEveryDecorator()
     {
-        var fixture = new CompilationFixture(
+        CompilationFixture fixture = new(
             ["""
              @Obsolete("class") class C {
                @Obsolete("method") run(): void {}
@@ -297,14 +328,14 @@ public sealed class DeclarationValidationParityTests
             Assert.AreSame(request.File, request.Owner.File);
             Assert.AreEqual("validation0.cala", request.File.FilePath);
         }
-        string[] expected = fixture.Native.AllSourceTypes.SelectMany(type =>
+        string[] expected = [.. fixture.Native.AllSourceTypes.SelectMany(type =>
             type.DecoratorSyntaxes.Concat(type.GetMembers().SelectMany(member => C.DecoratorSyntaxHelper.Of(member switch
             {
                 HS.SourceMethodSymbol<C.SourceFile> method => method.Declaration,
                 HS.SourcePropertySymbol<C.SourceFile> property => property.Declaration,
                 HS.SourceFieldSymbol<C.SourceFile> field => field.Declaration,
                 _ => null
-            })))).Select(decorator => $"{decorator.Span.Start}:{decorator.Span.Length}").ToArray();
+            })))).Select(decorator => $"{decorator.Span.Start}:{decorator.Span.Length}")];
         CollectionAssert.AreEqual(expected,
             fixture.Attributes.Select(request => $"{request.Decorator.Span.Start}:{request.Decorator.Span.Length}").ToArray());
     }
@@ -325,10 +356,10 @@ public sealed class DeclarationValidationParityTests
             (["function main(): void {}"], OutputKind.DynamicallyLinkedLibrary),
             (["1;", "2;"], OutputKind.ConsoleApplication)
         ];
-        foreach (var (sources, kind) in cases)
+        foreach ((var sources, var kind) in cases)
         {
-            var fixture = new CompilationFixture(sources, kind);
-            var expected = new EntryPointChecker(fixture.Original);
+            CompilationFixture fixture = new(sources, kind);
+            EntryPointChecker expected = new(fixture.Original);
             var actual = new C.EntryPointChecker<C.SourceFile>(fixture);
             CollectionAssert.AreEqual(expected.Check().Select(Format).ToArray(),
                 actual.Check().Select(Format).ToArray(), string.Join("\n---\n", sources));
@@ -337,10 +368,15 @@ public sealed class DeclarationValidationParityTests
         }
     }
 
-    private static string Format(Diagnostics.Diagnostic diagnostic) =>
-        $"{diagnostic.Id}|{diagnostic.FilePath}|{diagnostic.Span.Start}|{diagnostic.Span.Length}|{diagnostic.Message}";
-    private static string Format(HD.Diagnostic diagnostic) =>
-        $"{diagnostic.Id}|{diagnostic.FilePath}|{diagnostic.Span.Start}|{diagnostic.Span.Length}|{diagnostic.Message}";
+    private static string Format(Diagnostics.Diagnostic diagnostic)
+    {
+        return $"{diagnostic.Id}|{diagnostic.FilePath}|{diagnostic.Span.Start}|{diagnostic.Span.Length}|{diagnostic.Message}";
+    }
+
+    private static string Format(HD.Diagnostic diagnostic)
+    {
+        return $"{diagnostic.Id}|{diagnostic.FilePath}|{diagnostic.Span.Start}|{diagnostic.Span.Length}|{diagnostic.Message}";
+    }
 
     private sealed class CompilationFixture : C.DeclarationValidationContext<C.SourceFile>
     {
@@ -351,7 +387,7 @@ public sealed class DeclarationValidationParityTests
 
         public CompilationFixture(string[] sources, OutputKind kind)
         {
-            var options = new CompilationOptions { OutputKind = kind };
+            CompilationOptions options = new() { OutputKind = kind };
             var nativeOptions = new C.CompilationOptions { OutputKind = (C.OutputKind)(int)kind };
             Original = Compilation.Create(options,
                 sources.Select((source, i) => SyntaxTree.ParseText(source, $"validation{i}.cala")), TestCompiler.References);
@@ -371,10 +407,26 @@ public sealed class DeclarationValidationParityTests
         }
         public override IEnumerable<C.SourceFile> SourceFiles => Native.SourceFiles;
         public override C.CompilationOptions Options => Native.Options;
-        public override IEnumerable<HS.TypeAliasSymbol<C.SourceFile>> GetAliases(C.SourceFile file) => file.Aliases;
-        public override HX.SyntaxTree GetTree(C.SourceFile file) => file.Tree;
-        public override string GetFilePath(C.SourceFile file) => file.FilePath;
-        public override HS.SourceModuleClassSymbol<C.SourceFile>? GetModuleClass(C.SourceFile file) => file.ModuleClass;
+        public override IEnumerable<HS.TypeAliasSymbol<C.SourceFile>> GetAliases(C.SourceFile file)
+        {
+            return file.Aliases;
+        }
+
+        public override HX.SyntaxTree GetTree(C.SourceFile file)
+        {
+            return file.Tree;
+        }
+
+        public override string GetFilePath(C.SourceFile file)
+        {
+            return file.FilePath;
+        }
+
+        public override HS.SourceModuleClassSymbol<C.SourceFile>? GetModuleClass(C.SourceFile file)
+        {
+            return file.ModuleClass;
+        }
+
         public override C.BoundAttribute? GetBoundAttribute(C.SourceFile file, HX.DecoratorSyntax decorator,
             HS.SourceNamedType<C.SourceFile> owner)
         {
@@ -394,8 +446,15 @@ public sealed class DeclarationValidationParityTests
         public override ImmutableArray<NamedTypeSymbol> Interfaces => Implemented;
         public override ImmutableArray<TypeParameterSymbol> TypeParameters => [];
         public override ImmutableArray<TypeSymbol> TypeArguments => [];
-        public override ImmutableArray<Symbol> GetMembers() => Members;
-        public override ImmutableArray<Symbol> GetMembers(string name) => [.. Members.Where(m => m.Name == name)];
+        public override ImmutableArray<Symbol> GetMembers()
+        {
+            return Members;
+        }
+
+        public override ImmutableArray<Symbol> GetMembers(string name)
+        {
+            return [.. Members.Where(m => m.Name == name)];
+        }
     }
 
     private sealed class NativeType(string name, H.TypeKind kind = H.TypeKind.Class) : H.NamedTypeSymbol
@@ -409,15 +468,22 @@ public sealed class DeclarationValidationParityTests
         public override ImmutableArray<H.NamedTypeSymbol> Interfaces => Implemented;
         public override ImmutableArray<H.TypeParameterSymbol> TypeParameters => [];
         public override ImmutableArray<H.TypeSymbol> TypeArguments => [];
-        public override ImmutableArray<H.Symbol> GetMembers() => Members;
-        public override ImmutableArray<H.Symbol> GetMembers(string name) => [.. Members.Where(m => m.Name == name)];
+        public override ImmutableArray<H.Symbol> GetMembers()
+        {
+            return Members;
+        }
+
+        public override ImmutableArray<H.Symbol> GetMembers(string name)
+        {
+            return [.. Members.Where(m => m.Name == name)];
+        }
     }
 
     private sealed class OriginalMethod(string name, TypeSymbol result,
         Accessibility accessibility = Accessibility.Public, bool isOverride = false) : MethodSymbol
     {
         public ImmutableArray<ParameterSymbol> Arguments { get; set; } = [];
-        public MethodKind Kind { get; set; } = MethodKind.Ordinary;
+        public new MethodKind Kind { get; set; } = MethodKind.Ordinary;
         public Symbol? Associated { get; set; }
         public bool StaticFlag { get; set; }
         public bool AbstractFlag { get; set; }
@@ -438,7 +504,7 @@ public sealed class DeclarationValidationParityTests
         H.Accessibility accessibility = H.Accessibility.Public, bool isOverride = false) : H.MethodSymbol
     {
         public ImmutableArray<H.ParameterSymbol> Arguments { get; set; } = [];
-        public H.MethodKind Kind { get; set; } = H.MethodKind.Ordinary;
+        public new H.MethodKind Kind { get; set; } = H.MethodKind.Ordinary;
         public H.Symbol? Associated { get; set; }
         public bool StaticFlag { get; set; }
         public bool AbstractFlag { get; set; }
@@ -484,10 +550,29 @@ public sealed class DeclarationValidationParityTests
         public override IEnumerable<HS.SourceNamedType<string>> AllSourceTypes => [];
         public override IEnumerable<string> SourceFiles => [];
         public override C.CompilationOptions Options { get; } = new();
-        public override IEnumerable<HS.TypeAliasSymbol<string>> GetAliases(string file) => [];
-        public override HX.SyntaxTree GetTree(string file) => HX.SyntaxTree.ParseText("", file);
-        public override string GetFilePath(string file) => file;
-        public override HS.SourceModuleClassSymbol<string>? GetModuleClass(string file) => null;
-        public override C.BoundAttribute? GetBoundAttribute(string file, HX.DecoratorSyntax decorator, HS.SourceNamedType<string> owner) => null;
+        public override IEnumerable<HS.TypeAliasSymbol<string>> GetAliases(string file)
+        {
+            return [];
+        }
+
+        public override HX.SyntaxTree GetTree(string file)
+        {
+            return HX.SyntaxTree.ParseText("", file);
+        }
+
+        public override string GetFilePath(string file)
+        {
+            return file;
+        }
+
+        public override HS.SourceModuleClassSymbol<string>? GetModuleClass(string file)
+        {
+            return null;
+        }
+
+        public override C.BoundAttribute? GetBoundAttribute(string file, HX.DecoratorSyntax decorator, HS.SourceNamedType<string> owner)
+        {
+            return null;
+        }
     }
 }

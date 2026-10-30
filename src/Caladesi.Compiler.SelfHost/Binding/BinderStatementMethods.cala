@@ -95,6 +95,7 @@ class BinderStatementCaptures extends BoundTreeRewriter {
 
 export sealed class BinderStatementMethods<TFile> {
   private state: BinderStatementFunctionState? = null;
+  private readonly eagerFunctions = new HashSet<FunctionDeclarationSyntax>();
   constructor(private readonly binder: Binder<TFile>, private readonly statements: BinderStatements<TFile>) {}
   get Function(): MethodSymbol? { return this.state?.Method; }
   private Nullable(type: TypeSymbol): TypeSymbol {
@@ -343,7 +344,7 @@ export sealed class BinderStatementMethods<TFile> {
     const arguments = isVoid ? types : types.Add(returns);
     return arguments.IsEmpty ? definition : definition.Construct(arguments);
   }
-  Hoist(statements: SyntaxList<StatementSyntax>, start: int): ImmutableArray<BoundStatement> {
+  Hoist(statements: SyntaxList<StatementSyntax>, start: int, declare: bool): ImmutableArray<BoundStatement> {
     const declarations = new List<FunctionDeclarationSyntax>();
     const locals = new List<LocalSymbol>();
     const result = ImmutableArray.CreateBuilder<BoundStatement>();
@@ -351,7 +352,16 @@ export sealed class BinderStatementMethods<TFile> {
       if (!(statements.Get(i) instanceof FunctionDeclarationSyntax)) continue;
       const syntax = statements.Get(i) as FunctionDeclarationSyntax;
       if (syntax.Identifier.IsMissing) continue;
-      if (syntax.Body == null) { this.binder.Report(Descriptors.FunctionNeedsBody, syntax.Identifier, [syntax.Identifier.Text]); continue; }
+      if (syntax.Body == null) {
+        if (declare) this.binder.Report(Descriptors.FunctionNeedsBody, syntax.Identifier, [syntax.Identifier.Text]);
+        continue;
+      }
+      if (!declare) {
+        if (this.eagerFunctions.Contains(syntax)) continue;
+        declarations.Add(syntax);
+        locals.Add(this.binder.Scope.Symbols[syntax.Identifier.Text] as LocalSymbol);
+        continue;
+      }
       if (syntax.TypeParameters != null) this.binder.Report(Descriptors.FeatureNotSupported, syntax.TypeParameters, ["Generic nested functions"]);
       const types = ImmutableArray.CreateBuilder<TypeSymbol>();
       let annotated = syntax.ReturnType != null && syntax.TypeParameters == null;
@@ -371,6 +381,8 @@ export sealed class BinderStatementMethods<TFile> {
     for (let i = 0; i < declarations.Count; i++) {
       const syntax = declarations[i];
       const local = locals[i];
+      if (declare && !local.Type.IsErrorType) continue;
+      if (declare) this.eagerFunctions.Add(syntax);
       const names = ImmutableArray.CreateBuilder<string>();
       const types = ImmutableArray.CreateBuilder<TypeSymbol>();
       for (const parameter of syntax.Parameters.Parameters) {

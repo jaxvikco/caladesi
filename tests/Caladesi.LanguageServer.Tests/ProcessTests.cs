@@ -9,7 +9,7 @@ namespace Caladesi.LanguageServer.Tests;
 [TestClass]
 public class ProcessTests
 {
-    private static string ServerDll => typeof(Caladesi.LanguageServer.LanguageServer).Assembly.Location;
+    private static string ServerDll => typeof(LanguageServer).Assembly.Location;
 
     private static void Write(Stream stream, string json)
     {

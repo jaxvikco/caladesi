@@ -13,7 +13,7 @@ export sealed class ImportReferences {
     if (!(original.ContainingSymbol instanceof SourceModuleClassSymbol<SourceFile>) && !(original.ContainingSymbol instanceof NamespaceSymbol)) return references;
     const definition: SymbolReference? = model.GetDefinition(symbol);
     if (definition == null) return references;
-    const declaringPath: string = ImportReferences.Normalize(definition.Value.Tree.FilePath);
+    const declaringPath: string = ImportReferences.Normalize(definition.Tree.FilePath);
     const name: string = original.Name;
     for (const tree: SyntaxTree of compilation.SyntaxTrees) {
       for (const statement of tree.Root.Statements) {

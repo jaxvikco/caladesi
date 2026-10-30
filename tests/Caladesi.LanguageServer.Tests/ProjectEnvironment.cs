@@ -35,7 +35,7 @@ internal static class ProjectEnvironment
 
     private static async Task<Info> InitAsync()
     {
-        string work = Path.Combine(RepoRoot, "artifacts", "ls-tests");
+        string work = Path.Combine(RepoRoot, "artifacts", "ls-tests", typeof(ProjectEnvironment).Assembly.GetName().Name!);
         _ = Directory.CreateDirectory(work);
         string? feed = Environment.GetEnvironmentVariable("CALADESI_LS_FEED");
         string cache = Path.Combine(work, "nuget-packages");
@@ -48,6 +48,7 @@ internal static class ProjectEnvironment
                 info.ArgumentList.Add(Path.Combine(RepoRoot, "eng", "pack.sh"));
                 info.Environment["CALADESI_PACK_OUT"] = feed;
                 info.Environment["CALADESI_PACK_WORK"] = Path.Combine(work, "pack-obj");
+                info.Environment["CALADESI_VERSION"] = "1.0.0";
                 using Process process = Process.Start(info)!;
                 StringBuilder output = new();
                 process.OutputDataReceived += (_, e) => output.AppendLine(e.Data);

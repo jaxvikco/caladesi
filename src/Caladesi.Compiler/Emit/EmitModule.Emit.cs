@@ -375,6 +375,7 @@ internal sealed partial class EmitModule
         }
 
         FieldDefinitionHandle handle = Metadata.AddFieldDefinition(attrs, Metadata.GetOrAddString(f.Name), EncodeFieldSignature(f.Type));
+        AddNullableAttribute(handle, f.Type);
         if (handle != _fieldDefs[f.OriginalDefinition])
         {
             throw new InvalidOperationException("Field row mismatch for " + f.Name);
@@ -401,6 +402,7 @@ internal sealed partial class EmitModule
     private void EmitProperty(PropertySymbol p)
     {
         PropertyDefinitionHandle handle = Metadata.AddProperty(PropertyAttributes.None, Metadata.GetOrAddString(p.Name), EncodePropertySignature(p));
+        AddNullableAttribute(handle, p.Type);
         if (handle != _propertyDefs[p.OriginalDefinition])
         {
             throw new InvalidOperationException("Property row mismatch");
@@ -524,6 +526,13 @@ internal sealed partial class EmitModule
             EmitDecorators(DecoratorSyntaxHelper.Of(methodDecl), handle, ownerType.File, ownerType);
         }
 
+        if (NeedsNullableAttribute(m.ReturnType))
+        {
+            ParameterHandle returnHandle = Metadata.AddParameter(ParameterAttributes.None, default, 0);
+            _paramRow++;
+            AddNullableAttribute(returnHandle, m.ReturnType);
+        }
+
         foreach (ParameterSymbol p in m.Parameters)
         {
             ParameterAttributes pa = ParameterAttributes.None;
@@ -544,6 +553,7 @@ internal sealed partial class EmitModule
 
             ParameterHandle ph = Metadata.AddParameter(pa, Metadata.GetOrAddString(p.Name), p.Ordinal + 1);
             _paramRow++;
+            AddNullableAttribute(ph, p.Type);
             if (p.DefaultValue.HasValue)
             {
                 object? v = p.DefaultValue.Value.Value;
@@ -676,6 +686,70 @@ internal sealed partial class EmitModule
 
     // ------------------------------------------------------------------ attributes
 
+    private static bool NeedsNullableAttribute(TypeSymbol type)
+    {
+        return NullableFlags(type).Contains(2);
+    }
+
+    private static List<byte> NullableFlags(TypeSymbol type)
+    {
+        List<byte> flags = [];
+        Collect(type);
+        return flags;
+
+        void Collect(TypeSymbol current)
+        {
+            TypeSymbol underlying = current.StripNullable();
+            if (underlying.IsReferenceType || underlying is TypeParameterSymbol)
+            {
+                flags.Add(current is NullableTypeSymbol ? (byte)2 : (byte)1);
+            }
+            else if (underlying is NamedTypeSymbol { TypeArguments.Length: > 0 })
+            {
+                flags.Add(0);
+            }
+            if (underlying is ArrayTypeSymbol array)
+            {
+                Collect(array.ElementType);
+            }
+            else if (underlying is NamedTypeSymbol named)
+            {
+                foreach (TypeSymbol argument in named.TypeArguments)
+                {
+                    Collect(argument);
+                }
+            }
+        }
+    }
+
+    private void AddNullableAttribute(EntityHandle parent, TypeSymbol type)
+    {
+        if (!NeedsNullableAttribute(type))
+        {
+            return;
+        }
+
+        NamedTypeSymbol attribute = Compilation.GetWellKnownType("System.Runtime.CompilerServices.NullableAttribute")
+            ?? throw new InvalidOperationException("NullableAttribute is required to preserve nullable reference signatures.");
+        List<byte> flags = NullableFlags(type);
+        MethodSymbol constructor = attribute.InstanceConstructors.First(c =>
+            c.Parameters.Length == 1 && (flags.Count == 1
+                ? c.Parameters[0].Type.SpecialType == SpecialType.Byte
+                : c.Parameters[0].Type is ArrayTypeSymbol));
+        BlobBuilder blob = new();
+        blob.WriteUInt16(1);
+        if (flags.Count > 1)
+        {
+            blob.WriteInt32(flags.Count);
+        }
+        foreach (byte flag in flags)
+        {
+            blob.WriteByte(flag);
+        }
+        blob.WriteUInt16(0);
+        _attributes.Add((parent, GetMethodEntity(constructor), Metadata.GetOrAddBlob(blob)));
+    }
+
     private void AddAttribute(EntityHandle parent, string attributeTypeName)
     {
         NamedTypeSymbol? t = Compilation.GetWellKnownType(attributeTypeName);
@@ -742,6 +816,20 @@ internal sealed partial class EmitModule
     private void EmitAssemblyAttributes()
     {
         CompilationOptions options = Compilation.Options;
+        if (options.InformationalVersion != null &&
+            Compilation.GetWellKnownType("System.Reflection.AssemblyInformationalVersionAttribute") is { } versionAttribute)
+        {
+            MethodSymbol? ctor = versionAttribute.InstanceConstructors.FirstOrDefault(c => c.Parameters.Length == 1);
+            if (ctor != null)
+            {
+                BlobBuilder bb = new();
+                bb.WriteUInt16(1);
+                bb.WriteSerializedString(options.InformationalVersion);
+                bb.WriteUInt16(0);
+                _attributes.Add((EntityHandle.AssemblyDefinition, GetMethodEntity(ctor), Metadata.GetOrAddBlob(bb)));
+            }
+        }
+
         if (options.TargetFramework != null && Compilation.GetWellKnownType("System.Runtime.Versioning.TargetFrameworkAttribute") is { } tfa)
         {
             MethodSymbol? ctor = tfa.InstanceConstructors.FirstOrDefault(c => c.Parameters.Length == 1);

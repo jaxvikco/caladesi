@@ -14,8 +14,8 @@
     <CaladesiTasksAssembly Condition="'$(UseArtifactsOutput)' == 'true'">$(ArtifactsPath)/bin/Caladesi.Build.Tasks/$(Configuration.ToLowerInvariant())/Caladesi.Build.Tasks.dll</CaladesiTasksAssembly>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../Caladesi.Cli/Caladesi.Cli.csproj" ReferenceOutputAssembly="false" />
-    <ProjectReference Include="../Caladesi.Build.Tasks/Caladesi.Build.Tasks.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../Caladesi.Cli/Caladesi.Cli.csproj" ReferenceOutputAssembly="false" Condition="'$(BootstrapDirectory)' == ''" />
+    <ProjectReference Include="../Caladesi.Build.Tasks/Caladesi.Build.Tasks.csproj" ReferenceOutputAssembly="false" Condition="'$(BootstrapDirectory)' == ''" />
     <CustomAdditionalCompileInputs Include="$([System.IO.Path]::GetDirectoryName('$(CaladesiCompilerPath)'))/*.dll" />
   </ItemGroup>
   <Import Project="../Caladesi.Sdk/Sdk/Sdk.targets" />

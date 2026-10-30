@@ -5,6 +5,7 @@ using System.Collections.Immutable;
 using System.Reflection;
 using Caladesi.Compiler.Bound;
 using Caladesi.Compiler.Symbols;
+using Caladesi.Compiler.Syntax;
 using SelfBound = SelfHost::Caladesi.Compiler.Bound;
 using SelfLowering = SelfHost::Caladesi.Compiler.Emit.Lowering;
 using SelfSymbols = SelfHost::Caladesi.Compiler.Symbols;
@@ -18,19 +19,19 @@ public sealed class SuspensionSpillerParityTests
     public void Finder_CachesSharedSubtreesAndFindsCatchFinallyAndYield()
     {
         Fixture f = new();
-        Pair finder = f.Finder();
-        Pair empty = f.Block(f.Node("BoundNoOp"));
-        Pair awaited = f.Await();
-        Pair catchBody = f.Block(f.Statement(awaited));
-        Pair @try = f.Node("BoundTry", empty, Fixture.Array("Bound.BoundCatch",
+        var finder = f.Finder();
+        var empty = f.Block(f.Node("BoundNoOp"));
+        var awaited = f.Await();
+        var catchBody = f.Block(f.Statement(awaited));
+        var @try = f.Node("BoundTry", empty, Fixture.Array("Bound.BoundCatch",
             f.Create("Bound.BoundCatch", null, f.Type, catchBody)), empty);
         Pair[] nodes = [f.Leaf, awaited, empty, @try,
             f.Node("BoundYieldReturn", f.Leaf), f.Node("BoundYieldBreak"),
             f.Node("BoundTry", empty, Fixture.Array("Bound.BoundCatch"), catchBody)];
         Assert.IsFalse((bool)Fixture.Invoke(finder, "Has", (object?)null).Actual);
-        foreach (Pair node in nodes.Concat(nodes.Reverse()))
+        foreach (var node in nodes.Concat(nodes.Reverse()))
         {
-            Pair result = Fixture.Invoke(finder, "Has", node);
+            var result = Fixture.Invoke(finder, "Has", node);
             Assert.AreEqual(result.Expected, result.Actual);
             Assert.AreSame(node.Actual, Fixture.Invoke(finder, "Visit", node).Actual);
         }
@@ -38,21 +39,28 @@ public sealed class SuspensionSpillerParityTests
         Assert.IsFalse((bool)Fixture.Invoke(finder, "Has", empty).Actual);
         IDictionary expectedCache = Cache(finder.Expected), actualCache = Cache(finder.Actual);
         Assert.HasCount(expectedCache.Count, actualCache);
-        int cachedCount = actualCache.Count;
-        foreach (Pair node in nodes) Fixture.Invoke(finder, "Has", node);
+        var cachedCount = actualCache.Count;
+        foreach (var node in nodes)
+        {
+            _ = Fixture.Invoke(finder, "Has", node);
+        }
+
         Assert.HasCount(cachedCount, actualCache);
 
-        static IDictionary Cache(object instance) => (IDictionary)instance.GetType()
+        static IDictionary Cache(object instance)
+        {
+            return (IDictionary)instance.GetType()
             .GetFields(BindingFlags.Instance | BindingFlags.NonPublic)
             .Single(field => typeof(IDictionary).IsAssignableFrom(field.FieldType)).GetValue(instance)!;
+        }
     }
 
     [TestMethod]
     public void Spiller_NoSuspensionReturnsOriginalTreeAndExpression()
     {
         Fixture f = new();
-        Pair body = f.Block(f.Statement(f.Leaf));
-        Pair spilled = f.Spill(body);
+        var body = f.Block(f.Statement(f.Leaf));
+        var spilled = f.Spill(body);
         Assert.AreSame(body.Expected, spilled.Expected);
         Assert.AreSame(body.Actual, spilled.Actual);
         f.CheckExpression(f.Leaf);
@@ -62,8 +70,8 @@ public sealed class SuspensionSpillerParityTests
     public void Finder_LambdaBodyTraversalMatchesOracle()
     {
         Fixture f = new();
-        Pair lambda = f.Lambda();
-        Pair result = Fixture.Invoke(f.Finder(), "Has", lambda);
+        var lambda = f.Lambda();
+        var result = Fixture.Invoke(f.Finder(), "Has", lambda);
         Assert.IsTrue((bool)result.Expected);
         Assert.AreEqual(result.Expected, result.Actual);
     }
@@ -72,33 +80,39 @@ public sealed class SuspensionSpillerParityTests
     public void Spiller_ExpressionEvaluationOrderAndMetadataMatchOracle()
     {
         Fixture f = new();
-        foreach (Pair expression in f.Expressions()) f.CheckExpression(expression);
+        foreach (var expression in f.Expressions())
+        {
+            f.CheckExpression(expression);
+        }
     }
 
     [TestMethod]
     public void Spiller_StatementsLoopsGotosAndScopesMatchOracle()
     {
         Fixture f = new();
-        foreach (Pair statement in f.Statements()) f.AssertEquivalent(f.Spill(f.Block(statement)));
+        foreach (var statement in f.Statements())
+        {
+            f.AssertEquivalent(f.Spill(f.Block(statement)));
+        }
     }
 
     [TestMethod]
     public void Spiller_VoidAwaitRemainsStatementWithoutVoidTemporary()
     {
         Fixture f = new();
-        Pair body = f.VoidAwaitBody();
-        Pair spilled = f.Spill(body);
+        var body = f.VoidAwaitBody();
+        var spilled = f.Spill(body);
         f.AssertEquivalent(spilled);
-        SelfBound.BoundExpressionStatement statement = (SelfBound.BoundExpressionStatement)
+        var statement = (SelfBound.BoundExpressionStatement)
             ((SelfBound.BoundBlock)spilled.Actual).Statements[^1];
-        Assert.IsInstanceOfType<SelfBound.BoundAwait>(statement.Expression);
+        _ = Assert.IsInstanceOfType<SelfBound.BoundAwait>(statement.Expression);
     }
 
     [TestMethod]
     public void Spiller_ShortCircuitBranchesKeepAwaitsInsideTheirBranch()
     {
         Fixture f = new();
-        foreach (Pair expression in new[]
+        foreach (var expression in new[]
         {
             f.Node("BoundLogicalBinary", true, f.Leaf, f.Await(), f.Type),
             f.Node("BoundLogicalBinary", false, f.Leaf, f.Await(), f.Type),
@@ -106,10 +120,10 @@ public sealed class SuspensionSpillerParityTests
             f.Node("BoundCoalesce", f.SideEffect(), f.Await(), f.Type)
         })
         {
-            Pair result = f.Spill(f.Block(f.Statement(expression)));
+            var result = f.Spill(f.Block(f.Statement(expression)));
             f.AssertEquivalent(result);
-            SelfBound.BoundBlock actual = (SelfBound.BoundBlock)result.Actual;
-            SelfBound.BoundIf branch = actual.Statements.OfType<SelfBound.BoundIf>().Single();
+            var actual = (SelfBound.BoundBlock)result.Actual;
+            var branch = actual.Statements.OfType<SelfBound.BoundIf>().Single();
             Assert.IsFalse(actual.Statements.OfType<SelfBound.BoundExpressionStatement>()
                 .Any(s => s.Expression is SelfBound.BoundAssignment { Value: SelfBound.BoundAwait }));
             Assert.IsTrue(((SelfBound.BoundBlock)branch.Consequence).Statements
@@ -122,17 +136,17 @@ public sealed class SuspensionSpillerParityTests
     public void Spiller_UnsupportedExpressionsReportSameMessageAndSyntax()
     {
         Fixture f = new();
-        Pair placeholder = f.Node("BoundConditionalReceiver", f.Type);
-        foreach (Pair expression in new[]
+        var placeholder = f.Node("BoundConditionalReceiver", f.Type);
+        foreach (var expression in new[]
         {
             f.Node("BoundConditionalAccess", f.Leaf, placeholder, f.Await(), f.Type), f.Lambda()
         })
         {
-            Pair body = f.Block(f.Statement(expression));
-            Pair spiller = f.Spiller();
-            Exception expected = Assert.ThrowsExactly<TargetInvocationException>(() =>
+            var body = f.Block(f.Statement(expression));
+            var spiller = f.Spiller();
+            var expected = Assert.ThrowsExactly<TargetInvocationException>(() =>
                 Fixture.Call(spiller.Expected, "Spill", body.Expected)).InnerException!;
-            Exception actual = Assert.ThrowsExactly<TargetInvocationException>(() =>
+            var actual = Assert.ThrowsExactly<TargetInvocationException>(() =>
                 Fixture.Call(spiller.Actual, "Spill", body.Actual)).InnerException!;
             Assert.AreEqual("LoweringNotSupportedException", expected.GetType().Name);
             Assert.AreEqual(expected.GetType().Name, actual.GetType().Name);
@@ -174,7 +188,7 @@ public sealed class SuspensionSpillerParityTests
         public Fixture()
         {
             Type = Remember(ErrorTypeSymbol.Instance, SelfSymbols.ErrorTypeSymbol.Instance);
-            syntax = Remember(Caladesi.Compiler.Syntax.SyntaxTree.ParseText("let x = 1;").Root,
+            syntax = Remember(SyntaxTree.ParseText("let x = 1;").Root,
                 SelfHost::Caladesi.Compiler.Syntax.SyntaxTree.ParseText("let x = 1;").Root);
             method = Create("Bound.LambdaSymbol", Type, "sideEffect", false, false);
             property = Remember(new TestProperty(), new SelfTestProperty());
@@ -186,7 +200,11 @@ public sealed class SuspensionSpillerParityTests
             Leaf = Node("BoundLiteral", Create("Symbols.ConstantValue", 1), Type);
         }
 
-        public Pair Finder() => Create("Emit.Lowering.SuspensionFinder");
+        public Pair Finder()
+        {
+            return Create("Emit.Lowering.SuspensionFinder");
+        }
+
         public Pair Spiller()
         {
             int left = 0, right = 0;
@@ -194,19 +212,46 @@ public sealed class SuspensionSpillerParityTests
                 (Func<SelfSymbols.TypeSymbol, SelfSymbols.LocalSymbol>)(type => new SelfSymbols.LocalSymbol("$" + right++, type, false, null)));
             return Create("Emit.Lowering.SuspensionSpiller", Finder(), factory, Type);
         }
-        public Pair Spill(Pair block) => Invoke(Spiller(), "Spill", block);
-        public Pair Await() => Node("BoundAwait", SideEffect(), awaitInfo, Type);
-        public Pair Lambda() => Node("BoundLambda", method, Block(Statement(Await())), Type);
-        public Pair VoidAwaitBody() => Block(Statement(Node("BoundAwait", Await(), awaitInfo,
-            Remember(new VoidType(), new SelfVoidType()))));
-        public Pair SideEffect() => Node("BoundCall", null, method, Array("Bound.BoundExpression"), Type);
-        public Pair Statement(Pair expression) => Node("BoundExpressionStatement", expression);
-        public Pair Block(params Pair[] statements) => Node("BoundBlock", Array("Symbols.LocalSymbol", local), Array("Bound.BoundStatement", statements));
+        public Pair Spill(Pair block)
+        {
+            return Invoke(Spiller(), "Spill", block);
+        }
+
+        public Pair Await()
+        {
+            return Node("BoundAwait", SideEffect(), awaitInfo, Type);
+        }
+
+        public Pair Lambda()
+        {
+            return Node("BoundLambda", method, Block(Statement(Await())), Type);
+        }
+
+        public Pair VoidAwaitBody()
+        {
+            return Block(Statement(Node("BoundAwait", Await(), awaitInfo,
+                    Remember(new VoidType(), new SelfVoidType()))));
+        }
+
+        public Pair SideEffect()
+        {
+            return Node("BoundCall", null, method, Array("Bound.BoundExpression"), Type);
+        }
+
+        public Pair Statement(Pair expression)
+        {
+            return Node("BoundExpressionStatement", expression);
+        }
+
+        public Pair Block(params Pair[] statements)
+        {
+            return Node("BoundBlock", Array("Symbols.LocalSymbol", local), Array("Bound.BoundStatement", statements));
+        }
 
         public IEnumerable<Pair> Expressions()
         {
-            Pair a = Await();
-            Pair expressions = Array("Bound.BoundExpression", SideEffect(), a, SideEffect(), Await(), Leaf);
+            var a = Await();
+            var expressions = Array("Bound.BoundExpression", SideEffect(), a, SideEffect(), Await(), Leaf);
             yield return a;
             yield return Node("BoundAwait", a, awaitInfo, Type);
             yield return Set(Node("BoundCall", SideEffect(), method, expressions, Type), "IsBaseCall", true);
@@ -218,15 +263,15 @@ public sealed class SuspensionSpillerParityTests
             yield return Node("BoundObjectCreation", method, Type, expressions, Array("Bound.BoundMemberInit"));
             yield return Node("BoundObjectCreation", method, Type, expressions,
                 new Pair(default(ImmutableArray<BoundMemberInit>), default(ImmutableArray<SelfBound.BoundMemberInit>)));
-            Pair arrayType = Create("Symbols.ArrayTypeSymbol", Type, null, 1);
+            var arrayType = Create("Symbols.ArrayTypeSymbol", Type, null, 1);
             yield return Node("BoundArrayCreation", arrayType, SideEffect(), expressions);
             yield return Node("BoundArrayCreation", arrayType, null, expressions);
             yield return Node("BoundArrayAccess", SideEffect(), a, Type);
-            Pair folded = Create("Symbols.ConstantValue", 17);
+            var folded = Create("Symbols.ConstantValue", 17);
             yield return Set(Set(Node("BoundConversion", a, 11, Type, method), "CaseIndex", 4), "ConstantFolded", folded);
             yield return Set(Node("BoundUnary", 1, a, Type, method), "Folded", folded);
             yield return Set(Node("BoundBinary", 0, SideEffect(), a, Type, Type, method), "Folded", folded);
-            foreach (Pair stable in new[]
+            foreach (var stable in new[]
             {
                 Leaf, Node("BoundLocal", local), Node("BoundThis", Type),
                 Node("BoundParameter", Create("Symbols.ParameterSymbol", "p", Type, 0, null)),
@@ -234,13 +279,16 @@ public sealed class SuspensionSpillerParityTests
                 Node("BoundBaseReference", Type),
                 Node("BoundFieldAccess", null, Remember(new ConstField(), new SelfConstField()))
             })
+            {
                 yield return Node("BoundBinary", 0, stable, a, Type, Type, null);
+            }
+
             yield return Node("BoundTypeTest", a, Type, Type, 1, 3);
             yield return Node("BoundDelegateCreation", a, method, Type);
             yield return Node("BoundThrowExpression", a, Type);
             yield return Node("BoundAddressOf", a);
             yield return Node("BoundIsNull", a, Type);
-            foreach (Pair target in new[]
+            foreach (var target in new[]
             {
                 Node("BoundLocal", local), Node("BoundFieldAccess", SideEffect(), field),
                 Node("BoundFieldAccess", Node("BoundLocal", local), field),
@@ -248,10 +296,13 @@ public sealed class SuspensionSpillerParityTests
                 Set(Node("BoundPropertyAccess", SideEffect(), property, Array("Bound.BoundExpression", SideEffect(), Leaf)), "IsBaseAccess", true),
                 Node("BoundPropertyAccess", null, property, Array("Bound.BoundExpression", a))
             })
+            {
                 yield return Set(Node("BoundAssignment", target, a), "IsDiscarded", true);
+            }
+
             yield return Node("BoundSequence", Array("Symbols.LocalSymbol", local), Array("Bound.BoundStatement", Statement(a)), a);
             yield return Node("BoundSequence", Array("Symbols.LocalSymbol"), Array("Bound.BoundStatement", Statement(a)), Leaf);
-            foreach (bool isAnd in new[] { true, false })
+            foreach (var isAnd in new[] { true, false })
             {
                 yield return Node("BoundLogicalBinary", isAnd, Leaf, a, Type);
                 yield return Node("BoundLogicalBinary", isAnd, a, Leaf, Type);
@@ -295,17 +346,21 @@ public sealed class SuspensionSpillerParityTests
         public void CheckExpression(Pair expression)
         {
             Pair prefix = new(new List<BoundStatement>(), new List<SelfBound.BoundStatement>());
-            Pair result = Invoke(Spiller(), "SpillExpr", expression, prefix);
+            var result = Invoke(Spiller(), "SpillExpr", expression, prefix);
             AssertEquivalent(prefix);
             AssertEquivalent(result);
         }
 
-        public void AssertEquivalent(Pair pair) => AssertEquivalent(pair.Expected, pair.Actual);
+        public void AssertEquivalent(Pair pair)
+        {
+            AssertEquivalent(pair.Expected, pair.Actual);
+        }
+
         private void AssertEquivalent(object? expected, object? actual)
         {
             if (expected == null) { Assert.IsNull(actual); return; }
             Assert.IsNotNull(actual);
-            if (pairs.TryGetValue(expected, out object? mapped)) { Assert.AreSame(mapped, actual); return; }
+            if (pairs.TryGetValue(expected, out var mapped)) { Assert.AreSame(mapped, actual); return; }
             if (expected is Enum) { Assert.AreEqual(Convert.ToInt32(expected), Convert.ToInt32(actual)); return; }
             if (expected is string || expected.GetType().IsPrimitive) { Assert.AreEqual(expected, actual); return; }
             Assert.AreEqual(expected.GetType().Name, actual.GetType().Name);
@@ -317,9 +372,13 @@ public sealed class SuspensionSpillerParityTests
                     Assert.IsTrue((bool)actual.GetType().GetProperty("IsDefault")!.GetValue(actual)!);
                     return;
                 }
-                object[] left = sequence.Cast<object>().ToArray(), right = ((IEnumerable)actual).Cast<object>().ToArray();
+                object[] left = [.. sequence.Cast<object>()], right = [.. ((IEnumerable)actual).Cast<object>()];
                 Assert.HasCount(left.Length, right);
-                for (int i = 0; i < left.Length; i++) AssertEquivalent(left[i], right[i]);
+                for (var i = 0; i < left.Length; i++)
+                {
+                    AssertEquivalent(left[i], right[i]);
+                }
+
                 return;
             }
             if (expected is Symbol symbol)
@@ -327,57 +386,82 @@ public sealed class SuspensionSpillerParityTests
                 Assert.AreEqual(symbol.Name, actual.GetType().GetProperty("Name")!.GetValue(actual));
                 pairs.Add(expected, actual);
                 if (expected is LocalSymbol localSymbol)
+                {
                     AssertEquivalent(localSymbol.Type, actual.GetType().GetProperty("Type")!.GetValue(actual));
+                }
+
                 return;
             }
             pairs.Add(expected, actual);
-            foreach (PropertyInfo member in expected.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public))
+            foreach (var member in expected.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public))
             {
-                PropertyInfo counterpart = actual.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public)
+                var counterpart = actual.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public)
                     .Single(property => property.Name == member.Name && property.DeclaringType!.FullName == member.DeclaringType!.FullName);
                 AssertEquivalent(member.GetValue(expected), counterpart.GetValue(actual));
             }
         }
 
-        public Pair Node(string name, params object?[] arguments) => Set(Create("Bound." + name, arguments), "Syntax", syntax);
+        public Pair Node(string name, params object?[] arguments)
+        {
+            return Set(Create("Bound." + name, arguments), "Syntax", syntax);
+        }
+
         private Pair Remember(object expected, object actual) { pairs.Add(expected, actual); return new(expected, actual); }
         public Pair Create(string name, params object?[] arguments)
         {
-            Type left = typeof(BoundNode).Assembly.GetType("Caladesi.Compiler." + name, true)!;
-            Type right = typeof(SelfBound.BoundNode).Assembly.GetType("Caladesi.Compiler." + name, true)!;
+            var left = typeof(BoundNode).Assembly.GetType("Caladesi.Compiler." + name, true)!;
+            var right = typeof(SelfBound.BoundNode).Assembly.GetType("Caladesi.Compiler." + name, true)!;
             return Remember(Construct(left, arguments, false), Construct(right, arguments, true));
         }
         private static object Construct(Type type, object?[] arguments, bool self)
         {
-            ConstructorInfo constructor = type.GetConstructors(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+            var constructor = type.GetConstructors(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
                 .Where(c => c.GetParameters().Length >= arguments.Length && c.GetParameters().Skip(arguments.Length).All(p => p.HasDefaultValue))
                 .OrderBy(c => c.GetParameters().Length).First();
-            ParameterInfo[] parameters = constructor.GetParameters();
-            object?[] values = new object?[parameters.Length];
-            for (int i = 0; i < values.Length; i++)
+            var parameters = constructor.GetParameters();
+            var values = new object?[parameters.Length];
+            for (var i = 0; i < values.Length; i++)
             {
-                object? value = i < arguments.Length ? arguments[i] : parameters[i].DefaultValue;
-                if (value is Pair pair) value = self ? pair.Actual : pair.Expected;
-                if (value != null && parameters[i].ParameterType.IsEnum) value = Enum.ToObject(parameters[i].ParameterType, value);
+                var value = i < arguments.Length ? arguments[i] : parameters[i].DefaultValue;
+                if (value is Pair pair)
+                {
+                    value = self ? pair.Actual : pair.Expected;
+                }
+
+                if (value != null && parameters[i].ParameterType.IsEnum)
+                {
+                    value = Enum.ToObject(parameters[i].ParameterType, value);
+                }
+
                 values[i] = value;
             }
             return constructor.Invoke(values);
         }
-        public static Pair Invoke(Pair target, string name, params object?[] arguments) => new(
-            Call(target.Expected, name, arguments.Select(a => a is Pair p ? p.Expected : a).ToArray()),
-            Call(target.Actual, name, arguments.Select(a => a is Pair p ? p.Actual : a).ToArray()));
-        public static object Call(object target, string name, params object?[] arguments) =>
-            target.GetType().GetMethod(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(target, arguments)!;
+        public static Pair Invoke(Pair target, string name, params object?[] arguments)
+        {
+            return new(
+            Call(target.Expected, name, [.. arguments.Select(a => a is Pair p ? p.Expected : a)]),
+            Call(target.Actual, name, [.. arguments.Select(a => a is Pair p ? p.Actual : a)]));
+        }
+
+        public static object Call(object target, string name, params object?[] arguments)
+        {
+            return target.GetType().GetMethod(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)!.Invoke(target, arguments)!;
+        }
 
         public static Pair Array(string elementName, params Pair[] items)
         {
             object Build(bool self)
             {
-                Assembly assembly = self ? typeof(SelfBound.BoundNode).Assembly : typeof(BoundNode).Assembly;
-                Type element = assembly.GetType("Caladesi.Compiler." + elementName, true)!;
-                System.Array values = System.Array.CreateInstance(element, items.Length);
-                for (int i = 0; i < items.Length; i++) values.SetValue(self ? items[i].Actual : items[i].Expected, i);
-                MethodInfo create = typeof(ImmutableArray).GetMethods().Single(m => m.Name == "Create" &&
+                var assembly = self ? typeof(SelfBound.BoundNode).Assembly : typeof(BoundNode).Assembly;
+                var element = assembly.GetType("Caladesi.Compiler." + elementName, true)!;
+                var values = System.Array.CreateInstance(element, items.Length);
+                for (var i = 0; i < items.Length; i++)
+                {
+                    values.SetValue(self ? items[i].Actual : items[i].Expected, i);
+                }
+
+                var create = typeof(ImmutableArray).GetMethods().Single(m => m.Name == "Create" &&
                     m.IsGenericMethodDefinition && m.GetParameters().Length == 1 && m.GetParameters()[0].ParameterType.IsArray);
                 return create.MakeGenericMethod(element).Invoke(null, [values])!;
             }
@@ -406,7 +490,10 @@ public sealed class SuspensionSpillerParityTests
         public override SpecialType SpecialType => SpecialType.Void;
         public override bool IsReferenceType => false;
         public override bool IsValueType => false;
-        public override bool Equals(TypeSymbol? other) => ReferenceEquals(this, other);
+        public override bool Equals(TypeSymbol? other)
+        {
+            return ReferenceEquals(this, other);
+        }
     }
     private sealed class SelfVoidType : SelfSymbols.TypeSymbol
     {
@@ -417,7 +504,10 @@ public sealed class SuspensionSpillerParityTests
         public override SelfSymbols.SpecialType SpecialType => SelfSymbols.SpecialType.Void;
         public override bool IsReferenceType => false;
         public override bool IsValueType => false;
-        public override bool Equals(SelfSymbols.TypeSymbol? other) => ReferenceEquals(this, other);
+        public override bool Equals(SelfSymbols.TypeSymbol? other)
+        {
+            return ReferenceEquals(this, other);
+        }
     }
     private class SelfTestField : SelfSymbols.FieldSymbol
     {
