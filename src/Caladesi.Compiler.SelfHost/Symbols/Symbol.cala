@@ -1,0 +1,77 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { KeyValuePair } from "System.Collections.Generic";
+import { SyntaxTree } from "../Syntax/SyntaxTree";
+import { TextSpan } from "../Text/TextSpan";
+import { NamedTypeSymbol } from "./NamedTypeSymbol";
+import { MethodSymbol, FieldSymbol, PropertySymbol } from "./MemberSymbols";
+import { NamespaceSymbol } from "./NamespaceSymbol";
+
+export enum SymbolKind {
+  Namespace, NamedType, TypeParameter, ArrayType, NullableType, ErrorType, Method, Field,
+  Property, Parameter, Local, Label, Alias, Assembly, FunctionGroup
+}
+export enum Accessibility { NotApplicable, Private, ProtectedAndInternal, Protected, Internal, ProtectedOrInternal, Public }
+export enum RefKind { None, Ref, Out, In }
+
+export sealed class SourceLocation {
+  constructor(public readonly Tree: SyntaxTree, public readonly Span: TextSpan) {}
+}
+
+export abstract class Symbol {
+  static OriginalDefinitionOf(symbol: Symbol): Symbol {
+    // Match the oracle's Symbol slot, not the hidden typed properties.
+    if (symbol instanceof NamedTypeSymbol || symbol instanceof MethodSymbol ||
+        symbol instanceof FieldSymbol || symbol instanceof PropertySymbol) return symbol;
+    return symbol.OriginalSymbolDefinition;
+  }
+  abstract get Kind(): SymbolKind;
+  abstract get Name(): string;
+  get ContainingSymbol(): Symbol? { return null; }
+  get DeclaredAccessibility(): Accessibility { return Accessibility.NotApplicable; }
+  get IsStatic(): bool { return false; }
+  get IsAbstract(): bool { return false; }
+  get IsVirtual(): bool { return false; }
+  get IsOverride(): bool { return false; }
+  get IsSealed(): bool { return false; }
+  get IsFromSource(): bool { return false; }
+  get OriginalSymbolDefinition(): Symbol { return this; }
+  get Locations(): ImmutableArray<SourceLocation> { return ImmutableArray<SourceLocation>.Empty; }
+  GetAttributes(): ImmutableArray<AttributeData> { return ImmutableArray<AttributeData>.Empty; }
+  get ContainingType(): NamedTypeSymbol? {
+    let symbol = this.ContainingSymbol;
+    while (symbol != null && !(symbol instanceof NamedTypeSymbol)) symbol = symbol.ContainingSymbol;
+    return symbol as NamedTypeSymbol;
+  }
+  get ContainingNamespace(): NamespaceSymbol? {
+    let symbol = this.ContainingSymbol;
+    while (symbol != null && !(symbol instanceof NamespaceSymbol)) symbol = symbol.ContainingSymbol;
+    return symbol as NamespaceSymbol;
+  }
+  get ContainingAssembly(): AssemblySymbol? {
+    let symbol = this.ContainingSymbol;
+    while (symbol != null && !(symbol instanceof AssemblySymbol)) symbol = symbol.ContainingSymbol;
+    return symbol as AssemblySymbol;
+  }
+  get MetadataName(): string { return this.Name; }
+  HasAttribute(fullName: string): bool { return this.GetAttribute(fullName) != null; }
+  GetAttribute(fullName: string): AttributeData? {
+    for (const attribute of this.GetAttributes()) {
+      if (attribute.AttributeClass != null && attribute.AttributeClass.ToMetadataString() == fullName) return attribute;
+    }
+    return null;
+  }
+  override ToString(): string { return this.Name; }
+}
+
+export sealed class AttributeData {
+  constructor(public readonly AttributeClass: NamedTypeSymbol?, public readonly Constructor: MethodSymbol?,
+    public readonly ConstructorArguments: ImmutableArray<object?>,
+    public readonly NamedArguments: ImmutableArray<KeyValuePair<string, object?>>) {}
+}
+
+export abstract class AssemblySymbol extends Symbol {
+  override get Kind(): SymbolKind { return SymbolKind.Assembly; }
+  abstract get GlobalNamespace(): NamespaceSymbol;
+  get Version(): Version { return new Version(0, 0, 0, 0); }
+  override get ContainingAssembly(): AssemblySymbol? { return this; }
+}

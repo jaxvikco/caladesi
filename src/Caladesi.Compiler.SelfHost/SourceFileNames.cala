@@ -1,0 +1,29 @@
+import { List } from "System.Collections.Generic";
+import { Path } from "System.IO";
+import { CompilationOptions } from "./CompilationOptions";
+import { NameUtilities } from "./NameUtilities";
+
+export static class SourceFileNames {
+  static DeriveNamespace(options: CompilationOptions, filePath: string): string {
+    const parts = new List<string>();
+    if (!string.IsNullOrEmpty(options.RootNamespace)) parts.Add(options.RootNamespace);
+    if (!string.IsNullOrEmpty(options.ProjectDirectory) && !string.IsNullOrEmpty(filePath)) {
+      try {
+        const directory = Path.GetDirectoryName(Path.GetFullPath(filePath)) ?? "";
+        const relative = Path.GetRelativePath(Path.GetFullPath(options.ProjectDirectory!), directory);
+        if (relative != "." && !relative.StartsWith("..", StringComparison.Ordinal)) {
+          for (const segment of relative.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries)) {
+            const part = NameUtilities.ToPascalCase(segment);
+            if (part.Length > 0) parts.Add(part);
+          }
+        }
+      } catch (error: ArgumentException) {}
+    }
+    return string.Join('.', parts);
+  }
+
+  static GetModuleClassBaseName(options: CompilationOptions, filePath: string): string {
+    const name = NameUtilities.ToPascalCase(Path.GetFileNameWithoutExtension(filePath)!);
+    return name.Length == 0 ? "Program" : name;
+  }
+}

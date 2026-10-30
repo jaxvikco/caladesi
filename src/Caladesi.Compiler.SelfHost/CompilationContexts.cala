@@ -1,0 +1,49 @@
+import { IEnumerable, IReadOnlyList, List, Dictionary } from "System.Collections.Generic";
+import { Compilation } from "./Compilation";
+import { CompilationOptions } from "./CompilationOptions";
+import { SourceFile } from "./SourceFile";
+import { FileScope } from "./FileScope";
+import { BoundAttribute } from "./BoundAttribute";
+import { DeclarationValidationContext } from "./DeclarationValidationContext";
+import { SemanticCompilationContext, SemanticDeclaration } from "./Semantics/SemanticCompilationContext";
+import { Symbol } from "./Symbols/Symbol";
+import { TypeSymbol } from "./Symbols/TypeSymbols";
+import { NamedTypeSymbol } from "./Symbols/NamedTypeSymbol";
+import { SpecialType } from "./Symbols/SpecialType";
+import { SourceNamedType, TypeAliasSymbol } from "./Symbols/Source/SourceTypes";
+import { SourceModuleClassSymbol } from "./Symbols/Source/SourceModuleClass";
+import { SyntaxTree } from "./Syntax/SyntaxTree";
+import { SyntaxNode } from "./Syntax/SyntaxElement";
+import { DecoratorSyntax } from "./Syntax/Nodes.Core";
+
+export sealed class CompilationDeclarationContext extends DeclarationValidationContext<SourceFile> {
+  constructor(private readonly compilation: Compilation) { super(); }
+  override get AllSourceTypes(): IEnumerable<SourceNamedType<SourceFile>> { return this.compilation.AllSourceTypes; }
+  override get SourceFiles(): IEnumerable<SourceFile> { return this.compilation.SourceFiles; }
+  override get Options(): CompilationOptions { return this.compilation.Options; }
+  override GetAliases(file: SourceFile): IEnumerable<TypeAliasSymbol<SourceFile>> { return file.Aliases; }
+  override GetTree(file: SourceFile): SyntaxTree { return file.Tree; }
+  override GetFilePath(file: SourceFile): string { return file.FilePath; }
+  override GetModuleClass(file: SourceFile): SourceModuleClassSymbol<SourceFile>? { return file.ModuleClass; }
+  override GetBoundAttribute(file: SourceFile, decorator: DecoratorSyntax, owner: SourceNamedType<SourceFile>): BoundAttribute? {
+    return this.compilation.GetBoundAttribute(file, decorator, owner);
+  }
+}
+
+export sealed class CompilationSemanticContext extends SemanticCompilationContext<SourceFile> {
+  constructor(private readonly compilation: Compilation) { super(); }
+  override get RecordSemanticInfo(): bool { return this.compilation.Options.RecordSemanticInfo; }
+  override BindForSemanticModel(): void { this.compilation.GetDiagnostics(); }
+  override GetDeclarationIndex(): IReadOnlyList<SemanticDeclaration> {
+    const result = new List<SemanticDeclaration>();
+    for (const pair of this.compilation.GetDeclarationIndex())
+      result.Add(new SemanticDeclaration(pair.Key.Item1, pair.Key.Item2, pair.Value));
+    return result;
+  }
+  override get RecordedSymbols(): Dictionary<SyntaxNode, Symbol>? { return this.compilation.RecordedSymbols; }
+  override get RecordedTypes(): Dictionary<SyntaxNode, TypeSymbol>? { return this.compilation.RecordedTypes; }
+  override GetFile(tree: SyntaxTree): SourceFile { return this.compilation.GetFile(tree); }
+  override GetScope(file: SourceFile): FileScope<SourceFile> { return file.Scope; }
+  override GetModuleClass(file: SourceFile): NamedTypeSymbol? { return file.ModuleClass; }
+  override GetSpecialType(type: SpecialType): NamedTypeSymbol { return this.compilation.GetSpecialType(type); }
+}

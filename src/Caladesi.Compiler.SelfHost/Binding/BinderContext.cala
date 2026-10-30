@@ -1,0 +1,21 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { SourceTypeContext } from "../Symbols/Source/SourceTypeContext";
+import { NamespaceSymbol } from "../Symbols/NamespaceSymbol";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { TypeSymbol, ArrayTypeSymbol } from "../Symbols/TypeSymbols";
+import { Symbol } from "../Symbols/Symbol";
+import { SyntaxNode } from "../Syntax/SyntaxElement";
+import { BoundNode } from "../Bound/BoundNodes";
+import { FileScope } from "../FileScope";
+
+// These services own compilation caches and files, not binding decisions.
+export abstract class BinderContext<TFile> extends SourceTypeContext<TFile> {
+  abstract get GlobalNamespace(): NamespaceSymbol;
+  abstract GetScope(file: TFile): FileScope<TFile>;
+  abstract CreateArrayType(element: TypeSymbol): ArrayTypeSymbol;
+  abstract GetAnonymousRecord(names: ImmutableArray<string>, types: ImmutableArray<TypeSymbol>): NamedTypeSymbol;
+  RecordDeclaration(file: TFile, start: int, symbol: Symbol): void {}
+  RecordSymbol(syntax: SyntaxNode, symbol: Symbol): void {}
+  RecordType(syntax: SyntaxNode, type: TypeSymbol): void {}
+  RecordBound(syntax: SyntaxNode, bound: BoundNode): void {}
+}

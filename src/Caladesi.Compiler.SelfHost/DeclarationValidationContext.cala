@@ -1,0 +1,18 @@
+import { IEnumerable } from "System.Collections.Generic";
+import { CompilationOptions } from "./CompilationOptions";
+import { BoundAttribute } from "./BoundAttribute";
+import { SyntaxTree } from "./Syntax/SyntaxTree";
+import { DecoratorSyntax } from "./Syntax/Nodes.Core";
+import { TypeAliasSymbol, SourceNamedType } from "./Symbols/Source/SourceTypes";
+import { SourceModuleClassSymbol } from "./Symbols/Source/SourceModuleClass";
+
+export abstract class DeclarationValidationContext<TFile> {
+  abstract get AllSourceTypes(): IEnumerable<SourceNamedType<TFile>>;
+  abstract get SourceFiles(): IEnumerable<TFile>;
+  abstract get Options(): CompilationOptions;
+  abstract GetAliases(file: TFile): IEnumerable<TypeAliasSymbol<TFile>>;
+  abstract GetTree(file: TFile): SyntaxTree;
+  abstract GetFilePath(file: TFile): string;
+  abstract GetModuleClass(file: TFile): SourceModuleClassSymbol<TFile>?;
+  abstract GetBoundAttribute(file: TFile, decorator: DecoratorSyntax, owner: SourceNamedType<TFile>): BoundAttribute?;
+}

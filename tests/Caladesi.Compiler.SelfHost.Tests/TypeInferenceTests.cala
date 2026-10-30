@@ -1,0 +1,137 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { TypeInference, ConversionClassifier } from "Caladesi.Compiler.Binding";
+import { TypeSymbol, TypeParameterSymbol, VarianceKind, ErrorTypeSymbol, NullTypeSymbol, ArrayTypeSymbol,
+  NamedTypeSymbol, TypeKind, MethodSymbol, MethodKind, ParameterSymbol, RefKind } from "Caladesi.Compiler.Symbols";
+import { BoundExpression, BoundDefaultValue, BoundUnbound, BoundMethodGroup, BoundLambda, LambdaInfo, CollectionInfo } from "Caladesi.Compiler.Bound";
+import { SyntaxNode } from "Caladesi.Compiler.Syntax";
+
+class InferenceTestType extends NamedTypeSymbol {
+  constructor(private readonly name: string) { super(); }
+  override get Name(): string { return this.name; }
+  override get TypeKind(): TypeKind { return TypeKind.Class; }
+  override get TypeParameters(): ImmutableArray<TypeParameterSymbol> { return ImmutableArray<TypeParameterSymbol>.Empty; }
+  override get TypeArguments(): ImmutableArray<TypeSymbol> { return ImmutableArray<TypeSymbol>.Empty; }
+}
+class InferenceTestMethod extends MethodSymbol {
+  constructor(private readonly tps: ImmutableArray<TypeParameterSymbol>, private readonly ps: ImmutableArray<ParameterSymbol>,
+    private readonly result: TypeSymbol, private readonly kind: MethodKind = MethodKind.Ordinary) { super(); }
+  override get Name(): string { return "M"; }
+  override get TypeParameters(): ImmutableArray<TypeParameterSymbol> { return this.tps; }
+  override get Parameters(): ImmutableArray<ParameterSymbol> { return this.ps; }
+  override get ReturnType(): TypeSymbol { return this.result; }
+  override get MethodKind(): MethodKind { return this.kind; }
+}
+class InferenceTestDelegate extends InferenceTestType {
+  constructor(private readonly invoke: MethodSymbol) { super("Delegate"); }
+  override get DelegateInvokeMethod(): MethodSymbol? { return this.invoke; }
+}
+
+@TestClass
+export class TypeInferenceTests {
+  private static readonly NoType: TypeSymbol = (null as (TypeSymbol | null))!;
+  private static readonly NoSyntax: SyntaxNode = (null as (SyntaxNode | null))!;
+  private static readonly NoExpression: BoundExpression = (null as (BoundExpression | null))!;
+  private static readonly NoLambda: BoundLambda = (null as (BoundLambda | null))!;
+  private static Parameter(name: string): TypeParameterSymbol {
+    return new TypeParameterSymbol(name, 0, ErrorTypeSymbol.Instance, VarianceKind.None);
+  }
+  @TestMethod
+  lowerBoundsAndDefaultVersusEmpty(): void {
+    const t = TypeInferenceTests.Parameter("T");
+    const value = new InferenceTestType("Value");
+    const engine = new TypeInference(new ConversionClassifier());
+    const method = new InferenceTestMethod(ImmutableArray.Create<TypeParameterSymbol>(t),
+      ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("p", t, 0, t)), t);
+    const args = ImmutableArray.Create<BoundExpression>(new BoundDefaultValue(value));
+    const result = engine.InferTypeArguments(method, args, false, 0, TypeInferenceTests.NoType);
+    if (result.IsDefault || result.Length != 1 || !Object.ReferenceEquals(result[0], value)) throw new Exception("Lower bound");
+    if (!engine.InferTypeArguments(method, ImmutableArray<BoundExpression>.Empty, false, 0, TypeInferenceTests.NoType).IsDefault)
+      throw new Exception("Missing bound must return default");
+    if (!engine.InferTypeArguments(method, ImmutableArray.Create<BoundExpression>(new BoundDefaultValue(NullTypeSymbol.Instance)), false, 0, TypeInferenceTests.NoType).IsDefault)
+      throw new Exception("Null does not contribute a lower bound");
+    const empty = new InferenceTestMethod(ImmutableArray<TypeParameterSymbol>.Empty, ImmutableArray<ParameterSymbol>.Empty, value);
+    const success = engine.InferTypeArguments(empty, ImmutableArray<BoundExpression>.Empty, false, 0, TypeInferenceTests.NoType);
+    if (success.IsDefault || !success.IsEmpty) throw new Exception("Successful empty must not be default");
+  }
+  @TestMethod
+  expectedReturnFallbackAndConflictingBounds(): void {
+    const t = TypeInferenceTests.Parameter("T");
+    const a = new InferenceTestType("A");
+    const b = new InferenceTestType("B");
+    const engine = new TypeInference(new ConversionClassifier());
+    const method = new InferenceTestMethod(ImmutableArray.Create<TypeParameterSymbol>(t),
+      ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("p", t, 0, t), new ParameterSymbol("q", t, 1, t)), t);
+    const result = engine.InferTypeArguments(method, ImmutableArray<BoundExpression>.Empty, false, 0, a);
+    if (result.IsDefault || !Object.ReferenceEquals(result[0], a)) throw new Exception("Expected type fallback");
+    const conflict = engine.InferTypeArguments(method, ImmutableArray.Create<BoundExpression>(
+      new BoundDefaultValue(a), new BoundDefaultValue(b)), false, 0, a);
+    if (!conflict.IsDefault) throw new Exception("No synthetic common type or expected rescue");
+  }
+  @TestMethod
+  paramsAndIndexerSetterUseEffectiveParameters(): void {
+    const t = TypeInferenceTests.Parameter("T");
+    const a = new InferenceTestType("A");
+    const arrayBase = new InferenceTestType("Array");
+    const engine = new TypeInference(new ConversionClassifier());
+    const array = new ArrayTypeSymbol(t, arrayBase, 1);
+    const method = new InferenceTestMethod(ImmutableArray.Create<TypeParameterSymbol>(t),
+      ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("values", array, 0, t, RefKind.None, true)), t);
+    const expanded = engine.InferTypeArguments(method, ImmutableArray.Create<BoundExpression>(
+      new BoundDefaultValue(a), new BoundDefaultValue(a)), false, 0, TypeInferenceTests.NoType);
+    const normal = engine.InferTypeArguments(method, ImmutableArray.Create<BoundExpression>(
+      new BoundDefaultValue(new ArrayTypeSymbol(a, arrayBase, 1))), false, 0, TypeInferenceTests.NoType);
+    if (expanded.IsDefault || normal.IsDefault || !expanded[0].Equals(a) || !normal[0].Equals(a)) throw new Exception("Params forms");
+    const setter = new InferenceTestMethod(ImmutableArray.Create<TypeParameterSymbol>(t),
+      ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("index", t, 0, t), new ParameterSymbol("value", a, 1, t)),
+      t, MethodKind.PropertySet);
+    const result = engine.InferTypeArguments(setter, ImmutableArray.Create<BoundExpression>(new BoundDefaultValue(a)), true, 1, TypeInferenceTests.NoType);
+    if (result.IsDefault || !result[0].Equals(a)) throw new Exception("Indexer setter");
+  }
+  @TestMethod
+  collectionAndExplicitLambdaOutput(): void {
+    const t = TypeInferenceTests.Parameter("T");
+    const a = new InferenceTestType("A");
+    const engine = new TypeInference(new ConversionClassifier());
+    const array = new ArrayTypeSymbol(t, new InferenceTestType("Array"), 1);
+    const method = new InferenceTestMethod(ImmutableArray.Create<TypeParameterSymbol>(t),
+      ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("collection", array, 0, t)), t);
+    const collection = new BoundUnbound(TypeInferenceTests.NoSyntax, target => new BoundDefaultValue(a));
+    collection.IsCollection = true;
+    collection.Collection = new CollectionInfo(1);
+    collection.Collection.NaturalElementType = a;
+    const result = engine.InferTypeArguments(method, ImmutableArray.Create<BoundExpression>(collection), false, 0, TypeInferenceTests.NoType);
+    if (result.IsDefault || !result[0].Equals(a)) throw new Exception("Collection elements");
+    const invoke = new InferenceTestMethod(ImmutableArray<TypeParameterSymbol>.Empty, ImmutableArray<ParameterSymbol>.Empty, t);
+    const lambdaMethod = new InferenceTestMethod(ImmutableArray.Create<TypeParameterSymbol>(t),
+      ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("lambda", new InferenceTestDelegate(invoke), 0, t)), t);
+    const lambda = new BoundUnbound(TypeInferenceTests.NoSyntax, target => new BoundDefaultValue(a));
+    lambda.IsLambda = true;
+    lambda.Lambda = new LambdaInfo(0, ImmutableArray<TypeSymbol?>.Empty, (inputs, output, speculative) => TypeInferenceTests.NoLambda, inputs => a);
+    const inferred = engine.InferTypeArguments(lambdaMethod, ImmutableArray.Create<BoundExpression>(lambda), false, 0, TypeInferenceTests.NoType);
+    if (inferred.IsDefault || !inferred[0].Equals(a)) throw new Exception("Lambda output");
+  }
+  @TestMethod
+  methodGroupCallbackReceivesFixedInputs(): void {
+    const t = TypeInferenceTests.Parameter("T");
+    const u = TypeInferenceTests.Parameter("U");
+    const a = new InferenceTestType("A");
+    const b = new InferenceTestType("B");
+    const invoke = new InferenceTestMethod(ImmutableArray<TypeParameterSymbol>.Empty,
+      ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("input", t, 0, t)), u);
+    const chosen = new InferenceTestMethod(ImmutableArray<TypeParameterSymbol>.Empty,
+      ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("input", a, 0, a)), b);
+    const group = new BoundMethodGroup(TypeInferenceTests.NoExpression, "M", ImmutableArray.Create<MethodSymbol>(chosen), ImmutableArray<TypeSymbol>.Empty);
+    let calls = 0;
+    const engine = new TypeInference(new ConversionClassifier(), (mg, inputs) => {
+      if (!Object.ReferenceEquals(mg, group) || inputs.Length != 1 || !inputs[0].Equals(a)) throw new Exception("Fixed inputs");
+      calls++;
+      return chosen;
+    });
+    const method = new InferenceTestMethod(ImmutableArray.Create<TypeParameterSymbol>(u, t),
+      ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("group", new InferenceTestDelegate(invoke), 0, t),
+        new ParameterSymbol("value", t, 1, t)), u);
+    const result = engine.InferTypeArguments(method, ImmutableArray.Create<BoundExpression>(group, new BoundDefaultValue(a)), false, 0, TypeInferenceTests.NoType);
+    if (calls != 1 || result.IsDefault || !result[0].Equals(b) || !result[1].Equals(a)) throw new Exception("Method group output");
+  }
+}

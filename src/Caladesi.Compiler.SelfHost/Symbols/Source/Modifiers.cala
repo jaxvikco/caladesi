@@ -1,0 +1,45 @@
+import { HashSet } from "System.Collections.Generic";
+import { SyntaxKind } from "../../Syntax/SyntaxKind";
+import { SyntaxList } from "../../Syntax/SyntaxElement";
+import { SyntaxToken } from "../../Syntax/SyntaxToken";
+import { Accessibility } from "../Symbol";
+
+// Value fields preserve default(ModifierSet); struct operations live in helpers.
+export struct type ModifierSet = {
+  readonly IsExport: bool;
+  readonly IsStatic: bool;
+  readonly IsAbstract: bool;
+  readonly IsAsync: bool;
+  readonly IsOverride: bool;
+  readonly IsPrivate: bool;
+  readonly IsProtected: bool;
+  readonly IsInternal: bool;
+  readonly IsPublic: bool;
+  readonly IsReadonly: bool;
+  readonly IsSealed: bool;
+  readonly IsStruct: bool;
+};
+
+export sealed class ModifierSets {
+  static Create(tokens: SyntaxList<SyntaxToken>): ModifierSet {
+    const kinds = new HashSet<SyntaxKind>();
+    for (let i = 0; i < tokens.Count; i++) kinds.Add(tokens.Get(i).Kind);
+    return new ModifierSet(kinds.Contains(SyntaxKind.ExportKeyword), kinds.Contains(SyntaxKind.StaticKeyword),
+      kinds.Contains(SyntaxKind.AbstractKeyword), kinds.Contains(SyntaxKind.AsyncKeyword),
+      kinds.Contains(SyntaxKind.OverrideKeyword), kinds.Contains(SyntaxKind.PrivateKeyword),
+      kinds.Contains(SyntaxKind.ProtectedKeyword), kinds.Contains(SyntaxKind.InternalKeyword),
+      kinds.Contains(SyntaxKind.PublicKeyword), kinds.Contains(SyntaxKind.ReadonlyKeyword),
+      kinds.Contains(SyntaxKind.SealedKeyword), kinds.Contains(SyntaxKind.StructKeyword));
+  }
+
+  static TypeAccessibility(modifiers: ModifierSet): Accessibility {
+    return modifiers.IsExport || modifiers.IsPublic ? Accessibility.Public : Accessibility.Internal;
+  }
+
+  static MemberAccessibility(modifiers: ModifierSet): Accessibility {
+    return modifiers.IsPrivate ? Accessibility.Private :
+      modifiers.IsProtected && modifiers.IsInternal ? Accessibility.ProtectedOrInternal :
+      modifiers.IsProtected ? Accessibility.Protected :
+      modifiers.IsInternal ? Accessibility.Internal : Accessibility.Public;
+  }
+}

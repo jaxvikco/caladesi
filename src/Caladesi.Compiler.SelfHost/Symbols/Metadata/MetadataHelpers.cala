@@ -1,0 +1,137 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { KeyValuePair } from "System.Collections.Generic";
+import { MetadataReader, CustomAttribute, CustomAttributeHandleCollection, BlobHandle, MemberReferenceHandle, MethodDefinitionHandle, TypeDefinitionHandle, TypeReferenceHandle, HandleKind, ICustomAttributeTypeProvider, PrimitiveTypeCode, CustomAttributeTypedArgument } from "System.Reflection.Metadata";
+import { AttributeData } from "../Symbol";
+import { TypeSymbol, ErrorTypeSymbol } from "../TypeSymbols";
+import { NamedTypeSymbol } from "../NamedTypeSymbol";
+import { SpecialType } from "../SpecialType";
+import { MetadataAssemblySymbol } from "./MetadataAssemblySymbol";
+
+export static class MetadataHelpers {
+  // A tuple avoids a nullable tuple's extra Value layer in callers.
+  static GetAttributeTypeName(reader: MetadataReader, attribute: CustomAttribute): [bool, string, string] {
+    const constructor = attribute.Constructor;
+    if (constructor.Kind == HandleKind.MemberReference) {
+      const member = reader.GetMemberReference(constructor as MemberReferenceHandle);
+      if (member.Parent.Kind == HandleKind.TypeReference) {
+        const type = reader.GetTypeReference(member.Parent as TypeReferenceHandle);
+        return [true, reader.GetString(type.Namespace), reader.GetString(type.Name)];
+      }
+      if (member.Parent.Kind == HandleKind.TypeDefinition) {
+        const type = reader.GetTypeDefinition(member.Parent as TypeDefinitionHandle);
+        return [true, reader.GetString(type.Namespace), reader.GetString(type.Name)];
+      }
+    } else if (constructor.Kind == HandleKind.MethodDefinition) {
+      const method = reader.GetMethodDefinition(constructor as MethodDefinitionHandle);
+      const type = reader.GetTypeDefinition(method.GetDeclaringType());
+      return [true, reader.GetString(type.Namespace), reader.GetString(type.Name)];
+    }
+    return [false, "", ""];
+  }
+
+  static FindAttribute(reader: MetadataReader, attributes: CustomAttributeHandleCollection,
+    ns: string, name: string): CustomAttribute? {
+    for (const handle of attributes) {
+      const attribute = reader.GetCustomAttribute(handle);
+      const [found, typeNamespace, typeName] = MetadataHelpers.GetAttributeTypeName(reader, attribute);
+      if (found && typeNamespace == ns && typeName == name) return attribute;
+    }
+    return null;
+  }
+  static ReadByteArg(reader: MetadataReader, value: BlobHandle): byte {
+    let blob = reader.GetBlobReader(value);
+    if (blob.Length < 3 || blob.ReadUInt16() != 1) return 0;
+    return blob.ReadByte();
+  }
+  static ReadNullableFlag(reader: MetadataReader, value: BlobHandle): byte {
+    let blob = reader.GetBlobReader(value);
+    if (blob.Length < 3 || blob.ReadUInt16() != 1) return 0;
+    if (blob.Length == 5) return blob.ReadByte();
+    if (blob.RemainingBytes < 4) return 0;
+    const count = blob.ReadInt32();
+    return count > 0 && blob.RemainingBytes > 0 ? blob.ReadByte() : 0;
+  }
+
+  static DecodeAttributes(assembly: MetadataAssemblySymbol, handles: CustomAttributeHandleCollection): ImmutableArray<AttributeData> {
+    if (handles.Count == 0) return ImmutableArray<AttributeData>.Empty;
+    const builder = ImmutableArray.CreateBuilder<AttributeData>();
+    const provider = new AttributeTypeProvider(assembly);
+    for (const handle of handles) {
+      try {
+        const attribute = assembly.Reader.GetCustomAttribute(handle);
+        const value = attribute.DecodeValue<TypeSymbol>(provider);
+        const cls = MetadataHelpers.ResolveAttributeClass(assembly, attribute);
+        const arguments = ImmutableArray.CreateBuilder<object?>();
+        for (const argument of value.FixedArguments) arguments.Add(MetadataHelpers.ConvertArg(argument.Value));
+        const named = ImmutableArray.CreateBuilder<KeyValuePair<string, object?>>();
+        for (const argument of value.NamedArguments) {
+          named.Add(new KeyValuePair<string, object?>(argument.Name ?? "", MetadataHelpers.ConvertArg(argument.Value)));
+        }
+        builder.Add(new AttributeData(cls, null, arguments.ToImmutable(), named.ToImmutable()));
+      } catch (e: BadImageFormatException) {
+        // Invalid or unsupported attribute blobs do not hide the attributed symbol.
+      } catch (e: InvalidOperationException) {
+      } catch (e: ArgumentException) {
+      }
+    }
+    return builder.ToImmutable();
+  }
+  private static ConvertArg(value: object?): object? {
+    if (value instanceof ImmutableArray<CustomAttributeTypedArgument<TypeSymbol>>) {
+      const array = value as ImmutableArray<CustomAttributeTypedArgument<TypeSymbol>>;
+      const builder = ImmutableArray.CreateBuilder<object?>();
+      for (const argument of array) builder.Add(MetadataHelpers.ConvertArg(argument.Value));
+      return builder.ToImmutable();
+    }
+    return value;
+  }
+  private static ResolveAttributeClass(assembly: MetadataAssemblySymbol, attribute: CustomAttribute): NamedTypeSymbol? {
+    const reader = assembly.Reader;
+    if (attribute.Constructor.Kind == HandleKind.MemberReference) {
+      const member = reader.GetMemberReference(attribute.Constructor as MemberReferenceHandle);
+      if (member.Parent.Kind == HandleKind.TypeReference) return assembly.ResolveTypeReference(member.Parent as TypeReferenceHandle);
+      if (member.Parent.Kind == HandleKind.TypeDefinition) return assembly.GetTypeDefinition(member.Parent as TypeDefinitionHandle);
+    } else if (attribute.Constructor.Kind == HandleKind.MethodDefinition) {
+      return assembly.GetTypeDefinition(reader.GetMethodDefinition(attribute.Constructor as MethodDefinitionHandle).GetDeclaringType());
+    }
+    return null;
+  }
+}
+
+export sealed class AttributeTypeProvider implements ICustomAttributeTypeProvider<TypeSymbol> {
+  constructor(private readonly assembly: MetadataAssemblySymbol) {}
+  GetPrimitiveType(typeCode: PrimitiveTypeCode): TypeSymbol { return this.assembly.Provider.GetPrimitiveType(typeCode); }
+  GetSystemType(): TypeSymbol { return this.assembly.ReferenceSet.GetSpecialType(SpecialType.Type) ?? new ErrorTypeSymbol("Type"); }
+  GetSZArrayType(elementType: TypeSymbol): TypeSymbol { return this.assembly.Provider.GetSZArrayType(elementType); }
+  GetTypeFromDefinition(reader: MetadataReader, handle: TypeDefinitionHandle, rawTypeKind: byte): TypeSymbol {
+    return this.assembly.GetTypeDefinition(handle);
+  }
+  GetTypeFromReference(reader: MetadataReader, handle: TypeReferenceHandle, rawTypeKind: byte): TypeSymbol {
+    return this.assembly.ResolveTypeReference(handle);
+  }
+  GetTypeFromSerializedName(name: string): TypeSymbol {
+    const comma = name.IndexOf(',');
+    const simple = comma < 0 ? name : name.Substring(0, comma);
+    return this.assembly.ReferenceSet.FindType(simple) ?? new ErrorTypeSymbol(simple);
+  }
+  GetUnderlyingEnumType(type: TypeSymbol): PrimitiveTypeCode {
+    if (type instanceof NamedTypeSymbol) {
+      const underlying = (type as NamedTypeSymbol).EnumUnderlyingType;
+      if (underlying != null) {
+        switch (underlying.SpecialType) {
+          case SpecialType.Byte: return PrimitiveTypeCode.Byte;
+          case SpecialType.SByte: return PrimitiveTypeCode.SByte;
+          case SpecialType.Int16: return PrimitiveTypeCode.Int16;
+          case SpecialType.UInt16: return PrimitiveTypeCode.UInt16;
+          case SpecialType.UInt32: return PrimitiveTypeCode.UInt32;
+          case SpecialType.Int64: return PrimitiveTypeCode.Int64;
+          case SpecialType.UInt64: return PrimitiveTypeCode.UInt64;
+        }
+      }
+    }
+    return PrimitiveTypeCode.Int32;
+  }
+  IsSystemType(type: TypeSymbol): bool {
+    return type instanceof NamedTypeSymbol && type.SpecialType == SpecialType.Type;
+  }
+}

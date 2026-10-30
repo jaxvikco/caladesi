@@ -1,0 +1,24 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { List } from "System.Collections.Generic";
+import { Diagnostic } from "../Diagnostics/Diagnostic";
+import { SourceText } from "../Text/SourceText";
+import { CompilationUnitSyntax } from "./Nodes.Core";
+import { Parser } from "./Parser";
+
+export sealed class SyntaxTree {
+  private constructor(public readonly Text: SourceText, public readonly FilePath: string,
+    public readonly Root: CompilationUnitSyntax, public readonly Diagnostics: ImmutableArray<Diagnostic>) {
+    Root.OwnerTree = this;
+  }
+
+  static ParseText(text: string, filePath: string = ""): SyntaxTree {
+    const source = SourceText.From(text);
+    const parser = new Parser(source);
+    const root = parser.ParseCompilationUnit();
+    const diagnostics = new List<Diagnostic>();
+    for (const diagnostic of parser.Diagnostics.Items) diagnostics.Add(diagnostic.WithFilePath(filePath));
+    return new SyntaxTree(source, filePath, root, ImmutableArray.CreateRange<Diagnostic>(diagnostics));
+  }
+
+  WithText(newText: string): SyntaxTree { return SyntaxTree.ParseText(newText, this.FilePath); }
+}

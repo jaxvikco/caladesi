@@ -1,0 +1,271 @@
+import { Dictionary } from "System.Collections.Generic";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { AssemblyFlags } from "System.Reflection";
+import { BlobBuilder, BlobHandle, StringHandle, EntityHandle, AssemblyReferenceHandle, TypeDefinitionHandle, TypeSpecificationHandle, MethodDefinitionHandle, FieldDefinitionHandle, PropertyDefinitionHandle, MethodSpecificationHandle, PrimitiveTypeCode, SignatureCallingConvention } from "System.Reflection.Metadata";
+import { MetadataBuilder, SignatureTypeEncoder, BlobEncoder, ParametersEncoder } from "System.Reflection.Metadata.Ecma335";
+import { SHA1 } from "System.Security.Cryptography";
+import { Symbol, AssemblySymbol, RefKind } from "../Symbols/Symbol";
+import { TypeSymbol, NullableTypeSymbol, ArrayTypeSymbol, TypeParameterSymbol, ErrorTypeSymbol } from "../Symbols/TypeSymbols";
+import { NamedTypeSymbol, ConstructedNamedType } from "../Symbols/NamedTypeSymbol";
+import { NamespaceSymbol } from "../Symbols/NamespaceSymbol";
+import { SpecialType } from "../Symbols/SpecialType";
+import { MethodSymbol, FieldSymbol, PropertySymbol, ParameterSymbol, ConstructedMethodSymbol } from "../Symbols/MemberSymbols";
+import { MetadataAssemblySymbol } from "../Symbols/Metadata/MetadataAssemblySymbol";
+import { MetadataNamedType } from "../Symbols/Metadata/MetadataNamedType";
+import { UnsupportedTypeSymbol } from "../Symbols/Metadata/MetadataTypeProvider";
+import { SynthesizedNamedType } from "../Symbols/Source/Synthesized";
+
+// Metadata ownership is independent of the future PE/IL emitter and of Compilation.
+export sealed class MetadataEmitter {
+  readonly Metadata: MetadataBuilder = new MetadataBuilder();
+  private readonly assemblyRefs: Dictionary<AssemblySymbol, AssemblyReferenceHandle> = new Dictionary<AssemblySymbol, AssemblyReferenceHandle>();
+  private readonly typeHandles: Dictionary<NamedTypeSymbol, EntityHandle> = new Dictionary<NamedTypeSymbol, EntityHandle>();
+  private readonly typeSpecs: Dictionary<[TypeSymbol, bool], TypeSpecificationHandle> = new Dictionary<[TypeSymbol, bool], TypeSpecificationHandle>();
+  private readonly memberRefs: Dictionary<[Symbol, bool], EntityHandle> = new Dictionary<[Symbol, bool], EntityHandle>();
+  private readonly methodSpecs: Dictionary<[EntityHandle, BlobHandle], MethodSpecificationHandle> = new Dictionary<[EntityHandle, BlobHandle], MethodSpecificationHandle>();
+  private readonly methodDefs: Dictionary<MethodSymbol, MethodDefinitionHandle> = new Dictionary<MethodSymbol, MethodDefinitionHandle>();
+  private readonly fieldDefs: Dictionary<FieldSymbol, FieldDefinitionHandle> = new Dictionary<FieldSymbol, FieldDefinitionHandle>();
+  private readonly propertyDefs: Dictionary<PropertySymbol, PropertyDefinitionHandle> = new Dictionary<PropertySymbol, PropertyDefinitionHandle>();
+  private classTypeParameterMap: Dictionary<TypeParameterSymbol, int>? = null;
+
+  constructor(private readonly getSpecialType: Func<SpecialType, NamedTypeSymbol>,
+    private readonly getWellKnownType: Func<string, NamedTypeSymbol?>) {}
+
+  SetClassTypeParameterMap(map: Dictionary<TypeParameterSymbol, int>?): void { this.classTypeParameterMap = map; }
+  RegisterTypeDefinition(type: NamedTypeSymbol, handle: TypeDefinitionHandle): void { this.typeHandles[type] = handle; }
+  RegisterMethod(method: MethodSymbol, handle: MethodDefinitionHandle): void { this.methodDefs[method] = handle; }
+  RegisterField(field: FieldSymbol, handle: FieldDefinitionHandle): void { this.fieldDefs[field] = handle; }
+  RegisterProperty(property: PropertySymbol, handle: PropertyDefinitionHandle): void { this.propertyDefs[property] = handle; }
+
+  private GetAssemblyRef(assembly: AssemblySymbol): AssemblyReferenceHandle {
+    const [found, cached] = this.assemblyRefs.TryGetValue(assembly);
+    if (found) return cached;
+    const reader = (assembly as MetadataAssemblySymbol).Reader;
+    const definition = reader.GetAssemblyDefinition();
+    const name = reader.GetString(definition.Name);
+    const culture = definition.Culture.IsNil ? null : reader.GetString(definition.Culture);
+    const key: byte[] = definition.PublicKey.IsNil ? [] : reader.GetBlobBytes(definition.PublicKey);
+    let token = new BlobHandle();
+    if (key.Length > 0) {
+      // ECMA-335 assembly identity requires the reversed low eight bytes of SHA-1.
+      const hash = SHA1.HashData(key);
+      const bytes: byte[] = new byte[8];
+      for (let i = 0; i < 8; i++) bytes[i] = hash[hash.Length - 1 - i];
+      token = this.Metadata.GetOrAddBlob(bytes);
+    }
+    const handle = this.Metadata.AddAssemblyReference(this.Metadata.GetOrAddString(name), definition.Version,
+      culture == null ? new StringHandle() : this.Metadata.GetOrAddString(culture), token, 0 as AssemblyFlags, new BlobHandle());
+    this.assemblyRefs[assembly] = handle;
+    return handle;
+  }
+
+  GetTypeDefOrRef(type: NamedTypeSymbol): EntityHandle {
+    type = type.OriginalDefinition;
+    const [found, cached] = this.typeHandles.TryGetValue(type);
+    if (found) return cached;
+    let handle: EntityHandle;
+    if (type instanceof MetadataNamedType) {
+      const metadataType = type as MetadataNamedType;
+      const container = type.ContainingSymbol;
+      const scope: EntityHandle = container instanceof NamedTypeSymbol
+        ? this.GetTypeDefOrRef(container as NamedTypeSymbol) : this.GetAssemblyRef(metadataType.Assembly) as EntityHandle;
+      let ns: string? = null;
+      if (!(container instanceof NamedTypeSymbol))
+        ns = container instanceof NamespaceSymbol ? (container as NamespaceSymbol).ToDisplayString() : metadataType.Namespace;
+      handle = this.Metadata.AddTypeReference(scope,
+        String.IsNullOrEmpty(ns) ? new StringHandle() : this.Metadata.GetOrAddString(ns!), this.Metadata.GetOrAddString(type.MetadataName));
+    } else if (type instanceof ErrorTypeSymbol || type instanceof UnsupportedTypeSymbol) {
+      throw new InvalidOperationException("Cannot emit error type " + type.Name);
+    } else {
+      throw new InvalidOperationException("Type has no handle (not emitted): " + type.ToDisplayString());
+    }
+    this.typeHandles[type] = handle;
+    return handle;
+  }
+
+  ClrType(type: TypeSymbol): TypeSymbol {
+    if (type instanceof NullableTypeSymbol) {
+      const underlying = this.ClrType((type as NullableTypeSymbol).Underlying);
+      if (MetadataEmitter.IsValueTypeLike(underlying))
+        return this.getSpecialType(SpecialType.Nullable).Construct(ImmutableArray.Create<TypeSymbol>(underlying));
+      return underlying;
+    }
+    return type;
+  }
+
+  static IsNullableValue(type: TypeSymbol): bool {
+    return type instanceof NullableTypeSymbol && MetadataEmitter.IsValueTypeLike((type as NullableTypeSymbol).Underlying);
+  }
+
+  static IsValueTypeLike(type: TypeSymbol): bool {
+    return type.IsValueType || (type instanceof TypeParameterSymbol && (type as TypeParameterSymbol).HasValueTypeConstraint);
+  }
+
+  private static Primitive(type: SpecialType): PrimitiveTypeCode? {
+    switch (type) {
+      case SpecialType.Boolean: return PrimitiveTypeCode.Boolean;
+      case SpecialType.Char: return PrimitiveTypeCode.Char;
+      case SpecialType.SByte: return PrimitiveTypeCode.SByte;
+      case SpecialType.Byte: return PrimitiveTypeCode.Byte;
+      case SpecialType.Int16: return PrimitiveTypeCode.Int16;
+      case SpecialType.UInt16: return PrimitiveTypeCode.UInt16;
+      case SpecialType.Int32: return PrimitiveTypeCode.Int32;
+      case SpecialType.UInt32: return PrimitiveTypeCode.UInt32;
+      case SpecialType.Int64: return PrimitiveTypeCode.Int64;
+      case SpecialType.UInt64: return PrimitiveTypeCode.UInt64;
+      case SpecialType.Single: return PrimitiveTypeCode.Single;
+      case SpecialType.Double: return PrimitiveTypeCode.Double;
+      case SpecialType.String: return PrimitiveTypeCode.String;
+      case SpecialType.Object: return PrimitiveTypeCode.Object;
+      case SpecialType.IntPtr: return PrimitiveTypeCode.IntPtr;
+      case SpecialType.UIntPtr: return PrimitiveTypeCode.UIntPtr;
+      default: return null;
+    }
+  }
+
+  EncodeType(encoder: SignatureTypeEncoder, type: TypeSymbol): void {
+    type = this.ClrType(type);
+    if (type instanceof ArrayTypeSymbol) {
+      const array = type as ArrayTypeSymbol;
+      if (array.Rank == 1) this.EncodeType(encoder.SZArray(), array.ElementType);
+      else encoder.Array(element => this.EncodeType(element, array.ElementType),
+        shape => shape.Shape(array.Rank, ImmutableArray<int>.Empty, ImmutableArray<int>.Empty));
+      return;
+    }
+    if (type instanceof TypeParameterSymbol) {
+      const parameter = type as TypeParameterSymbol;
+      if (this.classTypeParameterMap != null && this.classTypeParameterMap.ContainsKey(parameter))
+        encoder.GenericTypeParameter(this.classTypeParameterMap[parameter]);
+      else if (parameter.IsMethodTypeParameter) encoder.GenericMethodTypeParameter(parameter.Ordinal);
+      else encoder.GenericTypeParameter(parameter.Ordinal);
+      return;
+    }
+    if (type instanceof NamedTypeSymbol) {
+      const named = type as NamedTypeSymbol;
+      const primitive = MetadataEmitter.Primitive(named.SpecialType);
+      if (primitive != null && named.IsDefinition) { encoder.PrimitiveType(primitive); return; }
+      if (named.IsGenericType && (!Object.ReferenceEquals(named, named.OriginalDefinition) || named instanceof ConstructedNamedType)) {
+        const definition = named.OriginalDefinition;
+        const arguments = encoder.GenericInstantiation(this.GetTypeDefOrRef(definition), named.TypeArguments.Length,
+          MetadataEmitter.IsValueTypeLike(definition));
+        for (const argument of named.TypeArguments) this.EncodeType(arguments.AddArgument(), argument);
+        return;
+      }
+      if (named.IsGenericType) {
+        // Even a definition inside its own body is instantiated over its parameters.
+        const arguments = encoder.GenericInstantiation(this.GetTypeDefOrRef(named), named.TypeParameters.Length,
+          MetadataEmitter.IsValueTypeLike(named));
+        for (const parameter of named.TypeParameters) this.EncodeType(arguments.AddArgument(), parameter);
+        return;
+      }
+      encoder.Type(this.GetTypeDefOrRef(named), MetadataEmitter.IsValueTypeLike(named));
+      return;
+    }
+    throw new InvalidOperationException("Cannot encode type " + type.ToDisplayString());
+  }
+
+  EncodeTypeBlob(type: TypeSymbol): BlobHandle {
+    const builder = new BlobBuilder();
+    this.EncodeType(new SignatureTypeEncoder(builder), type);
+    return this.Metadata.GetOrAddBlob(builder);
+  }
+
+  GetTypeEntity(type: TypeSymbol): EntityHandle {
+    type = this.ClrType(type);
+    if (type instanceof NamedTypeSymbol && !(type as NamedTypeSymbol).IsGenericType)
+      return this.GetTypeDefOrRef(type as NamedTypeSymbol);
+    const key: [TypeSymbol, bool] = [type, this.classTypeParameterMap != null];
+    const [found, cached] = this.typeSpecs.TryGetValue(key);
+    if (found) return cached;
+    const handle = this.Metadata.AddTypeSpecification(this.EncodeTypeBlob(type));
+    this.typeSpecs[key] = handle;
+    return handle;
+  }
+
+  private EncodeParameters(encoder: ParametersEncoder, parameters: ImmutableArray<ParameterSymbol>): void {
+    for (const parameter of parameters)
+      this.EncodeType(encoder.AddParameter().Type(parameter.RefKind != RefKind.None), parameter.Type);
+  }
+
+  EncodeMethodSignature(method: MethodSymbol): BlobHandle {
+    const builder = new BlobBuilder();
+    const encoder = new BlobEncoder(builder).MethodSignature(SignatureCallingConvention.Default, method.Arity, !method.IsStatic);
+    encoder.Parameters(method.Parameters.Length, result => {
+      const init = method.IsInitOnly ? this.getWellKnownType("System.Runtime.CompilerServices.IsExternalInit") : null;
+      if (init != null) result.CustomModifiers().AddModifier(this.GetTypeDefOrRef(init), false);
+      if (method.ReturnType.ReturnsNothing) result.Void();
+      else this.EncodeType(result.Type(method.ReturnsByRef), method.ReturnType);
+    }, parameters => this.EncodeParameters(parameters, method.Parameters));
+    return this.Metadata.GetOrAddBlob(builder);
+  }
+
+  EncodeFieldSignature(type: TypeSymbol): BlobHandle {
+    const builder = new BlobBuilder();
+    this.EncodeType(new BlobEncoder(builder).FieldSignature(), type);
+    return this.Metadata.GetOrAddBlob(builder);
+  }
+
+  EncodePropertySignature(property: PropertySymbol): BlobHandle {
+    const builder = new BlobBuilder();
+    const encoder = new BlobEncoder(builder).PropertySignature(!property.IsStatic);
+    encoder.Parameters(property.Parameters.Length, result => this.EncodeType(result.Type(false), property.Type),
+      parameters => this.EncodeParameters(parameters, property.Parameters));
+    return this.Metadata.GetOrAddBlob(builder);
+  }
+
+  GetMethodEntity(method: MethodSymbol): EntityHandle {
+    if (method instanceof ConstructedMethodSymbol) {
+      const constructed = method as ConstructedMethodSymbol;
+      const baseHandle = this.GetMethodEntity(constructed.ConstructedFrom);
+      const builder = new BlobBuilder();
+      const encoder = new BlobEncoder(builder).MethodSpecificationSignature(constructed.TypeArguments.Length);
+      for (const argument of constructed.TypeArguments) this.EncodeType(encoder.AddArgument(), argument);
+      const blob = this.Metadata.GetOrAddBlob(builder);
+      // Exact bytes separate class and method parameters even when their names match.
+      const key: [EntityHandle, BlobHandle] = [baseHandle, blob];
+      const [found, cached] = this.methodSpecs.TryGetValue(key);
+      if (found) return cached;
+      const handle = this.Metadata.AddMethodSpecification(baseHandle, blob);
+      this.methodSpecs[key] = handle;
+      return handle;
+    }
+    const definition = method.OriginalDefinition;
+    const container = method.ContainingSymbol instanceof NamedTypeSymbol ? method.ContainingSymbol as NamedTypeSymbol : null;
+    const isOnConstructedType = container instanceof ConstructedNamedType || (container != null && container.IsGenericType);
+    const [registered, methodDefinition] = this.methodDefs.TryGetValue(definition);
+    if (!isOnConstructedType && registered) return methodDefinition;
+    const key: [Symbol, bool] = [method, this.classTypeParameterMap != null];
+    const [found, cached] = this.memberRefs.TryGetValue(key);
+    if (found) return cached;
+    if (container == null) throw new InvalidOperationException("Method without container: " + method.Name);
+    const parent = this.GetTypeEntity(container);
+    const savedMap = this.classTypeParameterMap;
+    this.classTypeParameterMap = definition.ContainingSymbol instanceof SynthesizedNamedType
+      ? (definition.ContainingSymbol as SynthesizedNamedType).MethodTypeParameterMap : null;
+    const signature = this.EncodeMethodSignature(definition);
+    this.classTypeParameterMap = savedMap;
+    const handle = this.Metadata.AddMemberReference(parent, this.Metadata.GetOrAddString(definition.MetadataName), signature);
+    this.memberRefs[key] = handle;
+    return handle;
+  }
+
+  GetFieldEntity(field: FieldSymbol): EntityHandle {
+    const definition = field.OriginalDefinition;
+    const container = field.ContainingSymbol instanceof NamedTypeSymbol ? field.ContainingSymbol as NamedTypeSymbol : null;
+    const isOnConstructedType = container instanceof ConstructedNamedType || (container != null && container.IsGenericType);
+    const [registered, fieldDefinition] = this.fieldDefs.TryGetValue(definition);
+    if (!isOnConstructedType && registered) return fieldDefinition;
+    const key: [Symbol, bool] = [field, this.classTypeParameterMap != null];
+    const [found, cached] = this.memberRefs.TryGetValue(key);
+    if (found) return cached;
+    const parent = this.GetTypeEntity(container!);
+    const savedMap = this.classTypeParameterMap;
+    this.classTypeParameterMap = definition.ContainingSymbol instanceof SynthesizedNamedType
+      ? (definition.ContainingSymbol as SynthesizedNamedType).MethodTypeParameterMap : null;
+    const signature = this.EncodeFieldSignature(definition.Type);
+    this.classTypeParameterMap = savedMap;
+    const handle = this.Metadata.AddMemberReference(parent, this.Metadata.GetOrAddString(definition.Name), signature);
+    this.memberRefs[key] = handle;
+    return handle;
+  }
+}

@@ -253,6 +253,10 @@ internal sealed partial class EmitModule(Compilation compilation)
         BlobBuilder bb = new();
         MethodSignatureEncoder enc = new BlobEncoder(bb).MethodSignature(SignatureCallingConvention.Default, def.Arity, isInstanceMethod: !def.IsStatic);
         enc.Parameters(def.Parameters.Length, out ReturnTypeEncoder ret, out ParametersEncoder ps);
+        if (def.IsInitOnly && Compilation.GetWellKnownType("System.Runtime.CompilerServices.IsExternalInit") is { } init)
+        {
+            _ = ret.CustomModifiers().AddModifier(GetTypeDefOrRef(init), isOptional: false);
+        }
         TypeSymbol rt = def.ReturnType;
         if (rt.ReturnsNothing)
         {

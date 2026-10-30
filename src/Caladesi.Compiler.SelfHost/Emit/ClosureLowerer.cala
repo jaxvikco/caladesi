@@ -1,0 +1,557 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { List, Dictionary, HashSet, IEnumerable, ReferenceEqualityComparer } from "System.Collections.Generic";
+import {
+  BoundNode, BoundExpression, BoundStatement, BoundBlock, BoundLambda, BoundBaseReference,
+  BoundLocal, BoundParameter, BoundThis, BoundLocalDeclaration, BoundFor, BoundSequence,
+  BoundTry, BoundCatch, BoundFieldAccess, BoundExpressionStatement, BoundAssignment,
+  BoundObjectCreation, BoundNoOp, BoundDelegateCreation
+} from "../Bound/BoundNodes";
+import { BoundTreeRewriter } from "../Bound/BoundTreeRewriter";
+import { Symbol, Accessibility } from "../Symbols/Symbol";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { TypeSymbol } from "../Symbols/TypeSymbols";
+import { LocalSymbol, ParameterSymbol, FieldSymbol, MethodSymbol, MethodKind, ImmutableArrayExtensions } from "../Symbols/MemberSymbols";
+import { SynthesizedNamedType, SynthesizedFieldSymbol, SynthesizedMethodSymbol } from "../Symbols/Source/Synthesized";
+import { SynthesizedBodyKind } from "../Symbols/Source/SynthesizedBodyKind";
+import { LoweredProgram } from "./LoweredProgram";
+import { SynthesizedClassFactory } from "./SynthesizedClassFactory";
+
+enum ClosureHostKind { Static, ClassInstance, Env }
+
+sealed class ClosureScope {
+  Lexical: ClosureScope? = null;
+  Depth: int = 0;
+  Owner: ClosureContext;
+  readonly Declared: List<Symbol> = new List<Symbol>();
+  readonly Captured: HashSet<Symbol> = new HashSet<Symbol>();
+  readonly CapturedOrdered: List<Symbol> = new List<Symbol>();
+  Env: ClosureEnvironment? = null;
+}
+
+sealed class ClosureContext {
+  Node: BoundLambda? = null;
+  Parent: ClosureContext? = null;
+  DefScope: ClosureScope? = null;
+  RootScope: ClosureScope;
+  readonly FreeVars: HashSet<Symbol> = new HashSet<Symbol>();
+  UsesThis: bool = false;
+  Kind: ClosureHostKind = ClosureHostKind.Static;
+  Host: ClosureEnvironment? = null;
+  Method: SynthesizedMethodSymbol? = null;
+  MethodRef: MethodSymbol? = null;
+  Rewritten: bool = false;
+}
+
+sealed class ClosureEnvironment {
+  Scope: ClosureScope;
+  Class: SynthesizedNamedType;
+  Closed: NamedTypeSymbol;
+  Local: LocalSymbol;
+  readonly Fields: Dictionary<Symbol, FieldSymbol> = new Dictionary<Symbol, FieldSymbol>();
+  Parent: ClosureEnvironment? = null;
+  ParentField: FieldSymbol? = null;
+  NeedsThis: bool = false;
+  ThisField: FieldSymbol? = null;
+}
+
+// Each captured lexical scope has a display class; each lambda becomes a method.
+export sealed class ClosureLowerer<TSourceFile> {
+  readonly Scopes: List<ClosureScope> = new List<ClosureScope>();
+  readonly Contexts: List<ClosureContext> = new List<ClosureContext>();
+  readonly ScopeOf: Dictionary<object, ClosureScope> = new Dictionary<object, ClosureScope>(ReferenceEqualityComparer.Instance);
+  readonly Declarations: Dictionary<Symbol, ClosureScope> = new Dictionary<Symbol, ClosureScope>(ReferenceEqualityComparer.Instance);
+  readonly LambdaContexts: Dictionary<BoundLambda, ClosureContext> = new Dictionary<BoundLambda, ClosureContext>(ReferenceEqualityComparer.Instance);
+  RootContext: ClosureContext;
+  LambdaCount: int = 0;
+  private scopeCounter: int = 0;
+  private lambdaCounter: int = 0;
+
+  private constructor(private readonly objectType: NamedTypeSymbol, private readonly voidType: NamedTypeSymbol,
+    public readonly Program: LoweredProgram<TSourceFile>, private readonly method: MethodSymbol,
+    private readonly container: NamedTypeSymbol, private readonly methodOrdinal: int) {}
+
+  static Lower(objectType: NamedTypeSymbol, voidType: NamedTypeSymbol, program: LoweredProgram<TSourceFile>,
+    method: MethodSymbol, container: NamedTypeSymbol, methodOrdinal: int, body: BoundBlock): BoundBlock {
+    const lowerer = new ClosureLowerer<TSourceFile>(objectType, voidType, program, method, container, methodOrdinal);
+    lowerer.Analyze(body);
+    if (lowerer.LambdaCount == 0) return body;
+    lowerer.Setup();
+    return new ClosureRewriter<TSourceFile>(lowerer, lowerer.RootContext).RewriteContextBody(lowerer.RootContext, body);
+  }
+
+  NewScope(lexical: ClosureScope?, owner: ClosureContext): ClosureScope {
+    const scope = new ClosureScope();
+    scope.Lexical = lexical;
+    scope.Depth = (lexical == null ? -1 : lexical.Depth) + 1;
+    scope.Owner = owner;
+    this.Scopes.Add(scope);
+    return scope;
+  }
+
+  Declare(symbol: Symbol, scope: ClosureScope): void {
+    if (this.Declarations.ContainsKey(symbol)) return;
+    this.Declarations[symbol] = scope;
+    scope.Declared.Add(symbol);
+  }
+
+  private Analyze(body: BoundBlock): void {
+    this.RootContext = new ClosureContext();
+    this.Contexts.Add(this.RootContext);
+    const root = this.NewScope(null, this.RootContext);
+    this.RootContext.RootScope = root;
+    for (const parameter of this.method.Parameters) this.Declare(parameter, root);
+    new ClosureAnalyzer<TSourceFile>(this, this.RootContext, root).Visit(body);
+  }
+
+  get ContainerSelf(): NamedTypeSymbol {
+    return this.container.IsGenericType ? this.container.Construct(ImmutableArrayExtensions.ToTypes(this.container.TypeParameters)) : this.container;
+  }
+
+  private get IsGenericMethod(): bool { return this.method.TypeParameters.Length > 0; }
+
+  private Setup(): void {
+    for (const scope of this.Scopes) {
+      if (scope.Captured.Count > 0) this.CreateEnvironment(scope);
+    }
+    if (this.IsGenericMethod && this.RootContext.RootScope.Env == null) this.CreateEnvironment(this.RootContext.RootScope);
+    for (const context of this.Contexts) {
+      if (context.Node == null) continue;
+      let deepest: ClosureScope? = null;
+      for (const variable of context.FreeVars) {
+        const scope = this.Declarations[variable];
+        if (deepest == null || scope.Depth > deepest.Depth) deepest = scope;
+      }
+      if (deepest != null) {
+        context.Kind = ClosureHostKind.Env;
+        context.Host = deepest.Env;
+      } else if (this.IsGenericMethod) {
+        context.Kind = ClosureHostKind.Env;
+        context.Host = this.RootContext.RootScope.Env;
+      } else context.Kind = context.UsesThis ? ClosureHostKind.ClassInstance : ClosureHostKind.Static;
+    }
+    for (const scope of this.Scopes) {
+      if (scope.Env == null) continue;
+      for (let ancestor = scope.Lexical; ancestor != null && Object.ReferenceEquals(ancestor.Owner, scope.Owner); ancestor = ancestor.Lexical) {
+        if (ancestor.Env != null) { scope.Env.Parent = ancestor.Env; break; }
+      }
+      if (scope.Env.Parent == null) scope.Env.Parent = scope.Owner.Host;
+    }
+    for (const context of this.Contexts) {
+      if (context.UsesThis && context.Host != null) ClosureLowerer<TSourceFile>.Top(context.Host).NeedsThis = true;
+    }
+    for (const scope of this.Scopes) {
+      if (scope.Env != null) this.CreateEnvironmentMembers(scope.Env);
+    }
+    for (const context of this.Contexts) {
+      if (context.Node != null) this.CreateLambdaMethod(context);
+    }
+  }
+
+  private static Top(environment: ClosureEnvironment): ClosureEnvironment {
+    let current = environment;
+    while (current.Parent != null) current = current.Parent;
+    return current;
+  }
+
+  private CreateEnvironment(scope: ClosureScope): void {
+    if (scope.Env != null) return;
+    const [cls, closed] = SynthesizedClassFactory.Create(this.objectType, this.container, this.method,
+      "<>c__DisplayClass" + this.methodOrdinal + "_" + this.scopeCounter++, null);
+    const environment = new ClosureEnvironment();
+    environment.Scope = scope;
+    environment.Class = cls;
+    environment.Closed = closed;
+    environment.Local = new LocalSymbol("CS$<>8__locals" + this.scopeCounter, closed, false, this.method);
+    environment.Local.IsSynthesized = true;
+    scope.Env = environment;
+    this.Program.Types.Add(cls);
+  }
+
+  private static Unique(used: HashSet<string>, original: string): string {
+    let name = original;
+    for (let i = 1; !used.Add(name); i++) name = original + "_" + i;
+    return name;
+  }
+
+  private CreateEnvironmentMembers(environment: ClosureEnvironment): void {
+    const cls = environment.Class;
+    const used = new HashSet<string>(StringComparer.Ordinal);
+    const constructor = new SynthesizedMethodSymbol(cls, ".ctor", MethodKind.Constructor, Accessibility.Public, false, this.voidType, []);
+    constructor.SynthesizedKind = SynthesizedBodyKind.Custom;
+    cls.AddMember(constructor);
+    for (const symbol of environment.Scope.CapturedOrdered) {
+      let type: TypeSymbol;
+      if (symbol instanceof LocalSymbol) type = (symbol as LocalSymbol).Type;
+      else if (symbol instanceof ParameterSymbol) type = (symbol as ParameterSymbol).Type;
+      else throw new InvalidOperationException();
+      const field = new SynthesizedFieldSymbol(cls, ClosureLowerer<TSourceFile>.Unique(used, symbol.Name), type);
+      cls.AddMember(field);
+      environment.Fields[symbol] = field;
+    }
+    if (environment.Parent != null) {
+      environment.ParentField = new SynthesizedFieldSymbol(cls, ClosureLowerer<TSourceFile>.Unique(used, "<>4__parent"), environment.Parent!.Closed);
+      cls.AddMember(environment.ParentField);
+    }
+    if (environment.NeedsThis && environment.Parent == null) {
+      environment.ThisField = new SynthesizedFieldSymbol(cls, ClosureLowerer<TSourceFile>.Unique(used, "<>4__this"), this.ContainerSelf);
+      cls.AddMember(environment.ThisField);
+    }
+    if (!Object.ReferenceEquals(environment.Closed, cls)) {
+      // Snapshot keys before replacing fields with their instantiated counterparts.
+      const keys = new List<Symbol>(environment.Fields.Keys);
+      for (const key of keys) environment.Fields[key] = SynthesizedClassFactory.ClosedField(environment.Closed, environment.Fields[key]);
+      if (environment.ParentField != null) environment.ParentField = SynthesizedClassFactory.ClosedField(environment.Closed, environment.ParentField);
+      if (environment.ThisField != null) environment.ThisField = SynthesizedClassFactory.ClosedField(environment.Closed, environment.ThisField);
+    }
+  }
+
+  private CreateLambdaMethod(context: ClosureContext): void {
+    const lambda = context.Node!.Symbol;
+    const ordinal = this.lambdaCounter++;
+    const name = "<" + this.method.Name + ">b__" + this.methodOrdinal + "_" + ordinal;
+    const hostType: NamedTypeSymbol = context.Kind == ClosureHostKind.Env ? context.Host!.Class : this.container;
+    const isStatic = context.Kind == ClosureHostKind.Static;
+    const accessibility = context.Kind == ClosureHostKind.Env ? Accessibility.Internal : Accessibility.Private;
+    const method = new SynthesizedMethodSymbol(hostType, name, MethodKind.LambdaMethod, accessibility, isStatic, lambda.ReturnType, lambda.Parameters);
+    method.SynthesizedKind = SynthesizedBodyKind.Custom;
+    method.SourceMethod = this.method;
+    method.LambdaOrigin = lambda;
+    method.IsAsyncMethod = lambda.IsAsync;
+    method.IsIteratorMethod = lambda.IsIterator;
+    context.Method = method;
+    if (context.Kind == ClosureHostKind.Env) context.Host!.Class.AddMember(method);
+    else {
+      if (!this.Program.ExtraMembers.ContainsKey(this.container)) this.Program.ExtraMembers[this.container] = new List<Symbol>();
+      this.Program.ExtraMembers[this.container].Add(method);
+    }
+    context.MethodRef = context.Kind == ClosureHostKind.Env && !Object.ReferenceEquals(context.Host!.Closed, context.Host!.Class)
+      ? ClosureLowerer<TSourceFile>.ClosedLambdaMethod(context.Host!.Closed, name) : method;
+    if (this.Program.MethodFiles.ContainsKey(this.method)) this.Program.MethodFiles[method] = this.Program.MethodFiles[this.method];
+  }
+
+  private static ClosedLambdaMethod(closed: NamedTypeSymbol, name: string): MethodSymbol {
+    for (const member of closed.GetMembers(name)) {
+      if (member instanceof MethodSymbol) return member as MethodSymbol;
+    }
+    throw new InvalidOperationException("Sequence contains no elements");
+  }
+}
+
+sealed class ClosureAnalyzer<TSourceFile> extends BoundTreeRewriter {
+  constructor(private readonly owner: ClosureLowerer<TSourceFile>, private context: ClosureContext,
+    private scope: ClosureScope) { super(); }
+
+  override Visit(node: BoundNode?): BoundNode? {
+    if (node instanceof BoundBaseReference) this.MarkThis();
+    return super.Visit(node);
+  }
+
+  private Push(locals: IEnumerable<Symbol>, key: object): ClosureScope {
+    const scope = this.owner.NewScope(this.scope, this.context);
+    for (const local of locals) this.owner.Declare(local, scope);
+    this.owner.ScopeOf[key] = scope;
+    this.scope = scope;
+    return scope;
+  }
+
+  private Pop(): void { this.scope = this.scope.Lexical!; }
+
+  private static Symbols(locals: ImmutableArray<LocalSymbol>): ImmutableArray<Symbol> {
+    const builder = ImmutableArray.CreateBuilder<Symbol>(locals.Length);
+    for (const local of locals) builder.Add(local);
+    return builder.MoveToImmutable();
+  }
+
+  private MarkThis(): void {
+    for (let context: ClosureContext? = this.context; context != null; context = context.Parent) context.UsesThis = true;
+  }
+
+  private Reference(symbol: Symbol): void {
+    let declaration: ClosureScope;
+    if (!this.owner.Declarations.ContainsKey(symbol)) {
+      declaration = this.context.RootScope;
+      this.owner.Declare(symbol, declaration);
+    } else declaration = this.owner.Declarations[symbol];
+    if (Object.ReferenceEquals(declaration.Owner, this.context)) return;
+    if (declaration.Captured.Add(symbol)) declaration.CapturedOrdered.Add(symbol);
+    for (let context: ClosureContext? = this.context; context != null && !Object.ReferenceEquals(context, declaration.Owner); context = context.Parent)
+      context.FreeVars.Add(symbol);
+  }
+
+  protected override VisitBlock(node: BoundBlock): BoundNode {
+    this.Push(ClosureAnalyzer<TSourceFile>.Symbols(node.Locals), node);
+    const result = super.VisitBlock(node);
+    this.Pop();
+    return result;
+  }
+
+  protected override VisitFor(node: BoundFor): BoundNode {
+    this.Push(ClosureAnalyzer<TSourceFile>.Symbols(node.Locals), node);
+    const result = super.VisitFor(node);
+    this.Pop();
+    return result;
+  }
+
+  protected override VisitSequence(node: BoundSequence): BoundNode {
+    this.Push(ClosureAnalyzer<TSourceFile>.Symbols(node.Locals), node);
+    const result = super.VisitSequence(node);
+    this.Pop();
+    return result;
+  }
+
+  protected override VisitTry(node: BoundTry): BoundNode {
+    this.Visit(node.Body);
+    for (const handler of node.Catches) {
+      const locals = new List<Symbol>();
+      if (handler.Local != null) locals.Add(handler.Local);
+      this.Push(locals, handler);
+      this.Visit(handler.Body);
+      this.Pop();
+    }
+    if (node.Finally != null) this.Visit(node.Finally);
+    return node;
+  }
+
+  protected override VisitLocalDeclaration(node: BoundLocalDeclaration): BoundNode {
+    this.owner.Declare(node.Local, this.scope);
+    return super.VisitLocalDeclaration(node);
+  }
+  protected override VisitLocal(node: BoundLocal): BoundNode { this.Reference(node.Local); return node; }
+  protected override VisitParameter(node: BoundParameter): BoundNode { this.Reference(node.Parameter); return node; }
+  protected override VisitThis(node: BoundThis): BoundNode { this.MarkThis(); return node; }
+
+  protected override VisitLambda(node: BoundLambda): BoundNode {
+    if (this.owner.LambdaContexts.ContainsKey(node)) return node;
+    this.owner.LambdaCount++;
+    const context = new ClosureContext();
+    context.Node = node;
+    context.Parent = this.context;
+    context.DefScope = this.scope;
+    this.owner.Contexts.Add(context);
+    this.owner.LambdaContexts[node] = context;
+    const root = this.owner.NewScope(this.scope, context);
+    context.RootScope = root;
+    for (const parameter of node.Symbol.Parameters) this.owner.Declare(parameter, root);
+    const savedContext = this.context;
+    const savedScope = this.scope;
+    this.context = context;
+    this.scope = root;
+    this.Visit(node.Body);
+    this.context = savedContext;
+    this.scope = savedScope;
+    return node;
+  }
+}
+
+sealed class ClosureRewriter<TSourceFile> extends BoundTreeRewriter {
+  constructor(private readonly owner: ClosureLowerer<TSourceFile>, private context: ClosureContext) { super(); }
+
+  RewriteContextBody(target: ClosureContext, body: BoundBlock): BoundBlock {
+    const saved = this.context;
+    this.context = target;
+    const root = target.RootScope;
+    const prelude = new List<BoundStatement>();
+    const locals = new List<LocalSymbol>();
+    if (root.Env != null) {
+      locals.Add(root.Env.Local);
+      prelude.AddRange(this.EnvironmentPrelude(root.Env));
+      for (const symbol of root.CapturedOrdered) {
+        if (!(symbol instanceof ParameterSymbol)) continue;
+        prelude.Add(ClosureRewriter<TSourceFile>.Assign(new BoundFieldAccess(new BoundLocal(root.Env!.Local), root.Env!.Fields[symbol]),
+          new BoundParameter(symbol as ParameterSymbol)));
+      }
+    }
+    const rewritten = this.Visit(body)! as BoundBlock;
+    this.context = saved;
+    if (prelude.Count == 0) return rewritten;
+    prelude.Add(rewritten);
+    const result = new BoundBlock(ImmutableArray.CreateRange<LocalSymbol>(locals), ImmutableArray.CreateRange<BoundStatement>(prelude));
+    result.Syntax = body.Syntax;
+    return result;
+  }
+
+  private static Assign(target: BoundExpression, value: BoundExpression): BoundExpressionStatement {
+    const assignment = new BoundAssignment(target, value);
+    assignment.IsDiscarded = true;
+    return new BoundExpressionStatement(assignment);
+  }
+
+  private *EnvironmentPrelude(environment: ClosureEnvironment): IEnumerable<BoundStatement> {
+    const constructor = environment.Closed.InstanceConstructors[0];
+    yield ClosureRewriter<TSourceFile>.Assign(new BoundLocal(environment.Local), new BoundObjectCreation(constructor, environment.Closed, [], []));
+    if (environment.ParentField != null)
+      yield ClosureRewriter<TSourceFile>.Assign(new BoundFieldAccess(new BoundLocal(environment.Local), environment.ParentField!), this.AccessEnvironment(environment.Parent!));
+    if (environment.ThisField != null)
+      yield ClosureRewriter<TSourceFile>.Assign(new BoundFieldAccess(new BoundLocal(environment.Local), environment.ThisField!), this.ThisExpression());
+  }
+
+  private AccessEnvironment(target: ClosureEnvironment): BoundExpression {
+    if (Object.ReferenceEquals(target.Scope.Owner, this.context)) return new BoundLocal(target.Local);
+    const host = this.context.Host ?? throw new InvalidOperationException("closure host missing");
+    let expression: BoundExpression = new BoundThis(host.Closed);
+    let environment = host;
+    while (!Object.ReferenceEquals(environment, target)) {
+      expression = new BoundFieldAccess(expression, environment.ParentField ?? throw new InvalidOperationException("closure chain broken"));
+      environment = environment.Parent!;
+    }
+    return expression;
+  }
+
+  private ThisExpression(): BoundExpression {
+    if (this.context.Host == null) return new BoundThis(this.owner.ContainerSelf);
+    let expression: BoundExpression = new BoundThis(this.context.Host.Closed);
+    let environment: ClosureEnvironment = this.context.Host!;
+    while (environment.Parent != null) {
+      expression = new BoundFieldAccess(expression, environment.ParentField!);
+      environment = environment.Parent!;
+    }
+    return new BoundFieldAccess(expression, environment.ThisField ?? throw new InvalidOperationException("closure this missing"));
+  }
+
+  private IsCaptured(symbol: Symbol): bool {
+    return this.owner.Declarations.ContainsKey(symbol) && this.owner.Declarations[symbol].Captured.Contains(symbol);
+  }
+
+  private VariableReference(symbol: Symbol): BoundFieldAccess {
+    const scope = this.owner.Declarations[symbol];
+    return new BoundFieldAccess(this.AccessEnvironment(scope.Env!), scope.Env!.Fields[symbol]);
+  }
+
+  private static Remaining(locals: ImmutableArray<LocalSymbol>, scope: ClosureScope, environment: ClosureEnvironment?): ImmutableArray<LocalSymbol> {
+    const builder = ImmutableArray.CreateBuilder<LocalSymbol>();
+    for (const local of locals) {
+      if (!scope.Captured.Contains(local)) builder.Add(local);
+    }
+    if (environment != null) builder.Add(environment.Local);
+    return builder.ToImmutable();
+  }
+
+  protected override VisitLocal(node: BoundLocal): BoundNode { return this.IsCaptured(node.Local) ? this.VariableReference(node.Local) : node; }
+  protected override VisitParameter(node: BoundParameter): BoundNode { return this.IsCaptured(node.Parameter) ? this.VariableReference(node.Parameter) : node; }
+  protected override VisitThis(node: BoundThis): BoundNode { return this.context.Host != null ? this.ThisExpression() : node; }
+
+  protected override VisitLocalDeclaration(node: BoundLocalDeclaration): BoundNode {
+    if (!this.IsCaptured(node.Local)) return super.VisitLocalDeclaration(node);
+    if (node.Initializer == null) {
+      const result = new BoundNoOp();
+      result.Syntax = node.Syntax;
+      return result;
+    }
+    const assignment = new BoundAssignment(this.VariableReference(node.Local), this.VisitExpr(node.Initializer!));
+    assignment.Syntax = node.Syntax;
+    assignment.IsDiscarded = true;
+    const result = new BoundExpressionStatement(assignment);
+    result.Syntax = node.Syntax;
+    return result;
+  }
+
+  protected override VisitBlock(node: BoundBlock): BoundNode {
+    const statements = this.VisitStmts(node.Statements);
+    if (!this.owner.ScopeOf.ContainsKey(node)) {
+      if (statements == node.Statements) return node;
+      const result = new BoundBlock(node.Locals, statements);
+      result.Syntax = node.Syntax;
+      return result;
+    }
+    const scope = this.owner.ScopeOf[node];
+    if (scope.Captured.Count == 0 && scope.Env == null) {
+      if (statements == node.Statements) return node;
+      const result = new BoundBlock(node.Locals, statements);
+      result.Syntax = node.Syntax;
+      return result;
+    }
+    const all = new List<BoundStatement>();
+    if (scope.Env != null) all.AddRange(this.EnvironmentPrelude(scope.Env));
+    all.AddRange(statements);
+    const result = new BoundBlock(ClosureRewriter<TSourceFile>.Remaining(node.Locals, scope, scope.Env), ImmutableArray.CreateRange<BoundStatement>(all));
+    result.Syntax = node.Syntax;
+    return result;
+  }
+
+  protected override VisitFor(node: BoundFor): BoundNode {
+    const initializer = this.VisitStmtOpt(node.Initializer);
+    const condition = this.VisitExprOpt(node.Condition);
+    const increment = this.VisitStmtOpt(node.Increment);
+    const body = this.VisitStmt(node.Body);
+    if (!this.owner.ScopeOf.ContainsKey(node)) {
+      const result = new BoundFor(node.Locals, initializer, condition, increment, body, node.BreakLabel, node.ContinueLabel);
+      result.Syntax = node.Syntax;
+      return result;
+    }
+    const scope = this.owner.ScopeOf[node];
+    if (scope.Captured.Count == 0 && scope.Env == null) {
+      const result = new BoundFor(node.Locals, initializer, condition, increment, body, node.BreakLabel, node.ContinueLabel);
+      result.Syntax = node.Syntax;
+      return result;
+    }
+    const loop = new BoundFor(ClosureRewriter<TSourceFile>.Remaining(node.Locals, scope, null), initializer, condition, increment, body, node.BreakLabel, node.ContinueLabel);
+    loop.Syntax = node.Syntax;
+    if (scope.Env == null) return loop;
+    const all = new List<BoundStatement>(this.EnvironmentPrelude(scope.Env));
+    all.Add(loop);
+    const result = new BoundBlock([scope.Env!.Local], ImmutableArray.CreateRange<BoundStatement>(all));
+    result.Syntax = node.Syntax;
+    return result;
+  }
+
+  protected override VisitSequence(node: BoundSequence): BoundNode {
+    const effects = this.VisitStmts(node.SideEffects);
+    const value = this.VisitExpr(node.Value);
+    if (!this.owner.ScopeOf.ContainsKey(node)) {
+      if (effects == node.SideEffects && Object.ReferenceEquals(value, node.Value)) return node;
+      const result = new BoundSequence(node.Locals, effects, value);
+      result.Syntax = node.Syntax;
+      return result;
+    }
+    const scope = this.owner.ScopeOf[node];
+    if (scope.Captured.Count == 0 && scope.Env == null) {
+      if (effects == node.SideEffects && Object.ReferenceEquals(value, node.Value)) return node;
+      const result = new BoundSequence(node.Locals, effects, value);
+      result.Syntax = node.Syntax;
+      return result;
+    }
+    const all = new List<BoundStatement>();
+    if (scope.Env != null) all.AddRange(this.EnvironmentPrelude(scope.Env));
+    all.AddRange(effects);
+    const result = new BoundSequence(ClosureRewriter<TSourceFile>.Remaining(node.Locals, scope, scope.Env), ImmutableArray.CreateRange<BoundStatement>(all), value);
+    result.Syntax = node.Syntax;
+    return result;
+  }
+
+  protected override VisitTry(node: BoundTry): BoundNode {
+    const body = this.Visit(node.Body)! as BoundBlock;
+    const catches = ImmutableArray.CreateBuilder<BoundCatch>(node.Catches.Length);
+    for (const handler of node.Catches) {
+      const catchBody = this.Visit(handler.Body)! as BoundBlock;
+      if (handler.Local != null && this.owner.ScopeOf.ContainsKey(handler) && this.owner.ScopeOf[handler].Captured.Contains(handler.Local)) {
+        const scope = this.owner.ScopeOf[handler];
+        const temporary = new LocalSymbol(handler.Local.Name, handler.Local.Type, false, handler.Local.Container);
+        temporary.IsSynthesized = true;
+        const all = new List<BoundStatement>(this.EnvironmentPrelude(scope.Env!));
+        all.Add(ClosureRewriter<TSourceFile>.Assign(new BoundFieldAccess(new BoundLocal(scope.Env!.Local), scope.Env!.Fields[handler.Local!]), new BoundLocal(temporary)));
+        all.Add(catchBody);
+        catches.Add(new BoundCatch(temporary, handler.ExceptionType, new BoundBlock([scope.Env!.Local], ImmutableArray.CreateRange<BoundStatement>(all))));
+      } else catches.Add(new BoundCatch(handler.Local, handler.ExceptionType, catchBody));
+    }
+    const finallyBody = node.Finally == null ? null : this.Visit(node.Finally)! as BoundBlock;
+    const result = new BoundTry(body, catches.MoveToImmutable(), finallyBody);
+    result.Syntax = node.Syntax;
+    return result;
+  }
+
+  protected override VisitLambda(node: BoundLambda): BoundNode {
+    const target = this.owner.LambdaContexts[node];
+    if (!target.Rewritten) {
+      target.Rewritten = true;
+      const body = this.RewriteContextBody(target, node.Body);
+      this.owner.Program.Bodies[target.Method!] = body;
+    }
+    let receiver: BoundExpression?;
+    if (target.Kind == ClosureHostKind.Static) receiver = null;
+    else if (target.Kind == ClosureHostKind.ClassInstance) receiver = this.ThisExpression();
+    else receiver = this.AccessEnvironment(target.Host!);
+    const result = new BoundDelegateCreation(receiver, target.MethodRef!, node.Type!);
+    result.Syntax = node.Syntax;
+    return result;
+  }
+}

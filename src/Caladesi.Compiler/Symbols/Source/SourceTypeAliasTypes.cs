@@ -299,6 +299,15 @@ public sealed class SourceUnionSymbol(Compilation compilation, SourceFile file, 
     public override bool IsReadOnlyStruct => true;
     public override bool IsUnionType => true;
     public override NamedTypeSymbol? BaseType => Compilation.GetSpecialType(SpecialType.ValueType);
+    public override ImmutableArray<NamedTypeSymbol> Interfaces
+    {
+        get
+        {
+            NamedTypeSymbol? eq = Compilation.GetWellKnownType("System.IEquatable`1");
+            NamedTypeSymbol self = IsGenericType ? Construct(TypeParameters.CastArray<TypeSymbol>()) : this;
+            return eq == null ? [] : [eq.Construct(self)];
+        }
+    }
 
     public override ImmutableArray<TypeSymbol> UnionCases
     {
@@ -380,6 +389,12 @@ public sealed class SourceUnionSymbol(Compilation compilation, SourceFile file, 
         { SynthesizedKind = SynthesizedBodyKind.UnionToString, IsOverrideFlag = true, ExplicitParameters = [], ExplicitReturnType = strT });
         b.Add(new SourceMethodSymbol(Compilation, File, this, "Equals", MethodKind.Ordinary, default, null, Accessibility.Public)
         { SynthesizedKind = SynthesizedBodyKind.UnionEqualsObject, IsOverrideFlag = true, ExplicitParameters = [new ParameterSymbol("obj", new NullableTypeSymbol(objT), 0, null)], ExplicitReturnType = boolT });
+        b.Add(new SourceMethodSymbol(Compilation, File, this, "Equals", MethodKind.Ordinary, default, null, Accessibility.Public)
+        { SynthesizedKind = SynthesizedBodyKind.UnionEquals, ExplicitParameters = [new ParameterSymbol("other", self, 0, null)], ExplicitReturnType = boolT });
+        b.Add(new SourceMethodSymbol(Compilation, File, this, "op_Equality", MethodKind.UserDefinedOperator, default, null, Accessibility.Public)
+        { SynthesizedKind = SynthesizedBodyKind.UnionEqualsOperator, IsStaticFlag = true, ExplicitParameters = [new ParameterSymbol("left", self, 0, null), new ParameterSymbol("right", self, 1, null)], ExplicitReturnType = boolT });
+        b.Add(new SourceMethodSymbol(Compilation, File, this, "op_Inequality", MethodKind.UserDefinedOperator, default, null, Accessibility.Public)
+        { SynthesizedKind = SynthesizedBodyKind.UnionNotEqualsOperator, IsStaticFlag = true, ExplicitParameters = [new ParameterSymbol("left", self, 0, null), new ParameterSymbol("right", self, 1, null)], ExplicitReturnType = boolT });
         b.Add(new SourceMethodSymbol(Compilation, File, this, "GetHashCode", MethodKind.Ordinary, default, null, Accessibility.Public)
         { SynthesizedKind = SynthesizedBodyKind.UnionGetHashCode, IsOverrideFlag = true, ExplicitParameters = [], ExplicitReturnType = intT });
         return b.ToImmutable();

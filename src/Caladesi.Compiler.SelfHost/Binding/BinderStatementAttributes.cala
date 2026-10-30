@@ -1,0 +1,167 @@
+import { Object } from "System";
+import { List, KeyValuePair } from "System.Collections.Generic";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { Binder } from "./Binder";
+import { BinderStatements } from "./BinderStatements";
+import { Symbol, AttributeData, Accessibility } from "../Symbols/Symbol";
+import { TypeSymbol } from "../Symbols/TypeSymbols";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { MethodSymbol, PropertySymbol, FieldSymbol } from "../Symbols/MemberSymbols";
+import { SyntaxNode } from "../Syntax/SyntaxElement";
+import { ExpressionSyntax, IdentifierNameSyntax, InvocationExpressionSyntax, ObjectLiteralExpressionSyntax,
+  PropertyAssignmentSyntax, MemberAccessExpressionSyntax, DecoratorSyntax } from "../Syntax/Nodes.Core";
+import { BoundExpression, BoundTypeExpression, BoundNamespaceExpression, BoundLiteral, BoundTypeOf,
+  BoundArrayCreation, BoundConversion, ConversionKind } from "../Bound/BoundNodes";
+import { Descriptors } from "../Diagnostics/Descriptors";
+import { NameUtilities } from "../NameUtilities";
+import { BoundAttribute } from "../BoundAttribute";
+
+export sealed class BinderStatementAttributes<TFile> {
+  constructor(private readonly binder: Binder<TFile>, private readonly statements: BinderStatements<TFile>) {}
+  Bind(symbol: Symbol, syntax: ImmutableArray<SyntaxNode>): ImmutableArray<AttributeData> {
+    const result = ImmutableArray.CreateBuilder<AttributeData>();
+    for (const node of syntax) {
+      if (!(node instanceof DecoratorSyntax)) continue;
+      const attribute = this.BindDecorator(node as DecoratorSyntax);
+      if (attribute != null) {
+        const positional = ImmutableArray.CreateBuilder<object?>();
+        for (const argument of attribute.Arguments) positional.Add(this.Value(argument));
+        const named = ImmutableArray.CreateBuilder<KeyValuePair<string, object?>>();
+        for (const entry of attribute.Named) named.Add(new KeyValuePair<string, object?>(entry.Item1.Name, this.Value(entry.Item2)));
+        result.Add(new AttributeData(attribute.AttributeType, attribute.Constructor, positional.ToImmutable(), named.ToImmutable()));
+        this.binder.Record(node, attribute.Constructor);
+      }
+    }
+    return result.ToImmutable();
+  }
+  private IsAttribute(type: NamedTypeSymbol): bool {
+    const attribute = this.binder.Context.GetWellKnownType("System.Attribute");
+    if (attribute == null) return false;
+    for (let current: NamedTypeSymbol? = type; current != null; current = current.BaseType)
+      if (Object.ReferenceEquals(current.OriginalDefinition, attribute.OriginalDefinition)) return true;
+    return false;
+  }
+  private Resolve(callee: ExpressionSyntax): NamedTypeSymbol? {
+    if (callee instanceof IdentifierNameSyntax) {
+      const name = (callee as IdentifierNameSyntax).Identifier.Text;
+      for (const candidateName of ImmutableArray.Create<string>(name, name + "Attribute"))
+        for (const symbol of this.binder.Context.GetScope(this.binder.File).Lookup(candidateName))
+          if (symbol instanceof NamedTypeSymbol && (symbol as NamedTypeSymbol).OwnArity == 0 && this.IsAttribute(symbol as NamedTypeSymbol))
+            return symbol as NamedTypeSymbol;
+      return null;
+    }
+    const guard = this.binder.BeginSpeculation();
+    try {
+      const expression = this.binder.BindExpression(callee);
+      if (expression instanceof BoundTypeExpression && (expression as BoundTypeExpression).TypeSym instanceof NamedTypeSymbol) {
+        const type = (expression as BoundTypeExpression).TypeSym as NamedTypeSymbol;
+        if (this.IsAttribute(type)) return type;
+      }
+      if (callee instanceof MemberAccessExpressionSyntax) {
+        const access = callee as MemberAccessExpressionSyntax;
+        const receiver = this.binder.BindExpression(access.Expression);
+        const name = access.Name.Identifier.Text + "Attribute";
+        if (receiver instanceof BoundNamespaceExpression) {
+          for (const type of (receiver as BoundNamespaceExpression).Namespace.GetTypeMembersByName(name))
+            if (type.OwnArity == 0 && this.IsAttribute(type)) return type;
+        } else if (receiver instanceof BoundTypeExpression) {
+          for (const symbol of (receiver as BoundTypeExpression).TypeSym.GetMembers(name))
+            if (symbol instanceof NamedTypeSymbol && (symbol as NamedTypeSymbol).OwnArity == 0 && this.IsAttribute(symbol as NamedTypeSymbol))
+              return symbol as NamedTypeSymbol;
+        }
+      }
+      return null;
+    } finally { guard.Dispose(); }
+  }
+  private Constant(expression: BoundExpression): bool {
+    if (expression.ConstantValue != null || expression instanceof BoundLiteral || expression instanceof BoundTypeOf) return true;
+    if (expression instanceof BoundArrayCreation) {
+      for (const element of (expression as BoundArrayCreation).Initializers) if (!this.Constant(element)) return false;
+      return true;
+    }
+    if (expression instanceof BoundConversion) {
+      const conversion = expression as BoundConversion;
+      return (conversion.Kind == ConversionKind.Identity || conversion.Kind == ConversionKind.Boxing ||
+        conversion.Kind == ConversionKind.ImplicitReference || conversion.Kind == ConversionKind.ToNullable ||
+        conversion.Kind == ConversionKind.TypeOnly) && this.Constant(conversion.Operand);
+    }
+    return false;
+  }
+  private Value(expression: BoundExpression): object? {
+    if (expression.ConstantValue != null) return expression.ConstantValue.Value;
+    if (expression instanceof BoundTypeOf) return (expression as BoundTypeOf).Operand;
+    if (expression instanceof BoundArrayCreation) {
+      const values = ImmutableArray.CreateBuilder<object?>();
+      for (const element of (expression as BoundArrayCreation).Initializers) values.Add(this.Value(element));
+      return values.ToImmutable();
+    }
+    if (expression instanceof BoundConversion) return this.Value((expression as BoundConversion).Operand);
+    return null;
+  }
+  private Writable(type: NamedTypeSymbol, name: string): Symbol? {
+    for (const candidate of this.binder.LookupMembers(type, name)) {
+      if (candidate.IsStatic || !this.binder.IsAccessible(candidate)) continue;
+      if (candidate instanceof PropertySymbol) {
+        const property = candidate as PropertySymbol;
+        if (!property.IsIndexer && property.SetMethod != null && this.binder.IsAccessible(property.SetMethod)) return property;
+      } else if (candidate instanceof FieldSymbol && !(candidate as FieldSymbol).IsReadOnly && !(candidate as FieldSymbol).IsConst)
+        return candidate;
+    }
+    return null;
+  }
+  BindDecorator(syntax: DecoratorSyntax): BoundAttribute? {
+    let callee = syntax.Expression;
+    const arguments = new List<ExpressionSyntax>();
+    if (callee instanceof InvocationExpressionSyntax) {
+      const invocation = callee as InvocationExpressionSyntax;
+      for (const argument of invocation.Arguments.Arguments) arguments.Add(argument);
+      callee = invocation.Expression;
+    }
+    const type = this.Resolve(callee);
+    if (type == null) {
+      this.binder.Report(Descriptors.AttributeNotFound, callee, [callee.ToFullString().Trim()]);
+      return null;
+    }
+    let namedSyntax: ObjectLiteralExpressionSyntax? = null;
+    if (arguments.Count > 0 && arguments[arguments.Count - 1] instanceof ObjectLiteralExpressionSyntax) {
+      namedSyntax = arguments[arguments.Count - 1] as ObjectLiteralExpressionSyntax;
+      arguments.RemoveAt(arguments.Count - 1);
+    }
+    const values = ImmutableArray.CreateBuilder<BoundExpression>();
+    for (const argument of arguments) {
+      const value = this.statements.Natural(this.binder.BindValue(argument));
+      if (value.HasErrors) return null;
+      values.Add(value);
+    }
+    const constructors = ImmutableArray.CreateBuilder<MethodSymbol>();
+    for (const constructor of this.binder.LookupConstructors(type))
+      if (constructor.DeclaredAccessibility == Accessibility.Public) constructors.Add(constructor);
+    const call = this.binder.Overloads.ResolveOverloads(constructors.ToImmutable(), values.ToImmutable(),
+      ImmutableArray<TypeSymbol>.Empty, syntax, type.Name, true);
+    if (call == null) return null;
+    const positional = ImmutableArray.CreateBuilder<BoundExpression>();
+    for (const argument of call.Arguments) {
+      if (!this.Constant(argument)) { this.binder.Report(Descriptors.AttributeArgumentNotConstant, argument.Syntax ?? syntax, []); return null; }
+      positional.Add(argument);
+    }
+    const named = ImmutableArray.CreateBuilder<[Member: Symbol, Value: BoundExpression]>();
+    if (namedSyntax != null) for (const memberSyntax of namedSyntax.Members) {
+      if (!(memberSyntax instanceof PropertyAssignmentSyntax)) continue;
+      const property = memberSyntax as PropertyAssignmentSyntax;
+      const name = property.NameToken.ValueText;
+      const member = this.Writable(type, name) ?? this.Writable(type, NameUtilities.FlipFirstCase(name));
+      if (member == null) {
+        this.binder.Report(Descriptors.AttributeMemberNotFound, property, [name, type.Name]);
+        continue;
+      }
+      const memberType = member instanceof PropertySymbol ? (member as PropertySymbol).Type : (member as FieldSymbol).Type;
+      const value = this.binder.BindToType(property.Value, memberType);
+      if (value.HasErrors) continue;
+      if (!this.Constant(value)) { this.binder.Report(Descriptors.AttributeArgumentNotConstant, property.Value, []); continue; }
+      named.Add([member, value]);
+      this.binder.Record(property, member);
+    }
+    this.binder.Record(syntax, call.Method);
+    return new BoundAttribute(type, call.Method, positional.ToImmutable(), named.ToImmutable());
+  }
+}

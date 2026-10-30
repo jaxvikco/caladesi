@@ -1,0 +1,97 @@
+import { Compilation, CompilationOptions, SourceFile } from "Caladesi.Compiler";
+import { SemanticModel } from "Caladesi.Compiler.Semantics";
+import { ReferenceSet } from "Caladesi.Compiler.Symbols.Metadata";
+import { SyntaxTree } from "Caladesi.Compiler.Syntax";
+import { Workspace } from "../Workspace";
+
+export sealed class CompilationUnit {
+  private readonly _trees: Dictionary<string, [string, SyntaxTree]> = new Dictionary<string, [string, SyntaxTree]>(StringComparer.Ordinal);
+  private readonly _models: Dictionary<SyntaxTree, SemanticModel<SourceFile>> = new Dictionary<SyntaxTree, SemanticModel<SourceFile>>();
+  private readonly _generated: SyntaxTree?;
+  private _compilation: Compilation? = null;
+  private _filesChanged: bool = true;
+  readonly ProjectFiles: List<string>;
+  readonly OpenFiles: HashSet<string> = new HashSet<string>(StringComparer.Ordinal);
+
+  constructor(public readonly Key: string, public readonly ProjectPath: string?, public readonly Options: CompilationOptions,
+    public readonly References: ReferenceSet, files: IEnumerable<string>, generated: SyntaxTree?) {
+    this.ProjectFiles = new List<string>(files);
+    this._generated = generated;
+  }
+
+  constructor(key: string, projectPath: string?, options: CompilationOptions, references: ReferenceSet, files: IEnumerable<string>) {
+    this.Key = key;
+    this.ProjectPath = projectPath;
+    this.Options = options;
+    this.References = references;
+    this.ProjectFiles = new List<string>(files);
+    this._generated = null;
+  }
+
+  get IsProject(): bool { return this.ProjectPath != null; }
+  IsMember(path: string): bool { return this.OpenFiles.Contains(path) || this.ProjectFiles.Contains(path); }
+  MarkChanged(): void { this._filesChanged = true; }
+
+  AllPaths(): IEnumerable<string> {
+    const seen: HashSet<string> = new HashSet<string>(StringComparer.Ordinal);
+    const paths: List<string> = new List<string>();
+    for (const p: string of this.ProjectFiles) {
+      if (seen.Add(p)) paths.Add(p);
+    }
+    const open: List<string> = new List<string>(this.OpenFiles);
+    open.Sort(StringComparer.Ordinal);
+    for (const p: string of open) {
+      if (seen.Add(p)) paths.Add(p);
+    }
+    return paths;
+  }
+
+  GetCompilation(workspace: Workspace): Compilation {
+    let changed: bool = this._compilation == null || this._filesChanged;
+    const trees: List<SyntaxTree> = new List<SyntaxTree>();
+    const live: HashSet<string> = new HashSet<string>(StringComparer.Ordinal);
+    for (const path: string of this.AllPaths()) {
+      const text: string? = workspace.GetText(path);
+      if (text == null) continue;
+      live.Add(path);
+      const [found, cached] = this._trees.TryGetValue(path);
+      if (found && string.Equals(cached[0], text, StringComparison.Ordinal)) {
+        trees.Add(cached[1]);
+        continue;
+      }
+      const tree: SyntaxTree = SyntaxTree.ParseText(text, path);
+      this._trees[path] = [text, tree];
+      trees.Add(tree);
+      changed = true;
+    }
+    for (const stale: string of new List<string>(this._trees.Keys)) {
+      if (!live.Contains(stale)) {
+        this._trees.Remove(stale);
+        changed = true;
+      }
+    }
+    if (this._generated != null) trees.Add(this._generated);
+    if (changed) {
+      this._compilation = Compilation.Create(this.Options, trees, this.References);
+      this._models.Clear();
+      this._filesChanged = false;
+    }
+    return this._compilation!;
+  }
+
+  HasTree(path: string): bool { return this._trees.ContainsKey(path); }
+  GetTree(workspace: Workspace, path: string): SyntaxTree? {
+    const compilation: Compilation = this.GetCompilation(workspace);
+    for (const tree: SyntaxTree of compilation.SyntaxTrees) {
+      if (string.Equals(tree.FilePath, path, StringComparison.Ordinal)) return tree;
+    }
+    return null;
+  }
+  GetModel(compilation: Compilation, tree: SyntaxTree): SemanticModel<SourceFile> {
+    const [found, cached] = this._models.TryGetValue(tree);
+    if (found) return cached;
+    const model: SemanticModel<SourceFile> = compilation.GetSemanticModel(tree);
+    this._models[tree] = model;
+    return model;
+  }
+}

@@ -1,0 +1,347 @@
+import { JsonElement, Utf8JsonWriter } from "System.Text.Json";
+import { Compilation, SourceFile } from "Caladesi.Compiler";
+import { Formatter } from "Caladesi.Compiler.Formatting";
+import { SemanticModel, SymbolAt, SymbolReference, CompletionKind, CompletionEntry, SignatureEntry, DocumentSymbolKind, DocumentSymbolInfo, DocumentOutline, SemanticTokenInfo } from "Caladesi.Compiler.Semantics";
+import { SyntaxTree, SyntaxFacts, SyntaxKind } from "Caladesi.Compiler.Syntax";
+import { SourceText, TextSpan, TextSpans, LinePosition, LinePositionSpan } from "Caladesi.Compiler.Text";
+import { Workspace, OpenDocument } from "../Workspace";
+import { CompilationUnit } from "../Projects/CompilationUnit";
+import { Json } from "../Protocol/Json";
+import { RpcException } from "../LanguageServer";
+import { ImportReferences } from "./ImportReferences";
+
+sealed class DocumentContext {
+  constructor(public readonly Document: OpenDocument, public readonly Unit: CompilationUnit, public readonly Compilation: Compilation, public readonly Tree: SyntaxTree) {}
+  get Text(): SourceText { return this.Tree.Text; }
+  get Model(): SemanticModel<SourceFile> { return this.Unit.GetModel(this.Compilation, this.Tree); }
+}
+
+export sealed class DocumentFeatures {
+  constructor(private readonly _workspace: Workspace) {}
+
+  private GetContext(p: JsonElement): DocumentContext? {
+    const uri: string? = Json.GetString(Json.Path(p, "textDocument", "uri"));
+    if (uri == null) return null;
+    const document: OpenDocument? = this._workspace.GetDocument(uri);
+    const unit: CompilationUnit? = this._workspace.GetUnit(uri);
+    if (document == null || unit == null) return null;
+    const compilation: Compilation = unit.GetCompilation(this._workspace);
+    for (const tree: SyntaxTree of compilation.SyntaxTrees) {
+      if (string.Equals(tree.FilePath, document.Path, StringComparison.Ordinal)) return new DocumentContext(document, unit, compilation, tree);
+    }
+    return null;
+  }
+
+  private static ReadPosition(position: JsonElement?): LinePosition {
+    return new LinePosition(Math.Max(0, Json.GetInt(Json.Get(position, "line")) ?? 0), Math.Max(0, Json.GetInt(Json.Get(position, "character")) ?? 0));
+  }
+  private static ReadOffset(context: DocumentContext, p: JsonElement): int {
+    return context.Text.GetPosition(DocumentFeatures.ReadPosition(Json.Get(p, "position")));
+  }
+  private static ToRange(tree: SyntaxTree, span: TextSpan): LinePositionSpan { return tree.Text.GetLinePositionSpan(span); }
+  private WriteLocation(w: Utf8JsonWriter, reference: SymbolReference): void {
+    w.WriteStartObject();
+    w.WriteString("uri", this._workspace.PathToUri(reference.Tree.FilePath));
+    Json.WriteRange(w, "range", DocumentFeatures.ToRange(reference.Tree, reference.Span));
+    w.WriteEndObject();
+  }
+
+  Hover(p: JsonElement): Action<Utf8JsonWriter>? {
+    const c = this.GetContext(p);
+    if (c == null) return null;
+    const model: SemanticModel<SourceFile> = c.Model;
+    const offset: int = DocumentFeatures.ReadOffset(c, p);
+    const text: string? = model.GetHover(offset);
+    if (string.IsNullOrEmpty(text)) return null;
+    const at: SymbolAt? = model.GetSymbolAt(offset);
+    return w => {
+      w.WriteStartObject();
+      w.WritePropertyName("contents");
+      w.WriteStartObject();
+      w.WriteString("kind", "markdown");
+      w.WriteString("value", "```caladesi\n" + text + "\n```");
+      w.WriteEndObject();
+      if (at != null) Json.WriteRange(w, "range", DocumentFeatures.ToRange(c.Tree, at.Span));
+      w.WriteEndObject();
+    };
+  }
+
+  Definition(p: JsonElement): Action<Utf8JsonWriter>? {
+    const c = this.GetContext(p);
+    if (c == null) return null;
+    const model: SemanticModel<SourceFile> = c.Model;
+    const at: SymbolAt? = model.GetSymbolAt(DocumentFeatures.ReadOffset(c, p));
+    if (at == null) return null;
+    const definition: SymbolReference? = model.GetDefinition(at.Symbol);
+    if (definition == null) return null;
+    return w => this.WriteLocation(w, definition);
+  }
+
+  References(p: JsonElement): Action<Utf8JsonWriter>? {
+    const c = this.GetContext(p);
+    if (c == null) return null;
+    const model: SemanticModel<SourceFile> = c.Model;
+    const at: SymbolAt? = model.GetSymbolAt(DocumentFeatures.ReadOffset(c, p));
+    if (at == null) return null;
+    const includeDeclaration: bool = Json.GetBool(Json.Path(p, "context", "includeDeclaration"), true);
+    const references: IReadOnlyList<SymbolReference> = ImportReferences.Find(model, c.Compilation, at.Symbol, includeDeclaration);
+    return w => {
+      w.WriteStartArray();
+      for (const reference: SymbolReference of references) this.WriteLocation(w, reference);
+      w.WriteEndArray();
+    };
+  }
+
+  private static IsRenameable(model: SemanticModel<SourceFile>, at: SymbolAt): bool { return model.GetDefinition(at.Symbol) != null; }
+
+  PrepareRename(p: JsonElement): Action<Utf8JsonWriter>? {
+    const c = this.GetContext(p);
+    if (c == null) return null;
+    const model: SemanticModel<SourceFile> = c.Model;
+    const at: SymbolAt? = model.GetSymbolAt(DocumentFeatures.ReadOffset(c, p));
+    if (at == null || !DocumentFeatures.IsRenameable(model, at)) return null;
+    const placeholder: string = c.Text.ToString(at.Span);
+    return w => {
+      w.WriteStartObject();
+      Json.WriteRange(w, "range", DocumentFeatures.ToRange(c.Tree, at.Span));
+      w.WriteString("placeholder", placeholder);
+      w.WriteEndObject();
+    };
+  }
+
+  Rename(p: JsonElement): Action<Utf8JsonWriter>? {
+    const c = this.GetContext(p);
+    if (c == null) return null;
+    const newName: string? = Json.GetString(Json.Get(p, "newName"));
+    if (!DocumentFeatures.IsValidIdentifier(newName)) throw new RpcException(-32602, "'" + newName + "' is not a valid identifier");
+    const model: SemanticModel<SourceFile> = c.Model;
+    const at: SymbolAt? = model.GetSymbolAt(DocumentFeatures.ReadOffset(c, p));
+    if (at == null) throw new RpcException(-32602, "There is no symbol to rename at this position");
+    if (!DocumentFeatures.IsRenameable(model, at)) throw new RpcException(-32602, "Only symbols declared in source can be renamed");
+    const oldName: string = c.Text.ToString(at.Span);
+    const edits = new SortedDictionary<string, List<SymbolReference>>(StringComparer.Ordinal);
+    const seen = new Dictionary<string, HashSet<int>>(StringComparer.Ordinal);
+    for (const reference: SymbolReference of ImportReferences.Find(model, c.Compilation, at.Symbol, true)) {
+      const path: string = reference.Tree.FilePath;
+      if (!this._workspace.IsWorkspaceFile(path)) continue;
+      if (TextSpans.End(reference.Span) > reference.Tree.Text.Length || reference.Tree.Text.ToString(reference.Span) != oldName) continue;
+      const [hasSeen, positions] = seen.TryGetValue(path);
+      const starts: HashSet<int> = hasSeen ? positions : new HashSet<int>();
+      if (!hasSeen) seen[path] = starts;
+      if (!starts.Add(reference.Span.Start)) continue;
+      const uri: string = this._workspace.PathToUri(path);
+      const [hasList, existing] = edits.TryGetValue(uri);
+      const list: List<SymbolReference> = hasList ? existing : new List<SymbolReference>();
+      if (!hasList) edits[uri] = list;
+      list.Add(reference);
+    }
+    return w => {
+      w.WriteStartObject();
+      w.WritePropertyName("changes");
+      w.WriteStartObject();
+      for (const entry: KeyValuePair<string, List<SymbolReference>> of edits) {
+        w.WritePropertyName(entry.Key);
+        w.WriteStartArray();
+        for (const reference: SymbolReference of entry.Value) {
+          w.WriteStartObject();
+          Json.WriteRange(w, "range", DocumentFeatures.ToRange(reference.Tree, reference.Span));
+          w.WriteString("newText", newName);
+          w.WriteEndObject();
+        }
+        w.WriteEndArray();
+      }
+      w.WriteEndObject();
+      w.WriteEndObject();
+    };
+  }
+
+  private static IsValidIdentifier(name: string?): bool {
+    if (string.IsNullOrEmpty(name)) return false;
+    if (!(char.IsLetter(name![0]) || name![0] == '_' || name![0] == '$')) return false;
+    for (const ch: char of name!) {
+      if (!(char.IsLetterOrDigit(ch) || ch == '_' || ch == '$')) return false;
+    }
+    const kind: SyntaxKind = SyntaxFacts.GetKeywordKind(name!);
+    return kind == SyntaxKind.IdentifierToken || !SyntaxFacts.IsReservedKeyword(kind);
+  }
+
+  private static CompletionItemKind(kind: CompletionKind): int {
+    switch (kind) {
+      case CompletionKind.Keyword: return 14;
+      case CompletionKind.Variable: return 6;
+      case CompletionKind.Constant: return 21;
+      case CompletionKind.Function: return 3;
+      case CompletionKind.Method: return 2;
+      case CompletionKind.Property: return 10;
+      case CompletionKind.Field: return 5;
+      case CompletionKind.Class: return 7;
+      case CompletionKind.Interface: return 8;
+      case CompletionKind.Enum: return 13;
+      case CompletionKind.EnumMember: return 20;
+      case CompletionKind.Struct: return 22;
+      case CompletionKind.Module: return 9;
+      case CompletionKind.Namespace: return 9;
+      case CompletionKind.TypeParameter: return 25;
+      case CompletionKind.TypeAlias: return 7;
+      case CompletionKind.Snippet: return 15;
+      default: return 1;
+    }
+  }
+
+  Completion(p: JsonElement): Action<Utf8JsonWriter>? {
+    const c = this.GetContext(p);
+    if (c == null) return null;
+    const entries: IReadOnlyList<CompletionEntry> = c.Model.GetCompletions(DocumentFeatures.ReadOffset(c, p));
+    return w => {
+      w.WriteStartObject();
+      w.WriteBoolean("isIncomplete", false);
+      w.WritePropertyName("items");
+      w.WriteStartArray();
+      for (const entry: CompletionEntry of entries) {
+        w.WriteStartObject();
+        w.WriteString("label", entry.Label);
+        w.WriteNumber("kind", DocumentFeatures.CompletionItemKind(entry.Kind));
+        if (entry.Detail != null) w.WriteString("detail", entry.Detail);
+        if (entry.InsertText != null) {
+          w.WriteString("insertText", entry.InsertText);
+          if (entry.Kind == CompletionKind.Snippet) w.WriteNumber("insertTextFormat", 2);
+        }
+        w.WriteEndObject();
+      }
+      w.WriteEndArray();
+      w.WriteEndObject();
+    };
+  }
+
+  SignatureHelp(p: JsonElement): Action<Utf8JsonWriter>? {
+    const c = this.GetContext(p);
+    if (c == null) return null;
+    const help = c.Model.GetSignatureHelp(DocumentFeatures.ReadOffset(c, p));
+    if (help == null) return null;
+    return w => {
+      w.WriteStartObject();
+      w.WritePropertyName("signatures");
+      w.WriteStartArray();
+      for (const signature: SignatureEntry of help.Signatures) {
+        w.WriteStartObject();
+        w.WriteString("label", signature.Label);
+        w.WritePropertyName("parameters");
+        w.WriteStartArray();
+        for (const parameter: string of signature.Parameters) {
+          w.WriteStartObject();
+          w.WriteString("label", parameter);
+          w.WriteEndObject();
+        }
+        w.WriteEndArray();
+        w.WriteEndObject();
+      }
+      w.WriteEndArray();
+      w.WriteNumber("activeSignature", help.ActiveSignature);
+      w.WriteNumber("activeParameter", help.ActiveParameter);
+      w.WriteEndObject();
+    };
+  }
+
+  private static SymbolKindNumber(kind: DocumentSymbolKind): int {
+    switch (kind) {
+      case DocumentSymbolKind.Module: return 2;
+      case DocumentSymbolKind.Namespace: return 3;
+      case DocumentSymbolKind.Class: return 5;
+      case DocumentSymbolKind.Method: return 6;
+      case DocumentSymbolKind.Property: return 7;
+      case DocumentSymbolKind.Field: return 8;
+      case DocumentSymbolKind.Constructor: return 9;
+      case DocumentSymbolKind.Enum: return 10;
+      case DocumentSymbolKind.Interface: return 11;
+      case DocumentSymbolKind.Function: return 12;
+      case DocumentSymbolKind.Variable: return 13;
+      case DocumentSymbolKind.Constant: return 14;
+      case DocumentSymbolKind.EnumMember: return 22;
+      case DocumentSymbolKind.Struct: return 23;
+      case DocumentSymbolKind.TypeParameter: return 26;
+      case DocumentSymbolKind.TypeAlias: return 5;
+      default: return 13;
+    }
+  }
+
+  DocumentSymbols(p: JsonElement): Action<Utf8JsonWriter>? {
+    const c = this.GetContext(p);
+    if (c == null) return null;
+    const symbols: IReadOnlyList<DocumentSymbolInfo> = DocumentOutline.Compute(c.Tree);
+    return w => {
+      w.WriteStartArray();
+      for (const symbol: DocumentSymbolInfo of symbols) DocumentFeatures.WriteDocumentSymbol(w, c.Tree, symbol);
+      w.WriteEndArray();
+    };
+  }
+
+  private static WriteDocumentSymbol(w: Utf8JsonWriter, tree: SyntaxTree, symbol: DocumentSymbolInfo): void {
+    const range: LinePositionSpan = DocumentFeatures.ToRange(tree, symbol.Span);
+    const selection: LinePositionSpan = symbol.SelectionSpan.Start >= symbol.Span.Start && TextSpans.End(symbol.SelectionSpan) <= TextSpans.End(symbol.Span)
+      ? DocumentFeatures.ToRange(tree, symbol.SelectionSpan) : range;
+    w.WriteStartObject();
+    w.WriteString("name", string.IsNullOrEmpty(symbol.Name) ? "<anonymous>" : symbol.Name);
+    if (!string.IsNullOrEmpty(symbol.Detail)) w.WriteString("detail", symbol.Detail);
+    w.WriteNumber("kind", DocumentFeatures.SymbolKindNumber(symbol.Kind));
+    Json.WriteRange(w, "range", range);
+    Json.WriteRange(w, "selectionRange", selection);
+    if (symbol.Children.Count > 0) {
+      w.WritePropertyName("children");
+      w.WriteStartArray();
+      for (const child: DocumentSymbolInfo of symbol.Children) DocumentFeatures.WriteDocumentSymbol(w, tree, child);
+      w.WriteEndArray();
+    }
+    w.WriteEndObject();
+  }
+
+  SemanticTokensFull(p: JsonElement): Action<Utf8JsonWriter>? {
+    const c = this.GetContext(p);
+    if (c == null) return null;
+    const tokens = new List<SemanticTokenInfo>(c.Model.GetSemanticTokens().OrderBy(t => t.Span.Start));
+    const data = new List<int>(tokens.Count * 5);
+    let previousLine = 0;
+    let previousCharacter = 0;
+    let previousEnd = -1;
+    for (const token: SemanticTokenInfo of tokens) {
+      if (token.Span.Start < previousEnd || token.Span.Length == 0) continue;
+      const position: LinePosition = c.Text.GetLinePosition(token.Span.Start);
+      const deltaLine: int = position.Line - previousLine;
+      const deltaStart: int = deltaLine == 0 ? position.Character - previousCharacter : position.Character;
+      data.Add(deltaLine);
+      data.Add(deltaStart);
+      data.Add(token.Span.Length);
+      data.Add(token.Type as int);
+      data.Add(token.Modifiers as int);
+      previousLine = position.Line;
+      previousCharacter = position.Character;
+      previousEnd = TextSpans.End(token.Span);
+    }
+    return w => {
+      w.WriteStartObject();
+      w.WritePropertyName("data");
+      w.WriteStartArray();
+      for (const n: int of data) w.WriteNumberValue(n);
+      w.WriteEndArray();
+      w.WriteEndObject();
+    };
+  }
+
+  Formatting(p: JsonElement): Action<Utf8JsonWriter>? {
+    const c = this.GetContext(p);
+    if (c == null) return null;
+    const requested: int? = Json.GetInt(Json.Path(p, "options", "tabSize"));
+    const tabSize: int = requested != null && requested > 0 && requested <= 16 ? requested : 2;
+    const original: string = c.Text.Text;
+    const formatted: string = Formatter.Format(SyntaxTree.ParseText(original, c.Document.Path), tabSize);
+    if (string.Equals(original, formatted, StringComparison.Ordinal)) return w => { w.WriteStartArray(); w.WriteEndArray(); };
+    const end: LinePosition = c.Text.GetLinePosition(original.Length);
+    return w => {
+      w.WriteStartArray();
+      w.WriteStartObject();
+      Json.WriteRange(w, "range", new LinePositionSpan(new LinePosition(0, 0), end));
+      w.WriteString("newText", formatted);
+      w.WriteEndObject();
+      w.WriteEndArray();
+    };
+  }
+}

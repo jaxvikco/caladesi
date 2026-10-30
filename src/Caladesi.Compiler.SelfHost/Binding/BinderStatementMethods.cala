@@ -1,0 +1,669 @@
+import { Object } from "System";
+import { List, HashSet } from "System.Collections.Generic";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { Binder } from "./Binder";
+import { BinderScope, BinderScopeKind } from "./BinderScope";
+import { BinderStatements } from "./BinderStatements";
+import { BinderExpressions } from "./BinderExpressions";
+import { Symbol, RefKind } from "../Symbols/Symbol";
+import { TypeSymbol, TypeKind, NullableTypeSymbol, ArrayTypeSymbol } from "../Symbols/TypeSymbols";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { MethodSymbol, MethodKind, ParameterSymbol, LocalSymbol, ConstantValue } from "../Symbols/MemberSymbols";
+import { SourceMethodSymbol, SourceFieldSymbol, SourcePropertySymbol } from "../Symbols/Source/SourceMembers";
+import { SourceClassSymbol, SourceNamedType } from "../Symbols/Source/SourceTypes";
+import { SourceModuleClassSymbol } from "../Symbols/Source/SourceModuleClass";
+import { ModifierSets } from "../Symbols/Source/Modifiers";
+import { SpecialType } from "../Symbols/SpecialType";
+import { SyntaxElement, SyntaxNode, SyntaxList } from "../Syntax/SyntaxElement";
+import { SyntaxKind } from "../Syntax/SyntaxKind";
+import { StatementSyntax, ExpressionSyntax, ParameterListSyntax, ParameterSyntax, BlockSyntax,
+  FunctionDeclarationSyntax, ReturnStatementSyntax, YieldExpressionSyntax, ExpressionStatementSyntax,
+  InvocationExpressionSyntax, SuperExpressionSyntax, ConstructorDeclarationSyntax, VariableStatementSyntax,
+  ImportDeclarationSyntax, TypeAliasDeclarationSyntax, ClassDeclarationSyntax, InterfaceDeclarationSyntax,
+  EnumDeclarationSyntax, EmptyStatementSyntax } from "../Syntax/Nodes.Core";
+import { Descriptors } from "../Diagnostics/Descriptors";
+import { BoundNode, BoundStatement, BoundBlock, BoundExpression, BoundLocalDeclaration,
+  BoundExpressionStatement, BoundReturn, BoundYieldReturn, BoundYieldBreak, BoundNoOp, BoundParameter,
+  BoundLocal, BoundAssignment, BoundFieldAccess, BoundCall, BoundLambda, BoundDefaultValue,
+  BoundUnbound, BoundThis } from "../Bound/BoundNodes";
+import { BoundTreeRewriter } from "../Bound/BoundTreeRewriter";
+import { LambdaSymbol } from "../Bound/UnboundInfo";
+
+class BinderYieldBinding<TFile> {
+  constructor(private readonly binder: Binder<TFile>, private readonly statements: BinderStatements<TFile>,
+    private readonly type: TypeSymbol, private readonly syntax: YieldExpressionSyntax) {}
+  Bind(local: LocalSymbol): BoundStatement {
+    return this.statements.At(new BoundYieldReturn(this.binder.Conversions.ConvertImplicit(new BoundLocal(local),
+      this.type, this.syntax)), this.syntax);
+  }
+}
+class BinderTopLevelBinding<TFile> {
+  constructor(private readonly methods: BinderStatementMethods<TFile>, private readonly syntax: SyntaxList<StatementSyntax>,
+    private readonly next: int, private readonly members: ImmutableArray<Symbol>) {}
+  Bind(): ImmutableArray<BoundStatement> { return this.methods.TopLevelFrom(this.syntax, this.next, this.members); }
+}
+
+class BinderStatementFunctionState {
+  Declared: TypeSymbol? = null;
+  YieldType: TypeSymbol? = null;
+  Returns: List<BoundExpression>? = null;
+  Yields: List<BoundExpression>? = null;
+  BareReturn: bool = false;
+  constructor(public readonly Method: MethodSymbol) {}
+}
+
+class BinderStatementReturnConverter<TFile> extends BoundTreeRewriter {
+  constructor(private readonly binder: Binder<TFile>, private readonly target: TypeSymbol, private readonly yieldValues: bool) { super(); }
+  protected override VisitReturn(node: BoundReturn): BoundNode {
+    if (this.yieldValues || node.Expression == null || node.Expression.Type == null || node.Expression.Type.Equals(this.target)) return node;
+    const result = new BoundReturn(this.binder.Conversions.ConvertImplicit(node.Expression, this.target, node.Syntax, false));
+    result.Syntax = node.Syntax;
+    return result;
+  }
+  protected override VisitYieldReturn(node: BoundYieldReturn): BoundNode {
+    if (!this.yieldValues || node.Expression.Type == null || node.Expression.Type.Equals(this.target)) return node;
+    const result = new BoundYieldReturn(this.binder.Conversions.ConvertImplicit(node.Expression, this.target, node.Syntax, false));
+    result.Syntax = node.Syntax;
+    result.DisposeTarget = node.DisposeTarget;
+    return result;
+  }
+  protected override VisitLambda(node: BoundLambda): BoundNode { return node; }
+}
+
+class BinderStatementCaptures extends BoundTreeRewriter {
+  constructor(private readonly method: LambdaSymbol) { super(); }
+  private Outside(owner: Symbol?): bool {
+    if (owner == null) return true;
+    for (let ancestor = this.method.ContainingSymbol; ancestor != null; ancestor = ancestor.ContainingSymbol)
+      if (Object.ReferenceEquals(ancestor, owner)) return true;
+    return false;
+  }
+  protected override VisitLocal(node: BoundLocal): BoundNode {
+    if (this.Outside(node.Local.Container)) node.Local.IsCaptured = true;
+    return node;
+  }
+  protected override VisitParameter(node: BoundParameter): BoundNode {
+    if (this.Outside(node.Parameter.Container)) node.Parameter.IsCaptured = true;
+    return node;
+  }
+  protected override VisitThis(node: BoundThis): BoundNode { this.method.CapturesThis = true; return node; }
+  protected override VisitLambda(node: BoundLambda): BoundNode {
+    if (node.Symbol.CapturesThis) this.method.CapturesThis = true;
+    return node;
+  }
+}
+
+export sealed class BinderStatementMethods<TFile> {
+  private state: BinderStatementFunctionState? = null;
+  private readonly eagerFunctions = new HashSet<FunctionDeclarationSyntax>();
+  constructor(private readonly binder: Binder<TFile>, private readonly statements: BinderStatements<TFile>) {}
+  get Function(): MethodSymbol? { return this.state?.Method; }
+  private Nullable(type: TypeSymbol): TypeSymbol {
+    return type.IsErrorType || type instanceof NullableTypeSymbol ? type : new NullableTypeSymbol(type);
+  }
+  private InferVariable(syntax: ExpressionSyntax): TypeSymbol {
+    return this.binder.WidenInferredType(this.statements.Natural(this.binder.BindValue(syntax)), syntax, true);
+  }
+  BindParameters(method: SourceMethodSymbol<TFile>, syntax: ParameterListSyntax): ImmutableArray<ParameterSymbol> {
+    return this.Parameters(method, syntax);
+  }
+  private Parameters(owner: Symbol, syntax: ParameterListSyntax): ImmutableArray<ParameterSymbol> {
+    const result = ImmutableArray.CreateBuilder<ParameterSymbol>();
+    const names = new HashSet<string>();
+    let seenOptional = false;
+    for (let i = 0; i < syntax.Parameters.Count; i++) {
+      const parameter = syntax.Parameters.Get(i);
+      const name = parameter.Identifier?.Text ?? "<p" + i + ">";
+      if (parameter.Identifier != null && !names.Add(name))
+        this.binder.Report(Descriptors.DuplicateParameter, parameter.Identifier, [name]);
+      let isThis = false;
+      for (const modifier of parameter.Modifiers) if (modifier.Kind == SyntaxKind.ThisKeyword) isThis = true;
+      if (isThis && i != 0) this.binder.Report(Descriptors.ThisParameterPosition, parameter, []);
+      const rest = parameter.DotDotDotToken != null;
+      let type: TypeSymbol;
+      if (parameter.TypeAnnotation != null) type = this.binder.BindType(parameter.TypeAnnotation.Type);
+      else if (parameter.Initializer != null) type = this.InferVariable(parameter.Initializer.Value);
+      else {
+        this.binder.Report(Descriptors.ParameterTypeRequired, parameter, [name]);
+        type = this.binder.ErrorType;
+      }
+      let optional = parameter.QuestionToken != null;
+      let defaultValue: ConstantValue? = null;
+      if (optional) { type = this.Nullable(type); defaultValue = ConstantValue.Null; }
+      if (parameter.Initializer != null) {
+        optional = true;
+        const bound = this.binder.BindToType(parameter.Initializer.Value, type);
+        defaultValue = bound.ConstantValue;
+        if (defaultValue == null) {
+          this.binder.Report(Descriptors.DefaultMustBeConstant, parameter.Initializer!.Value, []);
+          defaultValue = ConstantValue.Null;
+        }
+      }
+      if (rest) {
+        if (!(type instanceof ArrayTypeSymbol) && !type.IsErrorType) {
+          this.binder.Report(Descriptors.RestMustBeArray, parameter, []);
+          type = this.binder.ErrorType;
+        }
+        if (i != syntax.Parameters.Count - 1) this.binder.Report(Descriptors.RestMustBeLast, parameter, []);
+      } else if (optional) seenOptional = true;
+      else if (seenOptional) this.binder.Report(Descriptors.RequiredAfterOptional, parameter, [name]);
+      const symbol = new ParameterSymbol(name, type, i, owner, RefKind.None, rest, defaultValue, optional, isThis);
+      symbol.DeclaringSyntax = parameter;
+      symbol.IsFromSourceParam = true;
+      result.Add(symbol);
+      this.binder.Record(parameter, symbol);
+    }
+    return result.ToImmutable();
+  }
+  private ParameterPatterns(method: MethodSymbol): ImmutableArray<BoundStatement> {
+    const prefix = ImmutableArray.CreateBuilder<BoundStatement>();
+    for (const parameter of method.Parameters) {
+      if (!(parameter.DeclaringSyntax instanceof ParameterSyntax)) continue;
+      const syntax = parameter.DeclaringSyntax as ParameterSyntax;
+      if (syntax.Pattern != null)
+        prefix.Add(this.binder.Expressions.BindDestructuringFrom(syntax.Pattern,
+          this.statements.At(new BoundParameter(parameter), syntax), parameter.Type, false, syntax));
+    }
+    return prefix.ToImmutable();
+  }
+  private DeclareParameters(method: MethodSymbol): void {
+    for (const parameter of method.Parameters)
+      if (parameter.Name.Length > 0 && !parameter.Name.StartsWith("<"))
+        this.binder.DeclareSymbol(parameter.Name, parameter, parameter.DeclaringSyntax);
+  }
+  private Configure(method: MethodSymbol, declared: TypeSymbol?): void {
+    const state = new BinderStatementFunctionState(method);
+    this.state = state;
+    this.binder.IsAsync = method.IsAsync;
+    this.binder.IsIterator = method.IsIterator;
+    if (declared != null) {
+      state.Declared = method.IsIterator ? this.binder.VoidType : this.UnwrapTask(declared, method.IsAsync);
+      if (method.IsIterator) state.YieldType = this.IteratorElement(declared);
+    } else {
+      state.Returns = new List<BoundExpression>();
+      if (method.IsIterator) state.Yields = new List<BoundExpression>();
+    }
+    this.binder.ReturnType = state.Declared;
+    this.statements.InCatch = false;
+    this.statements.PendingLabel = null;
+  }
+  private UnwrapTask(type: TypeSymbol, asyncContext: bool): TypeSymbol {
+    if (!asyncContext || type.IsErrorType) return type;
+    if (type instanceof NamedTypeSymbol) {
+      const named = type as NamedTypeSymbol;
+      const special = named.OriginalDefinition.SpecialType;
+      if (special == SpecialType.TaskT || special == SpecialType.ValueTaskT) return named.TypeArguments[0];
+      if (special == SpecialType.Task || special == SpecialType.ValueTask) return this.binder.VoidType;
+    }
+    return type;
+  }
+  private WrapTask(type: TypeSymbol): TypeSymbol {
+    return type.IsVoid ? this.binder.Special(SpecialType.Task) :
+      this.binder.Special(SpecialType.TaskT).Construct(ImmutableArray.Create<TypeSymbol>(type));
+  }
+  private IteratorElement(type: TypeSymbol): TypeSymbol {
+    return type instanceof NamedTypeSymbol && (type as NamedTypeSymbol).TypeArguments.Length == 1 ?
+      (type as NamedTypeSymbol).TypeArguments[0] : this.binder.ObjectType;
+  }
+  private InferReturn(block: BoundBlock, at: SyntaxNode, name: string, inferOnly: bool): TypeSymbol {
+    const state = this.state!;
+    if (state.Method.IsIterator) {
+      const element = state.Yields == null || state.Yields.Count == 0 ? null : this.binder.Expressions.BestCommonType(state.Yields);
+      const enumerable = this.binder.Context.GetWellKnownType(state.Method.IsAsync ?
+        "System.Collections.Generic.IAsyncEnumerable`1" : "System.Collections.Generic.IEnumerable`1");
+      if (element == null || enumerable == null) {
+        if (!inferOnly) this.binder.Report(Descriptors.CannotInferIteratorType, at, []);
+        return this.binder.ErrorType;
+      }
+      state.YieldType = element;
+      return enumerable.Construct(ImmutableArray.Create<TypeSymbol>(element));
+    }
+    let inner: TypeSymbol = this.binder.VoidType;
+    if (state.Returns != null && state.Returns.Count > 0) {
+      const common = this.binder.Expressions.BestCommonType(state.Returns);
+      if (common == null && !inferOnly) this.binder.Report(Descriptors.NoBestCommonTypeReturns, at, []);
+      inner = common ?? this.binder.ErrorType;
+      if (!inner.IsVoid && !inner.IsNeverType && (state.BareReturn || this.statements.CanCompleteNormally(block)) && !inferOnly)
+        this.binder.Report(Descriptors.NotAllPathsReturn, at instanceof BlockSyntax ? (at as BlockSyntax).CloseBraceToken as SyntaxElement : at, [name]);
+    }
+    return state.Method.IsAsync ? this.WrapTask(inner) : inner;
+  }
+  private ConvertReturns(block: BoundBlock, returnType: TypeSymbol): BoundBlock {
+    const target = this.state!.Method.IsIterator ? this.state!.YieldType : this.UnwrapTask(returnType, this.state!.Method.IsAsync);
+    return target == null || target.IsErrorType || target.IsVoid ? block :
+      new BinderStatementReturnConverter<TFile>(this.binder, target, this.state!.Method.IsIterator).Visit(block)! as BoundBlock;
+  }
+  private CheckCompletion(block: BoundBlock, at: SyntaxNode, name: string): void {
+    const declared = this.state!.Declared;
+    if (declared != null && !declared.IsVoid && !declared.IsErrorType && !this.state!.Method.IsIterator && this.statements.CanCompleteNormally(block))
+      this.binder.Report(Descriptors.NotAllPathsReturn, at instanceof BlockSyntax ? (at as BlockSyntax).CloseBraceToken as SyntaxElement : at, [name]);
+  }
+  BindMethodBody(method: SourceMethodSymbol<TFile>): BoundBlock? {
+    const savedScope = this.binder.Scope;
+    const savedState = this.state;
+    const savedFlow = this.binder.Flow.SaveState();
+    const savedAsync = this.binder.IsAsync;
+    const savedIterator = this.binder.IsIterator;
+    const savedReturn = this.binder.ReturnType;
+    const savedCatch = this.statements.InCatch;
+    const savedLabel = this.statements.PendingLabel;
+    const context = this.binder.EnterFunction(method);
+    try {
+      this.binder.Scope = new BinderScope(null, BinderScopeKind.Method);
+      this.DeclareParameters(method);
+      const constructor = method.MethodKind == MethodKind.Constructor || method.MethodKind == MethodKind.StaticConstructor;
+      const annotated = constructor || method.ReturnAnnotation != null || method.ExplicitReturnType != null ||
+        method.MethodKind == MethodKind.PropertyGet || method.MethodKind == MethodKind.PropertySet;
+      this.Configure(method, constructor ? this.binder.VoidType : annotated ? method.ReturnType : null);
+      if (method.MethodKind == MethodKind.Constructor) return this.Constructor(method);
+      if (method.MethodKind == MethodKind.StaticConstructor) return this.StaticInitializer(method);
+      const syntax = method.BodySyntax;
+      if (syntax == null) return null;
+      const prefix = this.ParameterPatterns(method);
+      let block = this.statements.BindBlock(syntax);
+      block = this.statements.At(new BoundBlock(block.Locals.AddRange(this.binder.Scope.Locals),
+        prefix.AddRange(block.Statements)), syntax);
+      if (annotated) this.CheckCompletion(block, syntax, method.Name);
+      else {
+        const inferred = this.InferReturn(block, syntax, method.Name, false);
+        method.SetInferredReturnType(inferred);
+        block = this.ConvertReturns(block, inferred);
+      }
+      return block;
+    } finally {
+      context.Dispose();
+      this.binder.Scope = savedScope;
+      this.state = savedState;
+      this.binder.Flow.RestoreState(savedFlow);
+      this.binder.IsAsync = savedAsync;
+      this.binder.IsIterator = savedIterator;
+      this.binder.ReturnType = savedReturn;
+      this.statements.InCatch = savedCatch;
+      this.statements.PendingLabel = savedLabel;
+    }
+  }
+  Return(syntax: ReturnStatementSyntax): BoundStatement {
+    if (this.statements.LeavesFinally(null)) this.binder.Report(Descriptors.JumpOutOfFinally, syntax, ["return"]);
+    if (this.binder.IsIterator) {
+      if (syntax.Expression != null) {
+        this.binder.Report(Descriptors.ReturnValueInIterator, syntax.Expression, []);
+        this.binder.BindValue(syntax.Expression!);
+      }
+      return this.statements.At(new BoundYieldBreak(), syntax);
+    }
+    const declared = this.state?.Declared ?? this.binder.ReturnType;
+    if (syntax.Expression == null) {
+      if (this.state != null) this.state.BareReturn = true;
+      if (declared != null && !declared.IsVoid && !declared.IsErrorType)
+        this.binder.Report(Descriptors.MustReturnValue, syntax, [declared.ToDisplayString()]);
+      return this.statements.At(new BoundReturn(null), syntax);
+    }
+    if (declared != null && declared.IsVoid) {
+      this.binder.Report(Descriptors.CannotReturnValue, syntax.Expression, []);
+      this.binder.BindValue(syntax.Expression!);
+      return this.statements.At(new BoundReturn(null), syntax);
+    }
+    const value = declared == null ? this.binder.BindRValue(syntax.Expression) : this.binder.BindToType(syntax.Expression, declared);
+    if (this.state?.Returns != null) this.state!.Returns!.Add(value);
+    return this.statements.At(new BoundReturn(value), syntax);
+  }
+  Yield(syntax: YieldExpressionSyntax): BoundStatement {
+    if (!this.binder.IsIterator) {
+      this.binder.Report(Descriptors.YieldNotAllowedHere, syntax, []);
+      if (syntax.Operand != null) this.binder.BindValue(syntax.Operand);
+      return this.statements.At(new BoundNoOp(), syntax);
+    }
+    if (syntax.Operand == null) {
+      this.binder.Report(Descriptors.ExpectedExpression, syntax, []);
+      return this.statements.At(new BoundNoOp(), syntax);
+    }
+    const target = this.state?.YieldType;
+    if (syntax.IsDelegating) {
+      const source = this.statements.Natural(this.binder.BindValue(syntax.Operand));
+      const element = source.Type == null ? null : this.binder.Expressions.GetIterationType(source.Type, this.binder.IsAsync);
+      if (element == null) {
+        if (!source.HasErrors) this.binder.Report(Descriptors.NotIterable, syntax.Operand, [source.Type?.ToDisplayString() ?? "?"]);
+        return this.statements.At(new BoundNoOp(), syntax);
+      }
+      if (this.state?.Yields != null) this.state!.Yields!.Add(new BoundDefaultValue(element));
+      const binding = new BinderYieldBinding<TFile>(this.binder, this.statements, target ?? element, syntax);
+      return this.statements.Loops.BuildForEachLoop(source, element, syntax, binding.Bind, null, null, this.binder.IsAsync);
+    }
+    const value = target == null ? this.binder.BindRValue(syntax.Operand) : this.binder.BindToType(syntax.Operand, target);
+    if (this.state?.Yields != null) this.state!.Yields!.Add(value);
+    return this.statements.At(new BoundYieldReturn(value), syntax);
+  }
+  MakeDelegate(types: ImmutableArray<TypeSymbol>, returns: TypeSymbol, at: SyntaxNode): TypeSymbol {
+    const isVoid = returns.IsVoid || returns.IsNeverType;
+    const name = isVoid ? (types.Length == 0 ? "System.Action" : "System.Action`" + types.Length) : "System.Func`" + (types.Length + 1);
+    const definition = types.Length > 16 ? null : this.binder.Context.GetWellKnownType(name);
+    if (definition == null) {
+      this.binder.Report(Descriptors.FeatureNotSupported, at, ["Delegate with " + types.Length + " parameters"]);
+      return this.binder.ErrorType;
+    }
+    const arguments = isVoid ? types : types.Add(returns);
+    return arguments.IsEmpty ? definition : definition.Construct(arguments);
+  }
+  Hoist(statements: SyntaxList<StatementSyntax>, start: int, declare: bool): ImmutableArray<BoundStatement> {
+    const declarations = new List<FunctionDeclarationSyntax>();
+    const locals = new List<LocalSymbol>();
+    const result = ImmutableArray.CreateBuilder<BoundStatement>();
+    for (let i = start; i < statements.Count; i++) {
+      if (!(statements.Get(i) instanceof FunctionDeclarationSyntax)) continue;
+      const syntax = statements.Get(i) as FunctionDeclarationSyntax;
+      if (syntax.Identifier.IsMissing) continue;
+      if (syntax.Body == null) {
+        if (declare) this.binder.Report(Descriptors.FunctionNeedsBody, syntax.Identifier, [syntax.Identifier.Text]);
+        continue;
+      }
+      if (!declare) {
+        if (this.eagerFunctions.Contains(syntax)) continue;
+        declarations.Add(syntax);
+        locals.Add(this.binder.Scope.Symbols[syntax.Identifier.Text] as LocalSymbol);
+        continue;
+      }
+      if (syntax.TypeParameters != null) this.binder.Report(Descriptors.FeatureNotSupported, syntax.TypeParameters, ["Generic nested functions"]);
+      const types = ImmutableArray.CreateBuilder<TypeSymbol>();
+      let annotated = syntax.ReturnType != null && syntax.TypeParameters == null;
+      for (const parameter of syntax.Parameters.Parameters) {
+        if (parameter.TypeAnnotation == null) { annotated = false; break; }
+        const type = this.binder.BindType(parameter.TypeAnnotation.Type);
+        types.Add(parameter.QuestionToken == null ? type : this.Nullable(type));
+      }
+      const delegateType = annotated ? this.MakeDelegate(types.ToImmutable(),
+        this.binder.BindType(syntax.ReturnType!.Type, true), syntax) : this.binder.ErrorType;
+      const local = new LocalSymbol(syntax.Identifier.Text, delegateType, true, this.statements.LocalOwner, syntax);
+      this.binder.DeclareSymbol(local.Name, local, syntax.Identifier);
+      this.binder.Record(syntax, local);
+      declarations.Add(syntax);
+      locals.Add(local);
+    }
+    for (let i = 0; i < declarations.Count; i++) {
+      const syntax = declarations[i];
+      const local = locals[i];
+      if (declare && !local.Type.IsErrorType) continue;
+      if (declare) this.eagerFunctions.Add(syntax);
+      const names = ImmutableArray.CreateBuilder<string>();
+      const types = ImmutableArray.CreateBuilder<TypeSymbol>();
+      for (const parameter of syntax.Parameters.Parameters) {
+        names.Add(parameter.Identifier?.Text ?? "<p" + names.Count + ">");
+        let type: TypeSymbol;
+        if (parameter.TypeAnnotation != null) type = this.binder.BindType(parameter.TypeAnnotation.Type);
+        else if (parameter.Initializer != null) type = this.InferVariable(parameter.Initializer.Value);
+        else { this.binder.Report(Descriptors.ParameterTypeRequired, parameter, [parameter.Identifier?.Text ?? "?"]); type = this.binder.ErrorType; }
+        types.Add(parameter.QuestionToken == null ? type : this.Nullable(type));
+      }
+      const delegateType = local.Type.IsErrorType ? null : local.Type;
+      const returns = syntax.ReturnType == null ? null : this.binder.BindType(syntax.ReturnType.Type, true);
+      const lambda = this.BindLambdaBody(syntax, names.ToImmutable(), syntax.Parameters, types.ToImmutable(),
+        returns, delegateType, ModifierSets.Create(syntax.Modifiers).IsAsync, syntax.AsteriskToken != null, syntax.Body!, false);
+      if (lambda != null) {
+        if (local.Type.IsErrorType) local.Type = lambda.Type!;
+        result.Add(this.statements.At(new BoundLocalDeclaration(local, lambda), syntax));
+      }
+    }
+    return result.ToImmutable();
+  }
+  BindLambdaBody(syntax: SyntaxNode, names: ImmutableArray<string>, parameterList: ParameterListSyntax?,
+    paramTypes: ImmutableArray<TypeSymbol>, delegateReturn: TypeSymbol?, delegateType: TypeSymbol?,
+    isAsync: bool, isGenerator: bool, body: SyntaxNode, inferOnly: bool): BoundLambda? {
+    const savedScope = this.binder.Scope;
+    const savedState = this.state;
+    const savedFlow = this.binder.Flow.SaveState();
+    const savedAsync = this.binder.IsAsync;
+    const savedIterator = this.binder.IsIterator;
+    const savedReturn = this.binder.ReturnType;
+    const savedCatch = this.statements.InCatch;
+    const savedLabel = this.statements.PendingLabel;
+    const savedUsesThis = this.binder.Expressions.UsesThis;
+    const symbol = new LambdaSymbol(this.statements.LocalOwner!, "<lambda>", isAsync, isGenerator);
+    const parameters = ImmutableArray.CreateBuilder<ParameterSymbol>();
+    for (let i = 0; i < names.Length; i++) {
+      const declaration = parameterList != null && i < parameterList.Parameters.Count ? parameterList.Parameters.Get(i) : null;
+      const parameter = new ParameterSymbol(names[i], paramTypes[i], i, symbol);
+      parameter.DeclaringSyntax = declaration;
+      parameter.IsFromSourceParam = true;
+      parameters.Add(parameter);
+    }
+    symbol.SetParameters(parameters.ToImmutable());
+    const context = this.binder.EnterFunction(symbol);
+    try {
+      this.binder.Expressions.UsesThis = false;
+      const scope = this.binder.PushScope(BinderScopeKind.Lambda);
+      this.DeclareParameters(symbol);
+      this.binder.Flow.DropMutableNarrowings();
+      this.binder.Flow.InvalidateAssignedIn(body);
+      this.Configure(symbol, delegateReturn);
+      const prefix = this.ParameterPatterns(symbol);
+      let block: BoundBlock;
+      if (body instanceof BlockSyntax) {
+        block = this.statements.BindBlock(body as BlockSyntax);
+        if (delegateReturn != null) this.CheckCompletion(block, body, "lambda");
+      } else {
+        const expression = body as ExpressionSyntax;
+        const expected = this.state!.Declared;
+        let value: BoundExpression;
+        if (expected != null && expected.IsVoid) value = this.statements.BindStatementExpression(expression);
+        else if (expected != null) value = this.binder.BindToType(expression, expected);
+        else value = this.statements.Natural(this.binder.BindValue(expression));
+        const voidBody = expected != null && expected.IsVoid || value.Type != null && value.Type.IsVoid;
+        if (!voidBody && this.state!.Returns != null) this.state!.Returns.Add(value);
+        const statement: BoundStatement = voidBody ? this.statements.At(new BoundExpressionStatement(value), body) :
+          this.statements.At(new BoundReturn(value), body);
+        block = this.statements.AsBlock(statement);
+      }
+      block = this.statements.At(new BoundBlock(block.Locals.AddRange(scope.Locals), prefix.AddRange(block.Statements)), body);
+      const returns = delegateReturn ?? this.InferReturn(block, syntax, "lambda", inferOnly);
+      symbol.ReturnTypeValue = returns;
+      if (delegateReturn == null) block = this.ConvertReturns(block, returns);
+      new BinderStatementCaptures(symbol).Visit(block);
+      symbol.CapturesThis = symbol.CapturesThis || this.binder.Expressions.UsesThis;
+      const target = delegateType ?? this.MakeDelegate(paramTypes, returns, syntax);
+      return this.statements.At(new BoundLambda(symbol, block, target), syntax);
+    } finally {
+      context.Dispose();
+      this.binder.Scope = savedScope;
+      this.state = savedState;
+      this.binder.IsAsync = savedAsync;
+      this.binder.IsIterator = savedIterator;
+      this.binder.ReturnType = savedReturn;
+      this.statements.InCatch = savedCatch;
+      this.statements.PendingLabel = savedLabel;
+      this.binder.Expressions.UsesThis = savedUsesThis || this.binder.Expressions.UsesThis;
+      this.binder.Flow.RestoreState(savedFlow);
+      this.binder.Flow.NoteLambdaAssignments(body);
+    }
+  }
+  private Initializer(member: Symbol, syntax: ExpressionSyntax, isStatic: bool): BoundStatement? {
+    let field: SourceFieldSymbol<TFile>?;
+    if (member instanceof SourceFieldSymbol<TFile>) field = member as SourceFieldSymbol<TFile>;
+    else if (member instanceof SourcePropertySymbol<TFile>) field = (member as SourcePropertySymbol<TFile>).BackingField;
+    else return null;
+    if (field == null || field.IsConst) return null;
+    const target = this.statements.At(new BoundFieldAccess(isStatic ? null : this.binder.Expressions.ImplicitThis(syntax), field), syntax);
+    const value = this.binder.BindToType(syntax, field.Type);
+    if (value.HasErrors) return null;
+    const assignment = this.statements.At(new BoundAssignment(target, value), syntax);
+    assignment.IsDiscarded = true;
+    return this.statements.At(new BoundExpressionStatement(assignment), syntax);
+  }
+  private Initializers(owner: NamedTypeSymbol, isStatic: bool): ImmutableArray<BoundStatement> {
+    const statements = ImmutableArray.CreateBuilder<BoundStatement>();
+    const saved = this.binder.Scope;
+    const context = this.binder.EnterInitializer();
+    this.binder.Scope = new BinderScope(null, BinderScopeKind.Method);
+    try {
+      owner.GetMembers();
+      if (owner instanceof SourceClassSymbol<TFile>) {
+        const source = owner as SourceClassSymbol<TFile>;
+        for (const initializer of (isStatic ? source.StaticInitializers : source.InstanceInitializers)) {
+          const bound = this.Initializer(initializer.Item1, initializer.Item2, isStatic);
+          if (bound != null) statements.Add(bound);
+        }
+      } else if (isStatic && owner instanceof SourceModuleClassSymbol<TFile>) {
+        for (const initializer of (owner as SourceModuleClassSymbol<TFile>).VariableInitializers) {
+          if (initializer.Item2.Initializer == null || initializer.Item1.IsConst) continue;
+          const bound = this.Initializer(initializer.Item1, initializer.Item2.Initializer!.Value, true);
+          if (bound != null) statements.Add(bound);
+        }
+      }
+      if (this.binder.Scope.Locals.Count > 0)
+        return ImmutableArray.Create<BoundStatement>(new BoundBlock(ImmutableArray.CreateRange<LocalSymbol>(this.binder.Scope.Locals), statements.ToImmutable()));
+      return statements.ToImmutable();
+    } finally { this.binder.Scope = saved; context.Dispose(); }
+  }
+  private StaticInitializer(method: SourceMethodSymbol<TFile>): BoundBlock {
+    return this.statements.At(new BoundBlock(ImmutableArray<LocalSymbol>.Empty, this.Initializers(method.ContainerType, true)), method.BodySyntax);
+  }
+  private Constructor(method: SourceMethodSymbol<TFile>): BoundBlock {
+    const statements = ImmutableArray.CreateBuilder<BoundStatement>();
+    const owner = method.ContainerType;
+    const syntax = method.BodySyntax;
+    const at: SyntaxNode? = method.Declaration ?? syntax ?? (owner instanceof SourceNamedType<TFile> ? (owner as SourceNamedType<TFile>).DeclaringSyntax : null);
+    let explicitSuper: InvocationExpressionSyntax? = null;
+    if (syntax != null && syntax.Statements.Count > 0 && syntax.Statements.Get(0) instanceof ExpressionStatementSyntax) {
+      const first = (syntax.Statements.Get(0) as ExpressionStatementSyntax).Expression;
+      if (first instanceof InvocationExpressionSyntax && (first as InvocationExpressionSyntax).Expression instanceof SuperExpressionSyntax)
+        explicitSuper = first as InvocationExpressionSyntax;
+    }
+    let baseConstructor = method.InheritedBaseConstructor;
+    let arguments = ImmutableArray<BoundExpression>.Empty;
+    const baseType = owner.TypeKind == TypeKind.Struct ? null : owner.BaseType;
+    if (baseConstructor != null) {
+      const forwarded = ImmutableArray.CreateBuilder<BoundExpression>();
+      for (const parameter of method.Parameters) forwarded.Add(this.statements.At(new BoundParameter(parameter), at));
+      arguments = forwarded.ToImmutable();
+    } else if (baseType != null && at != null) {
+      const args = ImmutableArray.CreateBuilder<BoundExpression>();
+      if (explicitSuper != null) for (const argument of explicitSuper.Arguments.Arguments) args.Add(this.binder.BindValue(argument));
+      const candidates = ImmutableArray.CreateBuilder<MethodSymbol>();
+      for (const candidate of this.binder.LookupConstructors(baseType)) if (this.binder.IsAccessible(candidate)) candidates.Add(candidate);
+      if (candidates.Count == 0) {
+        if (baseType.SpecialType != SpecialType.Object) this.binder.Report(Descriptors.NoAccessibleConstructor, at, [baseType.ToDisplayString()]);
+      } else {
+        const result = this.binder.Overloads.ResolveOverloads(candidates.ToImmutable(), args.ToImmutable(), ImmutableArray<TypeSymbol>.Empty,
+          explicitSuper ?? at, baseType.Name, true);
+        if (result != null) { baseConstructor = result.Method; arguments = result.Arguments; }
+        else if (explicitSuper == null) this.binder.Report(Descriptors.SuperCallRequired, at, [baseType.ToDisplayString()]);
+      }
+    } else if (explicitSuper != null) this.binder.Report(Descriptors.SuperCallPosition, explicitSuper, []);
+    if (baseConstructor != null && at != null) {
+      const call = this.statements.At(new BoundCall(this.binder.Expressions.ImplicitThis(at), baseConstructor, arguments, this.binder.VoidType), at);
+      call.IsBaseCall = true;
+      statements.Add(this.statements.At(new BoundExpressionStatement(call), at));
+    }
+    const properties = ImmutableArray.CreateBuilder<[Parameter: ParameterSymbol, Member: Symbol]>();
+    if (!method.ParameterProperties.IsDefaultOrEmpty) properties.AddRange(method.ParameterProperties);
+    else if (method.Declaration instanceof ConstructorDeclarationSyntax) {
+      for (const parameterSyntax of (method.Declaration as ConstructorDeclarationSyntax).Parameters.Parameters) {
+        const mods = ModifierSets.Create(parameterSyntax.Modifiers);
+        if (!(mods.IsPublic || mods.IsPrivate || mods.IsProtected || mods.IsInternal || mods.IsReadonly) || parameterSyntax.Identifier == null) continue;
+        let parameter: ParameterSymbol? = null;
+        for (const candidate of method.Parameters) if (candidate.Name == parameterSyntax.Identifier.Text) { parameter = candidate; break; }
+        if (parameter == null) continue;
+        for (const member of owner.GetMembers(parameter.Name)) {
+          if (member instanceof SourcePropertySymbol<TFile> ||
+            member instanceof SourceFieldSymbol<TFile> && !(member as SourceFieldSymbol<TFile>).IsBackingField) {
+            properties.Add([parameter, member]); break;
+          }
+        }
+      }
+    }
+    if (properties.Count > 0 && at != null) {
+      for (const property of properties) {
+        let field: SourceFieldSymbol<TFile>? = null;
+        if (property.Item2 instanceof SourceFieldSymbol<TFile>) field = property.Item2 as SourceFieldSymbol<TFile>;
+        else if (property.Item2 instanceof SourcePropertySymbol<TFile>) field = (property.Item2 as SourcePropertySymbol<TFile>).BackingField;
+        if (field == null) continue;
+        const target = this.statements.At(new BoundFieldAccess(this.binder.Expressions.ImplicitThis(at), field), at);
+        const assignment = this.statements.At(new BoundAssignment(target, new BoundParameter(property.Item1)), at);
+        assignment.IsDiscarded = true;
+        statements.Add(this.statements.At(new BoundExpressionStatement(assignment), at));
+      }
+    }
+    statements.AddRange(this.Initializers(owner, false));
+    statements.AddRange(this.ParameterPatterns(method));
+    if (syntax != null) {
+      const scope = this.binder.PushScope(BinderScopeKind.Block);
+      try {
+        const body = this.statements.BindStatementList(syntax.Statements, explicitSuper == null ? 0 : 1, true);
+        statements.Add(this.statements.At(new BoundBlock(ImmutableArray.CreateRange<LocalSymbol>(scope.Locals), body), syntax));
+      } finally { this.binder.PopScope(); }
+    }
+    return this.statements.At(new BoundBlock(ImmutableArray.CreateRange<LocalSymbol>(this.binder.Scope.Locals), statements.ToImmutable()), syntax);
+  }
+  BindTopLevelStatements(method: SourceMethodSymbol<TFile>, module: SourceModuleClassSymbol<TFile>): BoundBlock {
+    const savedScope = this.binder.Scope;
+    const savedState = this.state;
+    const savedFlow = this.binder.Flow.SaveState();
+    const savedAsync = this.binder.IsAsync;
+    const savedIterator = this.binder.IsIterator;
+    const savedReturn = this.binder.ReturnType;
+    const savedCatch = this.statements.InCatch;
+    const savedLabel = this.statements.PendingLabel;
+    const context = this.binder.EnterFunction(method);
+    try {
+      this.binder.Scope = new BinderScope(null, BinderScopeKind.Method);
+      this.Configure(method, method.ReturnType);
+      this.DeclareParameters(method);
+      const initialization = this.binder.EnterInitializer();
+      try {
+        const syntax = this.binder.Context.GetTree(this.binder.File).Root;
+        const body = this.TopLevelFrom(syntax.Statements, 0, module.GetMembers());
+        return this.statements.At(new BoundBlock(ImmutableArray.CreateRange<LocalSymbol>(this.binder.Scope.Locals), body), syntax);
+      } finally { initialization.Dispose(); }
+    } finally {
+      context.Dispose();
+      this.binder.Scope = savedScope;
+      this.state = savedState;
+      this.binder.Flow.RestoreState(savedFlow);
+      this.binder.IsAsync = savedAsync;
+      this.binder.IsIterator = savedIterator;
+      this.binder.ReturnType = savedReturn;
+      this.statements.InCatch = savedCatch;
+      this.statements.PendingLabel = savedLabel;
+    }
+  }
+  TopLevelFrom(syntax: SyntaxList<StatementSyntax>, start: int, members: ImmutableArray<Symbol>): ImmutableArray<BoundStatement> {
+    const result = ImmutableArray.CreateBuilder<BoundStatement>();
+    for (let i = start; i < syntax.Count; i++) {
+      const statement = syntax.Get(i);
+      if (statement instanceof FunctionDeclarationSyntax || statement instanceof ImportDeclarationSyntax ||
+        statement instanceof TypeAliasDeclarationSyntax || statement instanceof ClassDeclarationSyntax ||
+        statement instanceof InterfaceDeclarationSyntax || statement instanceof EnumDeclarationSyntax || statement instanceof EmptyStatementSyntax) continue;
+      if (statement instanceof VariableStatementSyntax) {
+        const variables = statement as VariableStatementSyntax;
+        if (variables.Declaration.IsUsing) {
+          const next = i + 1;
+          const binding = new BinderTopLevelBinding<TFile>(this, syntax, next, members);
+          result.Add(this.statements.BindUsing(variables, syntax, next, binding.Bind));
+          break;
+        }
+        let moduleVariables = true;
+        for (const variable of variables.Declaration.Declarators)
+          if (variable.Identifier == null || variable.Identifier.IsMissing) moduleVariables = false;
+        if (moduleVariables) {
+          for (const variable of variables.Declaration.Declarators) {
+            let field: SourceFieldSymbol<TFile>? = null;
+            for (const member of members)
+              if (member instanceof SourceFieldSymbol<TFile> && (member as SourceFieldSymbol<TFile>).IsModuleVariable &&
+                Object.ReferenceEquals((member as SourceFieldSymbol<TFile>).Declarator, variable)) { field = member as SourceFieldSymbol<TFile>; break; }
+            if (field == null || variable.Initializer == null) continue;
+            const raw = this.binder.BindValue(variable.Initializer.Value, field.Type);
+            const value = this.binder.Conversions.ConvertImplicit(raw, field.Type, variable.Initializer!.Value);
+            if (!field.IsConst && !value.HasErrors) {
+              const target = this.statements.At(new BoundFieldAccess(null, field), variable);
+              const assignment = this.statements.At(new BoundAssignment(target, value), variable);
+              assignment.IsDiscarded = true;
+              result.Add(this.statements.At(new BoundExpressionStatement(assignment), variable));
+            }
+            this.statements.AfterAssignment(field, raw, field.Type);
+          }
+          continue;
+        }
+      }
+      result.Add(this.statements.Bind(statement));
+    }
+    return result.ToImmutable();
+  }
+}

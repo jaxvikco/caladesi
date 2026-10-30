@@ -1,0 +1,64 @@
+import { Utf8JsonWriter } from "System.Text.Json";
+import { Compilation } from "Caladesi.Compiler";
+import { Diagnostic, DiagnosticSeverity } from "Caladesi.Compiler.Diagnostics";
+import { SyntaxTree } from "Caladesi.Compiler.Syntax";
+import { Workspace, PublishPlan, OpenDocument } from "../Workspace";
+import { CompilationUnit } from "../Projects/CompilationUnit";
+import { Json } from "../Protocol/Json";
+import { Log } from "../Protocol/MessageTransport";
+
+export sealed class DiagnosticsFeature {
+  constructor(private readonly _workspace: Workspace, private readonly _notify: Action<string, Action<Utf8JsonWriter>>) {}
+
+  RunDiagnostics(): void {
+    for (const retired: PublishPlan of this._workspace.TakeRetired()) {
+      const empty: Diagnostic[] = [];
+      this.Publish(retired.Uri, null, empty, null);
+    }
+    const units = new List<CompilationUnit>(this._workspace.Dirty);
+    this._workspace.Dirty.Clear();
+    for (const unit: CompilationUnit of units) {
+      try {
+        const compilation: Compilation = unit.GetCompilation(this._workspace);
+        const diagnostics = compilation.GetDiagnostics();
+        const trees = new Dictionary<string, SyntaxTree>(StringComparer.Ordinal);
+        for (const tree: SyntaxTree of compilation.SyntaxTrees) trees.Add(tree.FilePath, tree);
+        for (const plan: PublishPlan of this._workspace.PlanPublish(unit, diagnostics)) {
+          const path: string = Workspace.UriToPath(plan.Uri);
+          const document: OpenDocument? = this._workspace.GetDocument(plan.Uri);
+          const version: int? = document == null ? null : document.Version;
+          const [found, tree] = trees.TryGetValue(path);
+          this.Publish(plan.Uri, version, plan.Diagnostics, found ? tree : null);
+        }
+      } catch (ex: Exception) {
+        Log.Write("diagnostics failed: " + ex.ToString());
+      }
+    }
+  }
+
+  private Publish(uri: string, version: int?, diagnostics: IReadOnlyList<Diagnostic>, tree: SyntaxTree?): void {
+    this._notify("textDocument/publishDiagnostics", w => {
+      w.WriteStartObject();
+      w.WriteString("uri", uri);
+      if (version != null) w.WriteNumber("version", version);
+      w.WritePropertyName("diagnostics");
+      w.WriteStartArray();
+      for (const diagnostic: Diagnostic of diagnostics) {
+        if (tree == null) break;
+        w.WriteStartObject();
+        Json.WriteRange(w, "range", tree.Text.GetLinePositionSpan(diagnostic.Span));
+        let severity = 4;
+        if (diagnostic.EffectiveSeverity == DiagnosticSeverity.Error) severity = 1;
+        else if (diagnostic.EffectiveSeverity == DiagnosticSeverity.Warning) severity = 2;
+        else if (diagnostic.EffectiveSeverity == DiagnosticSeverity.Info) severity = 3;
+        w.WriteNumber("severity", severity);
+        w.WriteString("code", diagnostic.Id);
+        w.WriteString("source", "caladesi");
+        w.WriteString("message", diagnostic.Message);
+        w.WriteEndObject();
+      }
+      w.WriteEndArray();
+      w.WriteEndObject();
+    });
+  }
+}

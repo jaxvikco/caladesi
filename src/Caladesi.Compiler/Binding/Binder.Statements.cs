@@ -30,7 +30,7 @@ public sealed partial class Binder
         // hoist nested function declarations of this block (the statements after a `using` were hoisted with the ones before it)
         if (hoistFunctions)
         {
-            HoistLocalFunctions(statements, start, result);
+            HoistLocalFunctions(statements, start, result, declare: true);
         }
 
         for (int i = start; i < statements.Count; i++)
@@ -44,15 +44,23 @@ public sealed partial class Binder
             if (s is VariableStatementSyntax { Declaration.IsUsing: true } us)
             {
                 result.Add(BindUsing(us, statements, i + 1));
-                return result.ToImmutable();
+                break;
             }
             BoundStatement bound = BindStatement(s);
             result.Add(bound);
         }
+        if (hoistFunctions)
+        {
+            ImmutableArray<BoundStatement>.Builder functions = ImmutableArray.CreateBuilder<BoundStatement>();
+            HoistLocalFunctions(statements, start, functions, declare: false);
+            result.InsertRange(0, functions);
+        }
         return result.ToImmutable();
     }
 
-    private void HoistLocalFunctions(IReadOnlyList<StatementSyntax> statements, int start, ImmutableArray<BoundStatement>.Builder result)
+    private readonly HashSet<FunctionDeclarationSyntax> _eagerLocalFunctions = [];
+
+    private void HoistLocalFunctions(IReadOnlyList<StatementSyntax> statements, int start, ImmutableArray<BoundStatement>.Builder result, bool declare)
     {
         List<(FunctionDeclarationSyntax Syntax, LocalSymbol Local)> funcs = [];
         for (int i = start; i < statements.Count; i++)
@@ -62,7 +70,22 @@ public sealed partial class Binder
                 continue;
             }
 
-            if (f.Body == null) { Report(Descriptors.FunctionNeedsBody, f.Identifier, f.Identifier.Text); continue; }
+            if (f.Body == null)
+            {
+                if (declare)
+                {
+                    Report(Descriptors.FunctionNeedsBody, f.Identifier, f.Identifier.Text);
+                }
+                continue;
+            }
+            if (!declare)
+            {
+                if (!_eagerLocalFunctions.Contains(f))
+                {
+                    funcs.Add((f, (LocalSymbol)_scope.Symbols[f.Identifier.Text]));
+                }
+                continue;
+            }
 
             TypeSymbol? delegateType = TryGetLocalFunctionType(f, out _);
             LocalSymbol local = new(f.Identifier.Text, delegateType ?? ErrorType, true, LocalOwner, f);
@@ -72,6 +95,14 @@ public sealed partial class Binder
         // bind bodies after all names are declared so the functions can reference each other
         foreach ((FunctionDeclarationSyntax? f, LocalSymbol? local) in funcs)
         {
+            if (declare && !local.Type.IsErrorType)
+            {
+                continue;
+            }
+            if (declare)
+            {
+                _ = _eagerLocalFunctions.Add(f);
+            }
             BoundLambda? lambda = BindLocalFunctionBody(f, local);
             if (lambda != null)
             {

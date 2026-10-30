@@ -1,0 +1,22 @@
+<Project>
+  <Import Project="../Caladesi.Sdk/Sdk/Sdk.props" />
+  <Import Project="$(CaladesiRepoRoot)eng/Aot.props" />
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>Caladesi.Runtime.SelfHost</AssemblyName>
+    <AssemblyName Condition="'$(SelfHostReleaseIdentity)' == 'true'">Caladesi.Runtime</AssemblyName>
+    <RootNamespace>Caladesi.Runtime</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <CaladesiImplicitRuntimeReference>false</CaladesiImplicitRuntimeReference>
+    <CaladesiCompilerPath>$(CaladesiRepoRoot)src/Caladesi.Cli/bin/$(Configuration)/net10.0/calac.dll</CaladesiCompilerPath>
+    <CaladesiTasksAssembly>$(CaladesiRepoRoot)src/Caladesi.Build.Tasks/bin/$(Configuration)/net10.0/Caladesi.Build.Tasks.dll</CaladesiTasksAssembly>
+    <CaladesiCompilerPath Condition="'$(UseArtifactsOutput)' == 'true'">$(ArtifactsPath)/bin/Caladesi.Cli/$(Configuration.ToLowerInvariant())/calac.dll</CaladesiCompilerPath>
+    <CaladesiTasksAssembly Condition="'$(UseArtifactsOutput)' == 'true'">$(ArtifactsPath)/bin/Caladesi.Build.Tasks/$(Configuration.ToLowerInvariant())/Caladesi.Build.Tasks.dll</CaladesiTasksAssembly>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Caladesi.Cli/Caladesi.Cli.csproj" ReferenceOutputAssembly="false" Condition="'$(BootstrapDirectory)' == ''" />
+    <ProjectReference Include="../Caladesi.Build.Tasks/Caladesi.Build.Tasks.csproj" ReferenceOutputAssembly="false" Condition="'$(BootstrapDirectory)' == ''" />
+    <CustomAdditionalCompileInputs Include="$([System.IO.Path]::GetDirectoryName('$(CaladesiCompilerPath)'))/*.dll" />
+  </ItemGroup>
+  <Import Project="../Caladesi.Sdk/Sdk/Sdk.targets" />
+</Project>

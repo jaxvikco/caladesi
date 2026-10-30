@@ -1,0 +1,59 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { NativeCorpusHarness } from "./NativeCorpusHarness";
+
+@TestClass
+export class NativeCorpusClosureTests {
+  @TestMethod
+  NonCapturingLambdaWithLinq(): void {
+    NativeCorpusHarness.Check("const xs = [1, 2, 3, 4];\nConsole.WriteLine(xs.Where(x => x % 2 == 0).Select(x => x * 10).Sum());", "60\n");
+  }
+  @TestMethod
+  CapturesLocal(): void {
+    NativeCorpusHarness.Check("function make(): () => int {\n let n = 0;\n return () => { n++; return n; };\n}\nconst c = make();\nc(); c();\nConsole.WriteLine(c());", "3\n");
+  }
+  @TestMethod
+  CapturesParameter(): void {
+    NativeCorpusHarness.Check("function adder(k: int): (x: int) => int { return x => x + k; }\nConsole.WriteLine(adder(5)(10));", "15\n");
+  }
+  @TestMethod
+  NestedClosuresShareVariables(): void {
+    NativeCorpusHarness.Check("function f(): int {\n let total = 0;\n const add = (n: int) => { const inc = () => { total += n; }; inc(); };\n add(2); add(3);\n return total;\n}\nConsole.WriteLine(f());", "5\n");
+  }
+  @TestMethod
+  CapturesThis(): void {
+    NativeCorpusHarness.Check(
+      "class Counter {\n count = 0;\n make(): () => int { return () => { this.count++; return this.count; }; }\n" +
+      " makeWith(step: int): () => int { return () => { this.count += step; return this.count; }; }\n}\n" +
+      "const c = new Counter();\nconst a = c.make();\na();\nConsole.WriteLine(a());\nConsole.WriteLine(c.makeWith(10)());", "2\n12\n");
+  }
+  @TestMethod
+  LoopVariableCapture(): void {
+    NativeCorpusHarness.Check("const fs = new List<() => int>();\nfor (let i = 0; i < 3; i++) {\n const j = i * 10;\n fs.Add(() => j);\n}\nlet sum = 0;\nfor (const f of fs) sum += f();\nConsole.WriteLine(sum);", "30\n");
+  }
+  @TestMethod
+  LocalFunctionRecursion(): void {
+    NativeCorpusHarness.Check("function fact(n: int): int {\n function go(k: int): int { return k <= 1 ? 1 : k * go(k - 1); }\n return go(n);\n}\nConsole.WriteLine(fact(5));", "120\n");
+  }
+  @TestMethod
+  GenericMethodClosure(): void {
+    NativeCorpusHarness.Check(
+      "function mapAll<T, U>(xs: T[], f: (x: T) => U): U[] {\n const res = new List<U>();\n for (const x of xs) res.Add(f(x));\n return res.ToArray();\n}\n" +
+      "function twice<T>(x: T, join: (a: T, b: T) => string): string { return join(x, x); }\n" +
+      "Console.WriteLine(mapAll([1, 2, 3], x => x * 2).Length);\nConsole.WriteLine(twice<string>(\"ab\", (a, b) => a + b));", "3\nabab\n");
+  }
+  @TestMethod
+  ExtensionMethodGroupBindsItsReceiver(): void {
+    NativeCorpusHarness.Check("export function shout(this s: string): string { return s.ToUpper(); }\nconst f: () => string = \"abc\".shout;\nConsole.WriteLine(f());", "ABC\n");
+  }
+  @TestMethod
+  NarrowedVariableResetsAfterLambdaThatAssignsItIsInvoked(): void {
+    NativeCorpusHarness.Check("function run(): string {\n let o: object = 1;\n const set = (): void => { o = \"str\"; };\n if (o instanceof int) { set(); return o instanceof string ? \"now string\" : \"still int\"; }\n return \"none\";\n}\nConsole.WriteLine(run());", "now string\n");
+  }
+  @TestMethod
+  CapturedOutResultsAndCallsInsideClosuresKeepTheirValues(): void {
+    NativeCorpusHarness.Check(
+      "const [parsed, version] = Version.TryParse(\"3.4\");\nconst readVersion: Func<string> = () => version?.ToString() ?? \"<null>\";\nConsole.WriteLine(readVersion());\n" +
+      "function makeReader(): Func<string> {\n const values = new Dictionary<string, string>();\n values[\"present\"] = \"captured\";\n return () => {\n" +
+      " const [found, value] = values.TryGetValue(\"present\");\n return value ?? \"<null>\";\n };\n}\nConsole.WriteLine(makeReader()());", "3.4\ncaptured\n");
+  }
+}

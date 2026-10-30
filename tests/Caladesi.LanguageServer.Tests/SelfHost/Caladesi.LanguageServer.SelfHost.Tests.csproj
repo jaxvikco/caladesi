@@ -1,0 +1,14 @@
+<Project Sdk="MSTest.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Caladesi.LanguageServer.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <NoWarn>$(NoWarn);CA1515;CA1707</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../*.cs" Link="%(Filename)%(Extension)" />
+    <ProjectReference Include="../../../src/Caladesi.Compiler.SelfHost/Caladesi.Compiler.SelfHost.calaproj" />
+    <ProjectReference Include="../../../src/Caladesi.LanguageServer.SelfHost/Caladesi.LanguageServer.SelfHost.calaproj" />
+    <ProjectReference Include="../../../src/Caladesi.Runtime.SelfHost/Caladesi.Runtime.SelfHost.calaproj" />
+  </ItemGroup>
+</Project>

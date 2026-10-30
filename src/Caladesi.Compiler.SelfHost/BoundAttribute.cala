@@ -1,0 +1,11 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { BoundExpression } from "./Bound/BoundNodes";
+import { Symbol } from "./Symbols/Symbol";
+import { NamedTypeSymbol } from "./Symbols/NamedTypeSymbol";
+import { MethodSymbol } from "./Symbols/MemberSymbols";
+
+export sealed class BoundAttribute {
+  constructor(public readonly AttributeType: NamedTypeSymbol, public readonly Constructor: MethodSymbol,
+    public readonly Arguments: ImmutableArray<BoundExpression>,
+    public readonly Named: ImmutableArray<[Member: Symbol, Value: BoundExpression]>) {}
+}

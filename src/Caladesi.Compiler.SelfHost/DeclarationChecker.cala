@@ -1,0 +1,387 @@
+import { List, HashSet, IEnumerable, IReadOnlyList } from "System.Collections.Generic";
+import { Diagnostic, DiagnosticBag, DiagnosticDescriptor } from "./Diagnostics/Diagnostic";
+import { Descriptors } from "./Diagnostics/Descriptors";
+import { TextSpan } from "./Text/TextSpan";
+import { Symbol, Accessibility } from "./Symbols/Symbol";
+import { NamedTypeSymbol } from "./Symbols/NamedTypeSymbol";
+import { TypeSymbol, TypeParameterSymbol, NullableTypeSymbol, TypeKind } from "./Symbols/TypeSymbols";
+import { SpecialType } from "./Symbols/SpecialType";
+import { MethodSymbol, PropertySymbol, MethodKind } from "./Symbols/MemberSymbols";
+import { MetadataNamedType } from "./Symbols/Metadata/MetadataNamedType";
+import { SourceNamedType, SourceClassSymbol } from "./Symbols/Source/SourceTypes";
+import { SourceRecordSymbol, SourceUnionSymbol } from "./Symbols/Source/SourceTypeAliasTypes";
+import { SourceMethodSymbol, SourcePropertySymbol, SourceFieldSymbol } from "./Symbols/Source/SourceMembers";
+import { SynthesizedBodyKind } from "./Symbols/Source/SynthesizedBodyKind";
+import { OverrideResolver } from "./Symbols/Source/OverrideResolver";
+import { SyntaxNode } from "./Syntax/SyntaxElement";
+import { DecoratorSyntax, FunctionDeclarationSyntax, MethodDeclarationSyntax, PropertyDeclarationSyntax,
+  ConstructorDeclarationSyntax, AccessorDeclarationSyntax, ClassDeclarationSyntax, ParameterSyntax } from "./Syntax/Nodes.Core";
+import { DeclarationValidationContext } from "./DeclarationValidationContext";
+
+export sealed class DeclarationChecker<TFile> {
+  private readonly bag: DiagnosticBag = new DiagnosticBag();
+  constructor(private readonly context: DeclarationValidationContext<TFile>) {}
+  get Diagnostics(): IReadOnlyList<Diagnostic> { return this.bag.Items; }
+
+  private Snapshot(): List<SourceNamedType<TFile>> {
+    const result = new List<SourceNamedType<TFile>>();
+    for (const type of this.context.AllSourceTypes) result.Add(type);
+    return result;
+  }
+
+  CheckAll(): void {
+    for (const type of this.Snapshot()) {
+      const baseType = type.BaseType;
+      const interfaces = type.Interfaces;
+      for (const parameter of type.TypeParameters) { const constraints = parameter.ConstraintTypes; }
+      if (type instanceof SourceUnionSymbol<TFile>) { const cases = type.UnionCases; }
+      const members = type.GetMembers();
+      for (const member of members) {
+        if (member instanceof SourceMethodSymbol<TFile>) {
+          const method = member as SourceMethodSymbol<TFile>;
+          const returnType = method.ReturnType;
+          const parameters = method.Parameters;
+          for (const parameter of method.TypeParameters) { const constraints = parameter.ConstraintTypes; }
+        } else if (member instanceof SourcePropertySymbol<TFile>) {
+          const propertyType = (member as SourcePropertySymbol<TFile>).Type;
+        } else if (member instanceof SourceFieldSymbol<TFile>) {
+          const field = member as SourceFieldSymbol<TFile>;
+          const fieldType = field.Type;
+          const value = field.ConstantValue;
+        }
+      }
+    }
+    for (const file of this.context.SourceFiles) {
+      for (const alias of this.context.GetAliases(file)) {
+        const parameters = alias.TypeParameters;
+        const target = alias.Target;
+      }
+    }
+    for (const type of this.Snapshot()) {
+      for (const member of type.GetMembers()) {
+        if (!(member instanceof SourceFieldSymbol<TFile>)) continue;
+        const field = member as SourceFieldSymbol<TFile>;
+        if (!field.IsModuleVariable || field.Declarator == null || !(field.Type instanceof NamedTypeSymbol)) continue;
+        const definition = (field.Type as NamedTypeSymbol).OriginalDefinition;
+        if (definition instanceof MetadataNamedType && (definition as MetadataNamedType).IsByRefLike)
+          this.Report(Descriptors.RefStructModuleVariable, type, field.Declarator!.Span, field.Name, field.Type.ToDisplayString());
+      }
+    }
+    for (const type of this.Snapshot()) {
+      for (const decorator of type.DecoratorSyntaxes)
+        this.context.GetBoundAttribute(type.File, decorator, type);
+      for (const member of type.GetMembers()) {
+        let declaration: SyntaxNode? = null;
+        if (member instanceof SourceMethodSymbol<TFile>) declaration = (member as SourceMethodSymbol<TFile>).Declaration;
+        else if (member instanceof SourcePropertySymbol<TFile>) declaration = (member as SourcePropertySymbol<TFile>).Declaration;
+        else if (member instanceof SourceFieldSymbol<TFile>) declaration = (member as SourceFieldSymbol<TFile>).Declaration;
+        for (const decorator of DecoratorSyntaxHelper.Of(declaration))
+          this.context.GetBoundAttribute(type.File, decorator, type);
+      }
+    }
+    // Binding may add synthesized types, so each phase takes a new ownership snapshot.
+    for (const type of this.Snapshot()) {
+      const members = type.GetMembers();
+      for (const member of members) {
+        if (member instanceof SourceMethodSymbol<TFile>) {
+          const method = member as SourceMethodSymbol<TFile>;
+          if (method.HasBody || method.MethodKind == MethodKind.StaticConstructor) method.GetBoundBody();
+        }
+      }
+    }
+    for (const type of this.Snapshot()) {
+      this.CheckMembers(type);
+      if (type instanceof SourceClassSymbol<TFile> || type instanceof SourceRecordSymbol<TFile>)
+        this.CheckImplementations(type);
+    }
+  }
+
+  private Report(descriptor: DiagnosticDescriptor, type: SourceNamedType<TFile>, span: TextSpan, ...args: object?[]): void {
+    this.bag.Add(Diagnostic.Create(descriptor, this.context.GetFilePath(type.File), span, ...args));
+  }
+
+  private static Location(symbol: Symbol): TextSpan {
+    return symbol.Locations.Length == 0 ? new TextSpan() : symbol.Locations[0].Span;
+  }
+
+  private CheckMembers(type: SourceNamedType<TFile>): void {
+    const members = type.GetMembers();
+    const seen = new List<MethodSymbol>();
+    for (const member of members) {
+      if (!(member instanceof SourceMethodSymbol<TFile>)) continue;
+      const method = member as SourceMethodSymbol<TFile>;
+      if (method.MethodKind == MethodKind.PropertyGet || method.MethodKind == MethodKind.PropertySet) continue;
+      if (method.SynthesizedKind != SynthesizedBodyKind.None && method.Declaration == null) continue;
+      for (const other of seen) {
+        if (other.Name == method.Name && other.MethodKind == method.MethodKind && other.Arity == method.Arity &&
+          DeclarationChecker<TFile>.ParametersMatch(other, method))
+          this.Report(Descriptors.DuplicateMember, type, DeclarationChecker<TFile>.Location(method), method.Name, type.Name);
+      }
+      seen.Add(method);
+    }
+    const names = new HashSet<string>();
+    for (const member of members) {
+      const field = member instanceof SourceFieldSymbol<TFile> ? member as SourceFieldSymbol<TFile> : null;
+      if (member instanceof SourcePropertySymbol<TFile> || (field != null && !field.IsBackingField) || member instanceof NamedTypeSymbol) {
+        if (!names.Add(member.Name) && !(field != null && field.IsModuleVariable))
+          this.Report(Descriptors.DuplicateMember, type, DeclarationChecker<TFile>.Location(member), member.Name, type.Name);
+      }
+    }
+    if (!(type instanceof SourceClassSymbol<TFile>)) return;
+    for (const member of members) {
+      if (!(member instanceof SourceMethodSymbol<TFile>)) continue;
+      const method = member as SourceMethodSymbol<TFile>;
+      if (method.MethodKind != MethodKind.Ordinary && method.MethodKind != MethodKind.PropertyGet && method.MethodKind != MethodKind.PropertySet) continue;
+      const span = DeclarationChecker<TFile>.Location(method);
+      if (method.IsAbstract && !type.IsAbstract)
+        this.Report(Descriptors.AbstractInNonAbstractClass, type, span, method.Name);
+      if (method.IsOverrideFlag && method.MethodKind == MethodKind.Ordinary) {
+        const overridden = method.OverriddenMethod;
+        if (overridden == null) this.Report(Descriptors.OverrideNothing, type, span, method.Name);
+        else {
+          method.SetEmitName(overridden.Name);
+          if (!(overridden.IsVirtual || overridden.IsAbstract || overridden.IsOverride))
+            this.Report(Descriptors.CannotOverrideSealed, type, span, overridden.Name);
+          else if (overridden.IsSealed)
+            this.Report(Descriptors.OverrideOfSealedMember, type, span, DeclarationChecker<TFile>.QualifiedMember(overridden));
+          if (!DeclarationChecker<TFile>.TypesMatchForImplementation(method.ReturnType, overridden.ReturnType))
+            this.Report(Descriptors.OverrideTypeMismatch, type, span, method.Name, method.ReturnType.ToDisplayString(),
+              DeclarationChecker<TFile>.QualifiedMember(overridden), overridden.ReturnType.ToDisplayString());
+        }
+      } else if (!method.IsOverrideFlag && !method.IsStatic && method.MethodKind == MethodKind.Ordinary) {
+        let baseType = type.BaseType;
+        let found = false;
+        while (baseType != null && !found) {
+          for (const candidate of baseType.GetMembers(method.Name)) {
+            if (!(candidate instanceof MethodSymbol)) continue;
+            const inherited = candidate as MethodSymbol;
+            if (!inherited.IsStatic && inherited.Arity == method.Arity && inherited.Name == method.Name &&
+              inherited.MethodKind == MethodKind.Ordinary && (inherited.IsVirtual || inherited.IsAbstract || inherited.IsOverride) &&
+              OverrideResolver<TFile>.SignaturesMatch(inherited, method) && inherited.DeclaredAccessibility != Accessibility.Private) {
+              this.Report(Descriptors.MissingOverride, type, span, method.Name, DeclarationChecker<TFile>.QualifiedMember(inherited));
+              found = true;
+              break;
+            }
+          }
+          baseType = baseType.BaseType;
+        }
+      }
+    }
+    for (const member of members) {
+      if (!(member instanceof SourcePropertySymbol<TFile>)) continue;
+      const property = member as SourcePropertySymbol<TFile>;
+      if (!property.IsOverrideFlag) continue;
+      const span = DeclarationChecker<TFile>.Location(property);
+      const overridden = DeclarationChecker<TFile>.FindOverriddenProperty(type, property);
+      if (overridden == null) this.Report(Descriptors.OverrideNothing, type, span, property.Name);
+      else {
+        if (property.Getter != null) property.Getter.SetEmitName("get_" + overridden.Name);
+        if (overridden.IsSealed)
+          this.Report(Descriptors.OverrideOfSealedMember, type, span, DeclarationChecker<TFile>.QualifiedMember(overridden));
+        if (!DeclarationChecker<TFile>.TypesMatchForImplementation(property.Type, overridden.Type))
+          this.Report(Descriptors.OverrideTypeMismatch, type, span, property.Name, property.Type.ToDisplayString(),
+            DeclarationChecker<TFile>.QualifiedMember(overridden), overridden.Type.ToDisplayString());
+        if (property.Setter != null) property.Setter.SetEmitName("set_" + overridden.Name);
+      }
+    }
+  }
+
+  private static QualifiedMember(member: Symbol): string {
+    return (member.ContainingType == null ? "" : member.ContainingType.Name) + "." + member.Name;
+  }
+
+  static FindOverriddenProperty(cls: NamedTypeSymbol, property: PropertySymbol): PropertySymbol? {
+    let baseType = cls.BaseType;
+    while (baseType != null) {
+      for (const candidate of OverrideResolver<TFile>.LookupNames(baseType, property.Name)) {
+        if (candidate instanceof PropertySymbol) {
+          const inherited = candidate as PropertySymbol;
+          if (!inherited.IsStatic && (inherited.IsVirtual || inherited.IsAbstract || inherited.IsOverride)) return inherited;
+        }
+      }
+      baseType = baseType.BaseType;
+    }
+    return null;
+  }
+
+  private CheckImplementations(type: SourceNamedType<TFile>): void {
+    const span = DeclarationChecker<TFile>.Location(type);
+    if (!type.IsAbstract && type instanceof SourceClassSymbol<TFile>) {
+      let baseType = type.BaseType;
+      while (baseType != null) {
+        for (const member of baseType.GetMembers()) {
+          if (member instanceof MethodSymbol) {
+            const method = member as MethodSymbol;
+            if (method.IsAbstract && method.MethodKind == MethodKind.Ordinary &&
+              DeclarationChecker<TFile>.FindImplementation(type, method, true) == null)
+              this.Report(Descriptors.AbstractMemberNotImplemented, type, span, type.Name, baseType.Name + "." + method.Name);
+          } else if (member instanceof PropertySymbol && (member as PropertySymbol).IsAbstract) {
+            const property = member as PropertySymbol;
+            let current: NamedTypeSymbol? = type;
+            let found = false;
+            while (current != null && !found) {
+              for (const candidate of OverrideResolver<TFile>.LookupNames(current, property.Name)) {
+                if (candidate instanceof PropertySymbol && (candidate as PropertySymbol).IsOverride &&
+                  DeclarationChecker<TFile>.TypesMatchForImplementation((candidate as PropertySymbol).Type, property.Type)) {
+                  found = true;
+                  break;
+                }
+              }
+              current = current.BaseType;
+            }
+            if (!found) this.Report(Descriptors.AbstractMemberNotImplemented, type, span, type.Name, baseType.Name + "." + property.Name);
+          }
+        }
+        baseType = baseType.BaseType;
+      }
+    }
+    if (type.TypeKind == TypeKind.Interface) return;
+    for (const iface of type.AllInterfaces) {
+      let inherited = false;
+      if (type.BaseType != null) {
+        for (const baseInterface of type.BaseType.AllInterfaces) {
+          if (baseInterface.Equals(iface)) { inherited = true; break; }
+        }
+      }
+      if (inherited) continue;
+      for (const member of iface.GetMembers()) {
+        if (!(member instanceof MethodSymbol)) continue;
+        const method = member as MethodSymbol;
+        if ((method.MethodKind != MethodKind.Ordinary && method.MethodKind != MethodKind.PropertyGet &&
+          method.MethodKind != MethodKind.PropertySet) || method.IsStatic || !method.IsAbstract) continue;
+        if (DeclarationChecker<TFile>.FindImplementation(type, method, false) == null &&
+          DeclarationChecker<TFile>.FindBridgeTarget(type, method) == null)
+          this.Report(Descriptors.InterfaceMemberNotImplemented, type, span, type.Name,
+            iface.Name + "." + (method.AssociatedSymbol == null ? method.Name : method.AssociatedSymbol.Name));
+      }
+    }
+  }
+
+  static FindImplementation(type: NamedTypeSymbol, target: MethodSymbol, requireOverride: bool): MethodSymbol? {
+    let current: NamedTypeSymbol? = type;
+    while (current != null) {
+      if (target.AssociatedSymbol instanceof PropertySymbol) {
+        const property = target.AssociatedSymbol as PropertySymbol;
+        for (const candidate of OverrideResolver<TFile>.LookupNames(current, property.Name)) {
+          if (!(candidate instanceof PropertySymbol)) continue;
+          const implementation = candidate as PropertySymbol;
+          if (implementation.IsStatic || !DeclarationChecker<TFile>.TypesMatchForImplementation(implementation.Type, property.Type)) continue;
+          const accessor = target.MethodKind == MethodKind.PropertyGet ? implementation.GetMethod : implementation.SetMethod;
+          if (accessor != null && (!requireOverride || accessor.IsOverride)) return accessor;
+        }
+      } else {
+        for (const candidate of OverrideResolver<TFile>.LookupNames(current, target.Name)) {
+          if (!(candidate instanceof MethodSymbol)) continue;
+          const method = candidate as MethodSymbol;
+          if (method.MethodKind == target.MethodKind && !method.IsStatic && method.Arity == target.Arity &&
+            DeclarationChecker<TFile>.SignatureMatchesForImplementation(method, target) && (!requireOverride || method.IsOverride) &&
+            (method.DeclaredAccessibility == Accessibility.Public || requireOverride)) return method;
+        }
+      }
+      current = current.BaseType;
+    }
+    return null;
+  }
+
+  static FindBridgeTarget(type: NamedTypeSymbol, target: MethodSymbol): MethodSymbol? {
+    let current: NamedTypeSymbol? = type;
+    while (current != null) {
+      if (target.AssociatedSymbol instanceof PropertySymbol) {
+        const property = target.AssociatedSymbol as PropertySymbol;
+        if (target.MethodKind == MethodKind.PropertyGet) {
+          for (const candidate of OverrideResolver<TFile>.LookupNames(current, property.Name)) {
+            if (!(candidate instanceof PropertySymbol)) continue;
+            const implementation = candidate as PropertySymbol;
+            if (!implementation.IsStatic && implementation.GetMethod != null && implementation.DeclaredAccessibility == Accessibility.Public &&
+              DeclarationChecker<TFile>.ReferenceConvertible(implementation.Type, property.Type)) return implementation.GetMethod;
+          }
+        }
+      } else {
+        for (const candidate of OverrideResolver<TFile>.LookupNames(current, target.Name)) {
+          if (!(candidate instanceof MethodSymbol)) continue;
+          const method = candidate as MethodSymbol;
+          if (method.MethodKind == target.MethodKind && !method.IsStatic && method.Arity == target.Arity &&
+            method.DeclaredAccessibility == Accessibility.Public && DeclarationChecker<TFile>.ParametersMatch(method, target) &&
+            DeclarationChecker<TFile>.ReferenceConvertible(method.ReturnType, target.ReturnType)) return method;
+        }
+      }
+      current = current.BaseType;
+    }
+    return null;
+  }
+
+  private static ReferenceConvertible(from: TypeSymbol, to: TypeSymbol): bool {
+    from = DeclarationChecker<TFile>.StripReferenceNullability(from);
+    to = DeclarationChecker<TFile>.StripReferenceNullability(to);
+    if (from.Equals(to)) return true;
+    if (to.SpecialType == SpecialType.Object && !from.IsValueType) return true;
+    if (from.IsValueType || to.IsValueType) return false;
+    let current: TypeSymbol? = from;
+    while (current != null) {
+      if (current.Equals(to)) return true;
+      current = current.BaseType;
+    }
+    for (const iface of from.AllInterfaces) if (iface.Equals(to)) return true;
+    return false;
+  }
+
+  private static StripReferenceNullability(type: TypeSymbol): TypeSymbol {
+    if (type instanceof NullableTypeSymbol) {
+      const underlying = (type as NullableTypeSymbol).Underlying;
+      if (!underlying.IsValueType && !(underlying instanceof TypeParameterSymbol)) return underlying;
+    }
+    return type;
+  }
+
+  private static TypesMatchForImplementation(a: TypeSymbol, b: TypeSymbol): bool {
+    if (a instanceof TypeParameterSymbol && b instanceof TypeParameterSymbol) {
+      const left = a as TypeParameterSymbol;
+      const right = b as TypeParameterSymbol;
+      if (left.IsMethodTypeParameter && right.IsMethodTypeParameter) return left.Ordinal == right.Ordinal;
+    }
+    return DeclarationChecker<TFile>.StripReferenceNullability(a).Equals(DeclarationChecker<TFile>.StripReferenceNullability(b));
+  }
+
+  private static ParametersMatch(a: MethodSymbol, b: MethodSymbol): bool {
+    if (a.Parameters.Length != b.Parameters.Length) return false;
+    for (let i = 0; i < a.Parameters.Length; i++)
+      if (!DeclarationChecker<TFile>.TypesMatchForImplementation(a.Parameters[i].Type, b.Parameters[i].Type)) return false;
+    return true;
+  }
+
+  private static SignatureMatchesForImplementation(implementation: MethodSymbol, target: MethodSymbol): bool {
+    return DeclarationChecker<TFile>.ParametersMatch(implementation, target) &&
+      (implementation.MethodKind == MethodKind.Constructor ||
+        DeclarationChecker<TFile>.TypesMatchForImplementation(implementation.ReturnType, target.ReturnType));
+  }
+}
+
+export sealed class TypeExtensions {
+  static *BaseTypesAndSelf(type: NamedTypeSymbol): IEnumerable<NamedTypeSymbol> {
+    let current: NamedTypeSymbol? = type;
+    while (current != null) {
+      yield current;
+      current = current.BaseType;
+    }
+  }
+}
+
+export sealed class DecoratorSyntaxHelper {
+  static *Of(declaration: SyntaxNode?): IEnumerable<DecoratorSyntax> {
+    if (declaration instanceof FunctionDeclarationSyntax) {
+      for (const decorator of (declaration as FunctionDeclarationSyntax).Decorators) yield decorator;
+    } else if (declaration instanceof MethodDeclarationSyntax) {
+      for (const decorator of (declaration as MethodDeclarationSyntax).Decorators) yield decorator;
+    } else if (declaration instanceof PropertyDeclarationSyntax) {
+      for (const decorator of (declaration as PropertyDeclarationSyntax).Decorators) yield decorator;
+    } else if (declaration instanceof ConstructorDeclarationSyntax) {
+      for (const decorator of (declaration as ConstructorDeclarationSyntax).Decorators) yield decorator;
+    } else if (declaration instanceof AccessorDeclarationSyntax) {
+      for (const decorator of (declaration as AccessorDeclarationSyntax).Decorators) yield decorator;
+    } else if (declaration instanceof ClassDeclarationSyntax) {
+      for (const decorator of (declaration as ClassDeclarationSyntax).Decorators) yield decorator;
+    } else if (declaration instanceof ParameterSyntax) {
+      for (const decorator of (declaration as ParameterSyntax).Decorators) yield decorator;
+    }
+  }
+}

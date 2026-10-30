@@ -1,0 +1,52 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { ClosureLowerer, LoweredProgram } from "Caladesi.Compiler.Emit";
+import { SynthesizedNamedType, SynthesizedMethodSymbol } from "Caladesi.Compiler.Symbols.Source";
+import { ErrorTypeSymbol, TypeKind, Accessibility, MethodKind, ParameterSymbol, LocalSymbol } from "Caladesi.Compiler.Symbols";
+import { BoundBlock, BoundStatement, BoundExpressionStatement, BoundLambda, BoundDelegateCreation, BoundReturn, BoundLiteral, LambdaSymbol } from "Caladesi.Compiler.Bound";
+import { ConstantValue } from "Caladesi.Compiler.Symbols";
+
+@TestClass
+export class ClosureLowererTests {
+  @TestMethod
+  bodyWithoutLambdasIsReused(): void {
+    const container = new SynthesizedNamedType("Container", ErrorTypeSymbol.Instance, TypeKind.Class);
+    const method = new SynthesizedMethodSymbol(container, "main", MethodKind.Ordinary,
+      Accessibility.Public, true, ErrorTypeSymbol.Instance, ImmutableArray<ParameterSymbol>.Empty);
+    const body = new BoundBlock(ImmutableArray<LocalSymbol>.Empty, ImmutableArray<BoundStatement>.Empty);
+    const program = new LoweredProgram<string>();
+    const result = ClosureLowerer<string>.Lower(ErrorTypeSymbol.Instance, ErrorTypeSymbol.Instance,
+      program, method, container, 0, body);
+    if (!Object.ReferenceEquals(result, body) || program.Types.Count != 0 || program.Bodies.Count != 0) {
+      throw new Exception("Closure-free body must remain unchanged");
+    }
+  }
+
+  @TestMethod
+  noncapturingLambdaBecomesStaticMethod(): void {
+    const container = new SynthesizedNamedType("Container", ErrorTypeSymbol.Instance, TypeKind.Class);
+    const method = new SynthesizedMethodSymbol(container, "main", MethodKind.Ordinary,
+      Accessibility.Public, true, ErrorTypeSymbol.Instance, ImmutableArray<ParameterSymbol>.Empty);
+    const symbol = new LambdaSymbol(method, "lambda", false, false);
+    symbol.ReturnTypeValue = ErrorTypeSymbol.Instance;
+    const statements = ImmutableArray.CreateBuilder<BoundStatement>();
+    statements.Add(new BoundReturn(new BoundLiteral(new ConstantValue(1), ErrorTypeSymbol.Instance)));
+    const lambdaBody = new BoundBlock(ImmutableArray<LocalSymbol>.Empty, statements.ToImmutable());
+    const lambda = new BoundLambda(symbol, lambdaBody, ErrorTypeSymbol.Instance);
+    const outerStatements = ImmutableArray.CreateBuilder<BoundStatement>();
+    outerStatements.Add(new BoundExpressionStatement(lambda));
+    const body = new BoundBlock(ImmutableArray<LocalSymbol>.Empty, outerStatements.ToImmutable());
+    const program = new LoweredProgram<string>();
+    program.MethodFiles[method] = "main.cala";
+    const result = ClosureLowerer<string>.Lower(ErrorTypeSymbol.Instance, ErrorTypeSymbol.Instance,
+      program, method, container, 0, body);
+    const expression = (result.Statements[0] as BoundExpressionStatement).Expression;
+    if (!(expression instanceof BoundDelegateCreation)) throw new Exception("Lambda must become delegate creation");
+    const delegateCreation = expression as BoundDelegateCreation;
+    if (!delegateCreation.Method.IsStatic || delegateCreation.Receiver != null ||
+        program.Types.Count != 0 || program.Bodies.Count != 1 ||
+        program.MethodFiles[delegateCreation.Method] != "main.cala") {
+      throw new Exception("Noncapturing lambda lowering metadata");
+    }
+  }
+}

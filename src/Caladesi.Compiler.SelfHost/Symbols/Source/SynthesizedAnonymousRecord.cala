@@ -1,0 +1,64 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { List } from "System.Collections.Generic";
+import { Symbol, Accessibility } from "../Symbol";
+import { NamedTypeSymbol } from "../NamedTypeSymbol";
+import { TypeSymbol, TypeParameterSymbol, TypeKind, VarianceKind } from "../TypeSymbols";
+import { ParameterSymbol, MethodKind } from "../MemberSymbols";
+import { SpecialType } from "../SpecialType";
+import { SourceTypeContext } from "./SourceTypeContext";
+import { SourceNamedType, MemberFactory } from "./SourceTypes";
+import { RecordMemberFactory } from "./SourceTypeAliasTypes";
+import { SourceFieldSymbol, SourcePropertySymbol } from "./SourceMembers";
+import { SynthesizedBodyKind } from "./SynthesizedBodyKind";
+
+export sealed class SynthesizedAnonymousRecord<TFile> extends SourceNamedType<TFile> {
+  private typeParameters: ImmutableArray<TypeParameterSymbol>;
+  private interfaces: ImmutableArray<NamedTypeSymbol>;
+  constructor(context: SourceTypeContext<TFile>, file: TFile, name: string, public readonly PropertyNames: ImmutableArray<string>) {
+    super(context, file, null, name, context.GetNamespace(file), Accessibility.Internal);
+  }
+  override get TypeKind(): TypeKind { return TypeKind.Class; }
+  override get IsRecord(): bool { return true; }
+  override get IsSealed(): bool { return true; }
+  get IsCompilerGenerated(): bool { return true; }
+  override get BaseType(): NamedTypeSymbol? { return this.Context.GetSpecialType(SpecialType.Object); }
+  override get TypeParameters(): ImmutableArray<TypeParameterSymbol> {
+    if (this.typeParameters.IsDefault) {
+      const builder = ImmutableArray.CreateBuilder<TypeParameterSymbol>(this.PropertyNames.Length);
+      for (let i = 0; i < this.PropertyNames.Length; i++)
+        builder.Add(new TypeParameterSymbol("T" + i, i, this, VarianceKind.None));
+      this.typeParameters = builder.MoveToImmutable();
+    }
+    return this.typeParameters;
+  }
+  override get Interfaces(): ImmutableArray<NamedTypeSymbol> {
+    if (this.interfaces.IsDefault) this.interfaces = RecordMemberFactory<TFile>.Equatable(this);
+    return this.interfaces;
+  }
+  protected override BuildMembers(): ImmutableArray<Symbol> {
+    const members = new List<Symbol>();
+    const parameters = ImmutableArray.CreateBuilder<ParameterSymbol>();
+    const self = this.Construct(this.TypeArguments);
+    for (let i = 0; i < this.PropertyNames.Length; i++) {
+      const type = this.TypeParameters[i];
+      const name = this.PropertyNames[i];
+      const property = new SourcePropertySymbol<TFile>(this.Context, this.File, this, name, Accessibility.Public, false, null, null, type);
+      property.IsAutoProperty = true;
+      property.Getter = MemberFactory<TFile>.Accessor(this.Context, this.File, this, property, true, Accessibility.Public,
+        false, false, false, false, false, SynthesizedBodyKind.AutoGetter);
+      const backing = new SourceFieldSymbol<TFile>(this.Context, this.File, this, "<" + name + ">i__Field",
+        Accessibility.Private, false, true, false, null, type);
+      backing.IsBackingField = true;
+      property.BackingField = backing;
+      members.Add(backing);
+      members.Add(property);
+      members.Add(property.Getter!);
+      const parameter = new ParameterSymbol(name, type, i, null);
+      parameters.Add(parameter.WithType(parameter.Type, null));
+    }
+    members.Add(MemberFactory<TFile>.Method(this, ".ctor", MethodKind.Constructor, SynthesizedBodyKind.RecordConstructor,
+      parameters.ToImmutable(), null));
+    RecordMemberFactory<TFile>.AddEquality(this, members, self, false, false);
+    return ImmutableArray.CreateRange<Symbol>(members);
+  }
+}

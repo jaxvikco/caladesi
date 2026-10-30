@@ -1,0 +1,74 @@
+import { IEnumerable } from "System.Collections.Generic";
+import { Symbol } from "../Symbol";
+import { TypeSymbol, TypeParameterSymbol } from "../TypeSymbols";
+import { NamedTypeSymbol } from "../NamedTypeSymbol";
+import { MethodSymbol, MethodKind, PropertySymbol } from "../MemberSymbols";
+import { NameUtilities } from "../../NameUtilities";
+import { SourcePropertySymbol } from "./SourceMembers";
+
+export sealed class OverrideResolver<TSourceFile> {
+  static FindOverriddenMethod(method: MethodSymbol): MethodSymbol? {
+    ArgumentNullException.ThrowIfNull(method, "m");
+    const container = method.ContainingType;
+    if (container == null) return null;
+    if (method.AssociatedSymbol instanceof SourcePropertySymbol<TSourceFile> &&
+      (method.MethodKind == MethodKind.PropertyGet || method.MethodKind == MethodKind.PropertySet)) {
+      const property = OverrideResolver<TSourceFile>.FindOverriddenProperty(container, method.AssociatedSymbol as SourcePropertySymbol<TSourceFile>);
+      if (property == null) return null;
+      return method.MethodKind == MethodKind.PropertyGet ? property.GetMethod : property.SetMethod;
+    }
+    let baseType = container.BaseType;
+    while (baseType != null) {
+      for (const candidate of OverrideResolver<TSourceFile>.LookupNames(baseType, method.Name)) {
+        if (candidate instanceof MethodSymbol) {
+          const baseMethod = candidate as MethodSymbol;
+          if (baseMethod.MethodKind == method.MethodKind && baseMethod.Arity == method.Arity && !baseMethod.IsStatic &&
+            (baseMethod.IsVirtual || baseMethod.IsAbstract || baseMethod.IsOverride) &&
+            OverrideResolver<TSourceFile>.SignaturesMatch(baseMethod, method)) return baseMethod;
+        }
+      }
+      baseType = baseType.BaseType;
+    }
+    return null;
+  }
+  static FindOverriddenProperty(container: NamedTypeSymbol, property: PropertySymbol): PropertySymbol? {
+    let baseType = container.BaseType;
+    while (baseType != null) {
+      for (const candidate of OverrideResolver<TSourceFile>.LookupNames(baseType, property.Name)) {
+        if (candidate instanceof PropertySymbol) {
+          const baseProperty = candidate as PropertySymbol;
+          if (!baseProperty.IsStatic && (baseProperty.IsVirtual || baseProperty.IsAbstract || baseProperty.IsOverride))
+            return baseProperty;
+        }
+      }
+      baseType = baseType.BaseType;
+    }
+    return null;
+  }
+  static *LookupNames(type: TypeSymbol, name: string): IEnumerable<Symbol> {
+    for (const symbol of type.GetMembers(name)) yield symbol;
+    const flipped = NameUtilities.FlipFirstCase(name);
+    if (flipped != name) for (const symbol of type.GetMembers(flipped)) yield symbol;
+  }
+  static SignaturesMatch(a: MethodSymbol, b: MethodSymbol): bool {
+    ArgumentNullException.ThrowIfNull(a);
+    ArgumentNullException.ThrowIfNull(b);
+    if (a.Parameters.Length != b.Parameters.Length) return false;
+    for (let i = 0; i < a.Parameters.Length; i++) {
+      const ta = a.Parameters[i].Type;
+      const tb = b.Parameters[i].Type;
+      if (a.IsGenericMethod && ta instanceof TypeParameterSymbol && tb instanceof TypeParameterSymbol) {
+        const pa = ta as TypeParameterSymbol;
+        const pb = tb as TypeParameterSymbol;
+        if (pa.IsMethodTypeParameter && pb.IsMethodTypeParameter) {
+          if (pa.Ordinal != pb.Ordinal) return false;
+          // The original deliberately skips RefKind comparison in this branch.
+          continue;
+        }
+      }
+      if (!ta.StripNullable().Equals(tb.StripNullable())) return false;
+      if (a.Parameters[i].RefKind != b.Parameters[i].RefKind) return false;
+    }
+    return true;
+  }
+}

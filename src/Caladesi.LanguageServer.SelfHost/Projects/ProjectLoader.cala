@@ -1,0 +1,108 @@
+import "System.IO";
+import { Process, ProcessStartInfo } from "System.Diagnostics";
+import { Win32Exception } from "System.ComponentModel";
+import { Encoding } from "System.Text";
+import { Log } from "../Protocol/MessageTransport";
+import { ServerOptions } from "../ServerOptions";
+import { MsBuildProjectData } from "./MsBuildProjectData";
+import { DotnetLocator } from "./StandaloneReferences";
+
+export type ProjectLoadResult = { Data: MsBuildProjectData?; Error: string? };
+
+export sealed class ProjectLoader {
+  private static readonly Timeout: TimeSpan = TimeSpan.FromMinutes(2);
+  constructor(private readonly options: ServerOptions) {}
+
+  Load(projectPath: string): ProjectLoadResult {
+    const directory: string = Path.GetDirectoryName(projectPath) ?? ".";
+    const first: ProjectLoadResult = this.Evaluate(projectPath, directory);
+    if (first.Data != null && first.Data.References.Count > 0) return first;
+    if (!File.Exists(Path.Combine(directory, "obj", "project.assets.json"))) {
+      Log.Write("project is not restored, running dotnet restore: " + projectPath);
+      const [exitCode, output] = this.Run(["restore", projectPath, "-nologo", "-v:q"], directory);
+      if (exitCode != 0) return new ProjectLoadResult(null, "dotnet restore failed: " + ProjectLoader.Truncate(output));
+      const second: ProjectLoadResult = this.Evaluate(projectPath, directory);
+      if (second.Data != null && second.Data.References.Count > 0) return second;
+      return second.Data == null ? second : new ProjectLoadResult(null, "no reference assemblies were resolved for " + Path.GetFileName(projectPath));
+    }
+    return first.Data == null ? first : new ProjectLoadResult(null, "no reference assemblies were resolved for " + Path.GetFileName(projectPath));
+  }
+
+  private Evaluate(projectPath: string, directory: string): ProjectLoadResult {
+    const arguments: string[] = [
+      "msbuild", projectPath, "-nologo", "-nodeReuse:false",
+      "-getProperty:" + MsBuildProjectData.ProjectProperties,
+      "-getItem:Compile,CaladesiGlobalImport,ReferencePathWithRefAssemblies,TestingPlatformBuilderHook",
+      "-target:ResolveAssemblyReferences,FindReferenceAssembliesForReferences"
+    ];
+    const [exitCode, output] = this.Run(arguments, directory);
+    const data: MsBuildProjectData? = MsBuildProjectData.Parse(output, directory);
+    return data == null
+      ? new ProjectLoadResult(null, "dotnet msbuild failed (exit code " + exitCode + "): " + ProjectLoader.Truncate(output))
+      : new ProjectLoadResult(data, null);
+  }
+
+  private static Truncate(text: string): string {
+    const trimmed: string = text.Trim();
+    return trimmed.Length <= 600 ? trimmed : trimmed.Substring(0, 600) + "...";
+  }
+
+  private Run(arguments: IEnumerable<string>, workingDirectory: string): [int, string] {
+    const info: ProcessStartInfo = new ProcessStartInfo(this.DotnetHost());
+    info.WorkingDirectory = workingDirectory;
+    info.RedirectStandardOutput = true;
+    info.RedirectStandardError = true;
+    info.RedirectStandardInput = true;
+    info.UseShellExecute = false;
+    info.CreateNoWindow = true;
+    info.StandardOutputEncoding = Encoding.UTF8;
+    info.StandardErrorEncoding = Encoding.UTF8;
+    for (const argument: string of arguments) info.ArgumentList.Add(argument);
+    info.Environment["DOTNET_CLI_USE_MSBUILD_SERVER"] = "0";
+    info.Environment["MSBUILDDISABLENODEREUSE"] = "1";
+    info.Environment["DOTNET_NOLOGO"] = "1";
+    info.Environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
+    info.Environment["DOTNET_SKIP_FIRST_TIME_EXPERIENCE"] = "1";
+    info.Environment["NUGET_XMLDOC_MODE"] = "skip";
+    for (const entry: KeyValuePair<string, string?> of this.options.ChildEnvironment) {
+      if (entry.Value == null) info.Environment.Remove(entry.Key);
+      else info.Environment[entry.Key] = entry.Value;
+    }
+    try {
+      const process: Process? = Process.Start(info);
+      if (process == null) return [-1, "could not start dotnet"];
+      using owned = process;
+      process.StandardInput.Close();
+      // Drain both streams concurrently so a full stderr pipe cannot block MSBuild.
+      const stdout: Task<string> = process.StandardOutput.ReadToEndAsync();
+      const stderr: Task<string> = process.StandardError.ReadToEndAsync();
+      if (!process.WaitForExit(ProjectLoader.Timeout)) {
+        try { process.Kill(true); } catch (ex: InvalidOperationException) {}
+        return [-1, "dotnet timed out"];
+      }
+      process.WaitForExit();
+      const tasks: Task[] = [stdout, stderr];
+      Task.WaitAll(tasks);
+      return [process.ExitCode, stdout.Result + stderr.Result];
+    } catch (ex: Win32Exception) {
+      return [-1, "could not run dotnet: " + ex.Message];
+    } catch (ex: InvalidOperationException) {
+      return [-1, "could not run dotnet: " + ex.Message];
+    } catch (ex: IOException) {
+      return [-1, "could not run dotnet: " + ex.Message];
+    }
+  }
+
+  private DotnetHost(): string {
+    const configured: string? = this.options.DotnetPath;
+    if (configured != null && configured.Length > 0) return configured;
+    const host: string? = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH");
+    if (!string.IsNullOrEmpty(host) && File.Exists(host)) return host!;
+    const root: string? = DotnetLocator.FindRoot();
+    if (root != null) {
+      const candidate: string = Path.Combine(root, OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
+      if (File.Exists(candidate)) return candidate;
+    }
+    return "dotnet";
+  }
+}

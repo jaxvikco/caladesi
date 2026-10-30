@@ -1,0 +1,222 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { List, Stack, HashSet, IEnumerable } from "System.Collections.Generic";
+import {
+  BoundNode, BoundExpression, BoundStatement, BoundExpressionStatement, BoundAssignment,
+  BoundBlock, BoundYieldReturn, BoundTry, BoundCatch, BoundLocal, BoundLiteral, BoundLabel,
+  BoundIf, BoundUnary, BoundIsNull, BoundGoto, BoundBinary, BoundCall, BoundConditionalGoto,
+  BoundReturn, BoundYieldBreak, BoundLocalDeclaration, BoundConversion, BoundThrow,
+  BoundWhile, BoundDoWhile, BoundFor, UnaryOperatorKind, BinaryOperatorKind, ConversionKind
+} from "../../Bound/BoundNodes";
+import { BoundTreeRewriter } from "../../Bound/BoundTreeRewriter";
+import { TypeSymbol, NullTypeSymbol } from "../../Symbols/TypeSymbols";
+import { NamedTypeSymbol } from "../../Symbols/NamedTypeSymbol";
+import { LocalSymbol, LabelSymbol, MethodSymbol, ConstantValue } from "../../Symbols/MemberSymbols";
+import { SuspensionFinder } from "./SuspensionSpiller";
+
+// Required runtime symbols are supplied by the caller, independently of Compilation.
+export sealed class TryRewriter extends BoundTreeRewriter {
+  private readonly finallyLabels: Stack<LabelSymbol> = new Stack<LabelSymbol>();
+  constructor(public readonly Bool: TypeSymbol, public readonly Int: TypeSymbol,
+    private readonly exceptionType: NamedTypeSymbol, private readonly dispatchInfo: NamedTypeSymbol,
+    private readonly finder: SuspensionFinder, private readonly newTemp: Func<TypeSymbol, LocalSymbol>,
+    private readonly returnType: TypeSymbol?, private readonly disposing: Func<BoundExpression>?,
+    private readonly endLabel: LabelSymbol) { super(); }
+
+  static Assign(target: BoundExpression, value: BoundExpression): BoundExpressionStatement {
+    const assignment = new BoundAssignment(target, value);
+    assignment.IsDiscarded = true;
+    return new BoundExpressionStatement(assignment);
+  }
+  static Block(stmts: IEnumerable<BoundStatement>): BoundBlock {
+    return new BoundBlock(ImmutableArray<LocalSymbol>.Empty, ImmutableArray.CreateRange<BoundStatement>(stmts));
+  }
+  protected override VisitYieldReturn(n: BoundYieldReturn): BoundNode {
+    const y = super.VisitYieldReturn(n) as BoundYieldReturn;
+    const result = new BoundYieldReturn(y.Expression);
+    result.Syntax = n.Syntax;
+    result.DisposeTarget = this.finallyLabels.Count > 0 ? this.finallyLabels.Peek() : null;
+    return result;
+  }
+  protected override VisitTry(t: BoundTry): BoundNode {
+    if (!this.finder.Has(t)) return t;
+    let node = t;
+    if (t.Finally != null && t.Catches.Length > 0) {
+      const inner = new BoundTry(t.Body, t.Catches, null);
+      inner.Syntax = t.Syntax;
+      node = new BoundTry(TryRewriter.Block([inner]), ImmutableArray<BoundCatch>.Empty, t.Finally);
+      node.Syntax = t.Syntax;
+    }
+    return node.Finally != null ? this.RewriteFinally(node) : this.RewriteCatches(node);
+  }
+  private RewriteFinally(t: BoundTry): BoundBlock {
+    const finallyLabel = new LabelSymbol("<finally>");
+    const pending = this.newTemp(this.exceptionType);
+    const branch = this.newTemp(this.Int);
+    const retval: LocalSymbol? = this.returnType != null && !this.returnType.IsVoid ? this.newTemp(this.returnType) : null;
+    this.finallyLabels.Push(finallyLabel);
+    const body = this.Visit(t.Body)! as BoundBlock;
+    this.finallyLabels.Pop();
+    const fin = this.Visit(t.Finally!)! as BoundBlock;
+    const jumps = new List<BoundStatement>();
+    const rewrittenBody = new TryJumpOutRewriter(this, finallyLabel, branch, retval, jumps).Rewrite(body) as BoundBlock;
+    const stmts = new List<BoundStatement>();
+    stmts.Add(TryRewriter.Assign(new BoundLocal(pending), new BoundLiteral(ConstantValue.Null, NullTypeSymbol.Instance)));
+    stmts.Add(TryRewriter.Assign(new BoundLocal(branch), new BoundLiteral(new ConstantValue(0), this.Int)));
+    const exTemp = this.newTemp(this.exceptionType);
+    const handlers = ImmutableArray.CreateBuilder<BoundCatch>();
+    handlers.Add(new BoundCatch(exTemp, this.exceptionType,
+      TryRewriter.Block([TryRewriter.Assign(new BoundLocal(pending), new BoundLocal(exTemp))])));
+    stmts.Add(new BoundTry(rewrittenBody, handlers.ToImmutable(), null));
+    stmts.Add(new BoundLabel(finallyLabel));
+    stmts.Add(fin);
+    stmts.Add(new BoundIf(new BoundUnary(UnaryOperatorKind.Not, new BoundIsNull(new BoundLocal(pending), this.Bool), this.Bool),
+      TryRewriter.Block([this.RethrowPending(pending)]), null));
+    if (this.disposing != null) {
+      const target = this.finallyLabels.Count > 0 ? this.finallyLabels.Peek() : this.endLabel;
+      stmts.Add(new BoundIf(this.disposing(), TryRewriter.Block([new BoundGoto(target)]), null));
+    }
+    for (let k = 0; k < jumps.Count; k++) {
+      stmts.Add(new BoundIf(new BoundBinary(BinaryOperatorKind.Equal, new BoundLocal(branch),
+        new BoundLiteral(new ConstantValue(k + 1), this.Int), this.Bool, this.Int), TryRewriter.Block([jumps[k]]), null));
+    }
+    const result = TryRewriter.Block(stmts);
+    result.Syntax = t.Syntax;
+    return result;
+  }
+  RethrowPending(pending: LocalSymbol): BoundExpressionStatement {
+    let capture: MethodSymbol? = null;
+    let throwMethod: MethodSymbol? = null;
+    for (const member of this.dispatchInfo.GetMembers("Capture")) {
+      if (member instanceof MethodSymbol) { capture = member as MethodSymbol; break; }
+    }
+    for (const member of this.dispatchInfo.GetMembers("Throw")) {
+      if (member instanceof MethodSymbol && (member as MethodSymbol).Parameters.Length == 0) {
+        throwMethod = member as MethodSymbol;
+        break;
+      }
+    }
+    if (capture == null || throwMethod == null) throw new InvalidOperationException("Sequence contains no matching element");
+    const captured = new BoundCall(null, capture, [new BoundLocal(pending)]);
+    return new BoundExpressionStatement(new BoundCall(captured, throwMethod, ImmutableArray<BoundExpression>.Empty));
+  }
+  private RewriteCatches(t: BoundTry): BoundNode {
+    const body = this.Visit(t.Body)! as BoundBlock;
+    const catches = new List<BoundCatch>();
+    let hasSuspensions = false;
+    for (const c of t.Catches) {
+      const rewritten = new BoundCatch(c.Local, c.ExceptionType, this.Visit(c.Body)! as BoundBlock);
+      catches.Add(rewritten);
+      if (this.finder.Has(rewritten.Body)) hasSuspensions = true;
+    }
+    if (!hasSuspensions) {
+      const result = new BoundTry(body, ImmutableArray.CreateRange<BoundCatch>(catches), null);
+      result.Syntax = t.Syntax;
+      return result;
+    }
+    const pending = this.newTemp(this.exceptionType);
+    const caught = this.newTemp(this.Int);
+    const newCatches = ImmutableArray.CreateBuilder<BoundCatch>();
+    for (let i = 0; i < catches.Count; i++) {
+      const c = catches[i];
+      const tmp = this.newTemp(c.ExceptionType);
+      newCatches.Add(new BoundCatch(tmp, c.ExceptionType, TryRewriter.Block([
+        TryRewriter.Assign(new BoundLocal(pending), this.Convert(new BoundLocal(tmp), this.exceptionType)),
+        TryRewriter.Assign(new BoundLocal(caught), new BoundLiteral(new ConstantValue(i + 1), this.Int))
+      ])));
+    }
+    let chain: BoundStatement? = null;
+    for (let i = catches.Count - 1; i >= 0; i--) {
+      const c = catches[i];
+      const stmts = new List<BoundStatement>();
+      if (c.Local != null) stmts.Add(new BoundLocalDeclaration(c.Local, this.Convert(new BoundLocal(pending), c.ExceptionType)));
+      stmts.Add(new TryRethrowReplacer(this, pending).Visit(c.Body)! as BoundBlock);
+      chain = new BoundIf(new BoundBinary(BinaryOperatorKind.Equal, new BoundLocal(caught),
+        new BoundLiteral(new ConstantValue(i + 1), this.Int), this.Bool, this.Int), TryRewriter.Block(stmts), chain);
+    }
+    const result = TryRewriter.Block([
+      TryRewriter.Assign(new BoundLocal(caught), new BoundLiteral(new ConstantValue(0), this.Int)),
+      new BoundTry(body, newCatches.ToImmutable(), null), chain!
+    ]);
+    result.Syntax = t.Syntax;
+    return result;
+  }
+  private Convert(e: BoundExpression, to: TypeSymbol): BoundExpression {
+    if (e.Type!.Equals(to)) return e;
+    const kind = to.Equals(this.exceptionType) ? ConversionKind.ImplicitReference : ConversionKind.ExplicitReference;
+    return new BoundConversion(e, kind, to);
+  }
+}
+
+class TryJumpOutRewriter extends BoundTreeRewriter {
+  private readonly inside: HashSet<LabelSymbol> = new HashSet<LabelSymbol>();
+  constructor(private readonly owner: TryRewriter, private readonly finallyLabel: LabelSymbol,
+    private readonly branch: LocalSymbol, private readonly retval: LocalSymbol?,
+    private readonly jumps: List<BoundStatement>) { super(); }
+  Rewrite(body: BoundBlock): BoundNode {
+    new TryLabelCollector(this.inside).Visit(body);
+    return this.Visit(body)!;
+  }
+  private Register(replay: BoundStatement): int { this.jumps.Add(replay); return this.jumps.Count; }
+  private Leave(k: int): BoundBlock {
+    return TryRewriter.Block([
+      TryRewriter.Assign(new BoundLocal(this.branch), new BoundLiteral(new ConstantValue(k), this.owner.Int)),
+      new BoundGoto(this.finallyLabel)
+    ]);
+  }
+  override Visit(node: BoundNode?): BoundNode? {
+    if (node instanceof BoundGoto) {
+      const g = node as BoundGoto;
+      if (!this.inside.Contains(g.Label)) return this.Leave(this.Register(g));
+    }
+    if (node instanceof BoundConditionalGoto) {
+      const cg = node as BoundConditionalGoto;
+      if (!this.inside.Contains(cg.Label)) {
+        const k = this.Register(new BoundGoto(cg.Label));
+        const cond = cg.JumpIfTrue ? cg.Condition : new BoundUnary(UnaryOperatorKind.Not, cg.Condition, this.owner.Bool);
+        return new BoundIf(cond, this.Leave(k), null);
+      }
+    }
+    if (node instanceof BoundReturn) {
+      const r = node as BoundReturn;
+      const stmts = new List<BoundStatement>();
+      if (r.Expression != null && this.retval != null) stmts.Add(TryRewriter.Assign(new BoundLocal(this.retval), r.Expression!));
+      const k = this.Register(new BoundReturn(r.Expression != null && this.retval != null ? new BoundLocal(this.retval) : null));
+      stmts.Add(this.Leave(k));
+      return TryRewriter.Block(stmts);
+    }
+    if (node instanceof BoundYieldBreak) return this.Leave(this.Register(node as BoundYieldBreak));
+    return super.Visit(node);
+  }
+}
+
+class TryLabelCollector extends BoundTreeRewriter {
+  constructor(private readonly labels: HashSet<LabelSymbol>) { super(); }
+  protected override VisitWhile(n: BoundWhile): BoundNode {
+    this.labels.Add(n.BreakLabel); this.labels.Add(n.ContinueLabel); return super.VisitWhile(n);
+  }
+  protected override VisitDoWhile(n: BoundDoWhile): BoundNode {
+    this.labels.Add(n.BreakLabel); this.labels.Add(n.ContinueLabel); return super.VisitDoWhile(n);
+  }
+  protected override VisitFor(n: BoundFor): BoundNode {
+    this.labels.Add(n.BreakLabel); this.labels.Add(n.ContinueLabel); return super.VisitFor(n);
+  }
+  override Visit(node: BoundNode?): BoundNode? {
+    if (node instanceof BoundLabel) this.labels.Add((node as BoundLabel).Label);
+    return super.Visit(node);
+  }
+}
+
+class TryRethrowReplacer extends BoundTreeRewriter {
+  constructor(private readonly owner: TryRewriter, private readonly pending: LocalSymbol) { super(); }
+  protected override VisitThrow(n: BoundThrow): BoundNode {
+    return n.Expression == null ? this.owner.RethrowPending(this.pending) : n;
+  }
+  protected override VisitTry(n: BoundTry): BoundNode {
+    // Nested handlers retain their own exception context.
+    const body = this.Visit(n.Body)! as BoundBlock;
+    const fin: BoundBlock? = n.Finally == null ? null : this.Visit(n.Finally)! as BoundBlock;
+    const result = new BoundTry(body, n.Catches, fin);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+}

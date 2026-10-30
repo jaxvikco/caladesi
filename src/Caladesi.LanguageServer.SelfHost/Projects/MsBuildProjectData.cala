@@ -1,0 +1,123 @@
+import "System.IO";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { JsonDocument, JsonElement, JsonException, JsonProperty, JsonValueKind } from "System.Text.Json";
+import { CompilationOptions, OutputKind } from "Caladesi.Compiler";
+
+export sealed class MsBuildProjectData {
+  static readonly ProjectProperties: string = "RootNamespace,AssemblyName,OutputType,TargetFramework,TargetFrameworkMoniker,TargetFrameworkMonikerDisplayName,Nullable,TreatWarningsAsErrors,NoWarn,DefineConstants,AssemblyVersion,Version,CaladesiGenerateTestEntryPoint";
+  readonly Properties: Dictionary<string, string> = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+  readonly Compile: List<string> = new List<string>();
+  readonly GlobalImports: List<string> = new List<string>();
+  readonly References: List<string> = new List<string>();
+  readonly TestHooks: List<string> = new List<string>();
+
+  Property(name: string): string {
+    const [found, value] = this.Properties.TryGetValue(name);
+    return found ? value : "";
+  }
+
+  static Parse(output: string, projectDirectory: string): MsBuildProjectData? {
+    const json: string? = MsBuildProjectData.ExtractJson(output);
+    if (json == null) return null;
+    let document: JsonDocument;
+    try { document = JsonDocument.Parse(json); }
+    catch (ex: JsonException) { return null; }
+    using owned = document;
+    const data: MsBuildProjectData = new MsBuildProjectData();
+    const root: JsonElement = document.RootElement;
+    if (root.ValueKind != JsonValueKind.Object) return null;
+    const [hasProps, props] = root.TryGetProperty("Properties");
+    if (hasProps && props.ValueKind == JsonValueKind.Object) {
+      for (const p: JsonProperty of props.EnumerateObject()) {
+        data.Properties[p.Name] = p.Value.ValueKind == JsonValueKind.String ? p.Value.GetString() ?? "" : p.Value.ToString();
+      }
+    }
+    const [hasItems, items] = root.TryGetProperty("Items");
+    if (hasItems && items.ValueKind == JsonValueKind.Object) {
+      MsBuildProjectData.Collect(items, "Compile", data.Compile, projectDirectory, true);
+      MsBuildProjectData.Collect(items, "CaladesiGlobalImport", data.GlobalImports, projectDirectory, false);
+      MsBuildProjectData.Collect(items, "ReferencePathWithRefAssemblies", data.References, projectDirectory, true);
+      MsBuildProjectData.Collect(items, "TestingPlatformBuilderHook", data.TestHooks, projectDirectory, false);
+    }
+    return data;
+  }
+
+  private static ExtractJson(output: string): string? {
+    let index: int = 0;
+    while (index < output.Length) {
+      let end: int = output.IndexOf('\n', index);
+      if (end < 0) end = output.Length;
+      if (output.Substring(index, end - index).Trim() == "{") return output.Substring(index);
+      index = end + 1;
+    }
+    const first: int = output.IndexOf('{');
+    return first >= 0 ? output.Substring(first) : null;
+  }
+
+  private static Collect(items: JsonElement, name: string, into: List<string>, projectDirectory: string, path: bool): void {
+    const [found, array] = items.TryGetProperty(name);
+    if (!found || array.ValueKind != JsonValueKind.Array) return;
+    for (const item: JsonElement of array.EnumerateArray()) {
+      if (item.ValueKind != JsonValueKind.Object) continue;
+      let value: string? = null;
+      const [hasFull, full] = item.TryGetProperty("FullPath");
+      if (path && hasFull && full.ValueKind == JsonValueKind.String) value = full.GetString();
+      const [hasId, id] = item.TryGetProperty("Identity");
+      if (string.IsNullOrEmpty(value) && hasId && id.ValueKind == JsonValueKind.String) value = id.GetString();
+      if (value == null || value.Length == 0) continue;
+      if (path && !Path.IsPathRooted(value)) value = Path.GetFullPath(Path.Combine(projectDirectory, value));
+      into.Add(value);
+    }
+  }
+
+  ToCompilationOptions(projectPath: string): CompilationOptions {
+    const projectDirectory: string = Path.GetDirectoryName(projectPath) ?? "";
+    const fileName: string = Path.GetFileNameWithoutExtension(projectPath) ?? "";
+    const assemblyName: string = this.Property("AssemblyName");
+    const rootNamespace: string = this.Property("RootNamespace");
+    const outputType: string = this.Property("OutputType");
+    let version: string = this.Property("AssemblyVersion");
+    if (version.Length == 0) version = this.Property("Version");
+    const moniker: string = this.Property("TargetFrameworkMoniker");
+    const display: string = this.Property("TargetFrameworkMonikerDisplayName");
+    const defaults: CompilationOptions = new CompilationOptions();
+    const imports: List<string> = new List<string>(CompilationOptions.DefaultGlobalImports);
+    for (const item: string of this.GlobalImports) {
+      if (!imports.Contains(item)) imports.Add(item);
+    }
+    const options: CompilationOptions = {
+      AssemblyName: assemblyName.Length > 0 ? assemblyName : fileName,
+      RootNamespace: rootNamespace.Length > 0 ? rootNamespace : fileName,
+      ProjectDirectory: projectDirectory,
+      OutputKind: outputType.Equals("Library", StringComparison.OrdinalIgnoreCase) ? OutputKind.DynamicallyLinkedLibrary : OutputKind.ConsoleApplication,
+      NullableEnabled: !this.Property("Nullable").Equals("disable", StringComparison.OrdinalIgnoreCase),
+      WarningsAsErrors: this.Property("TreatWarningsAsErrors").Equals("true", StringComparison.OrdinalIgnoreCase),
+      NoWarn: MsBuildProjectData.Split(this.Property("NoWarn")),
+      Defines: MsBuildProjectData.Split(this.Property("DefineConstants")),
+      GlobalImports: ImmutableArray.CreateRange<string>(imports),
+      AssemblyVersion: MsBuildProjectData.ParseVersion(version) ?? defaults.AssemblyVersion,
+      TargetFramework: moniker.Length > 0 ? moniker : defaults.TargetFramework,
+      TargetFrameworkDisplayName: display.Length > 0 ? display : null,
+      RecordSemanticInfo: true
+    };
+    return options;
+  }
+
+  private static Split(value: string): ImmutableArray<string> {
+    const separators: char[] = [';', ','];
+    const values: string[] = value.Split(separators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    const seen: HashSet<string> = new HashSet<string>(StringComparer.Ordinal);
+    const result: List<string> = new List<string>();
+    for (const item: string of values) {
+      if (seen.Add(item)) result.Add(item);
+    }
+    return ImmutableArray.CreateRange<string>(result);
+  }
+  private static ParseVersion(text: string): Version? {
+    const separators: char[] = ['-', '+'];
+    const core: string = text.Split(separators)[0];
+    const [ok, version] = Version.TryParse(core);
+    if (!ok || version == null) return null;
+    return new Version(version.Major, version.Minor, Math.Max(version.Build, 0), Math.Max(version.Revision, 0));
+  }
+}

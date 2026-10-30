@@ -19,6 +19,7 @@ internal sealed class CliOptions
     public string? TargetFramework { get; private set; }
     public string? TargetFrameworkDisplayName { get; private set; }
     public Version AssemblyVersion { get; private set; } = new(1, 0, 0, 0);
+    public string? InformationalVersion { get; private set; }
     public bool ShowVersion { get; private set; }
     public List<string> References { get; } = [];
     public List<string> Defines { get; } = [];
@@ -112,6 +113,7 @@ internal sealed class CliOptions
             case "testentry": GenerateTestEntryPoint = !value.Equals("false", StringComparison.OrdinalIgnoreCase); break;
             case "targetframework": TargetFramework = value; break;
             case "targetframeworkdisplay": TargetFrameworkDisplayName = value; break;
+            case "informationalversion": InformationalVersion = value; break;
             case "version":
                 if (value.Length == 0)
                 {
@@ -151,6 +153,7 @@ internal sealed class CliOptions
             Defines = [.. Defines],
             GlobalImports = EffectiveGlobalImports,
             AssemblyVersion = AssemblyVersion,
+            InformationalVersion = InformationalVersion,
             TargetFramework = TargetFramework ?? ".NETCoreApp,Version=v10.0",
             TargetFrameworkDisplayName = TargetFrameworkDisplayName,
             GenerateTestEntryPoint = GenerateTestEntryPoint,

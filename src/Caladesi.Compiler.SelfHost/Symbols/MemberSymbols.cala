@@ -1,0 +1,296 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { SyntaxNode } from "../Syntax/SyntaxElement";
+import { Symbol, SymbolKind, Accessibility, RefKind, AttributeData, SourceLocation } from "./Symbol";
+import { TypeSymbol, TypeParameterSymbol, TypeParameterConstraints } from "./TypeSymbols";
+import { ConstructedNamedType } from "./NamedTypeSymbol";
+import { TypeMap } from "./TypeMap";
+
+export sealed class ConstantValue {
+  static readonly Null: ConstantValue = new ConstantValue(null);
+  constructor(public readonly Value: object?) {}
+  get IsNull(): bool { return this.Value == null; }
+  override ToString(): string { return this.Value == null ? "null" : this.Value.ToString() ?? "null"; }
+}
+export enum MethodKind {
+  Ordinary, Constructor, StaticConstructor, PropertyGet, PropertySet, UserDefinedOperator, Conversion,
+  DelegateInvoke, LambdaMethod, LocalFunction, Destructor, EventAdd, EventRemove
+}
+export abstract class MethodSymbol extends Symbol {
+  override get Kind(): SymbolKind { return SymbolKind.Method; }
+  abstract get MethodKind(): MethodKind;
+  abstract get ReturnType(): TypeSymbol;
+  abstract get Parameters(): ImmutableArray<ParameterSymbol>;
+  get TypeParameters(): ImmutableArray<TypeParameterSymbol> { return ImmutableArray<TypeParameterSymbol>.Empty; }
+  get TypeArguments(): ImmutableArray<TypeSymbol> { return ImmutableArrayExtensions.ToTypes(this.TypeParameters); }
+  get Arity(): int { return this.TypeParameters.Length; }
+  get IsGenericMethod(): bool { return this.Arity > 0; }
+  get ReturnsVoid(): bool { return this.ReturnType.IsVoid; }
+  get IsExtensionMethod(): bool { return false; }
+  get IsAsync(): bool { return false; }
+  get IsIterator(): bool { return false; }
+  get IsInitOnly(): bool { return false; }
+  get ReturnsByRef(): bool { return false; }
+  get IsExtern(): bool { return false; }
+  get AssociatedSymbol(): Symbol? { return null; }
+  get OverriddenMethod(): MethodSymbol? { return null; }
+  get OriginalDefinition(): MethodSymbol { return this; }
+  override get OriginalSymbolDefinition(): Symbol { return this.OriginalDefinition; }
+  get ConstructedFrom(): MethodSymbol { return this; }
+  get IsDefinition(): bool { return Object.ReferenceEquals(this.OriginalDefinition, this); }
+  get ExplicitInterfaceImplementations(): ImmutableArray<MethodSymbol> { return ImmutableArray<MethodSymbol>.Empty; }
+  get HasParamsArray(): bool { const parameters = this.Parameters; return parameters.Length > 0 && parameters[parameters.Length - 1].IsParams; }
+  Construct(typeArguments: ImmutableArray<TypeSymbol>): MethodSymbol {
+    if (typeArguments.Length != this.Arity) throw new ArgumentException("wrong number of type arguments");
+    return new ConstructedMethodSymbol(this, typeArguments);
+  }
+}
+export sealed class ConstructedMethodSymbol extends MethodSymbol {
+  private parameters: ImmutableArray<ParameterSymbol>;
+  readonly Map: TypeMap;
+  constructor(private readonly definition: MethodSymbol, private readonly typeArguments: ImmutableArray<TypeSymbol>) {
+    super();
+    this.Map = new TypeMap(definition.TypeParameters, typeArguments);
+  }
+  override get Name(): string { return this.definition.Name; }
+  override get MetadataName(): string { return this.definition.MetadataName; }
+  override get ContainingSymbol(): Symbol? { return this.definition.ContainingSymbol; }
+  override get MethodKind(): MethodKind { return this.definition.MethodKind; }
+  override get ReturnType(): TypeSymbol { return this.Map.Substitute(this.definition.ReturnType); }
+  override get TypeArguments(): ImmutableArray<TypeSymbol> { return this.typeArguments; }
+  override get TypeParameters(): ImmutableArray<TypeParameterSymbol> { return this.definition.TypeParameters; }
+  override get OriginalDefinition(): MethodSymbol { return this.definition.OriginalDefinition; }
+  override get ConstructedFrom(): MethodSymbol { return this.definition; }
+  override get DeclaredAccessibility(): Accessibility { return this.definition.DeclaredAccessibility; }
+  override get IsStatic(): bool { return this.definition.IsStatic; }
+  override get IsAbstract(): bool { return this.definition.IsAbstract; }
+  override get IsVirtual(): bool { return this.definition.IsVirtual; }
+  override get IsOverride(): bool { return this.definition.IsOverride; }
+  override get IsSealed(): bool { return this.definition.IsSealed; }
+  override get IsExtensionMethod(): bool { return this.definition.IsExtensionMethod; }
+  override get IsAsync(): bool { return this.definition.IsAsync; }
+  override get IsIterator(): bool { return this.definition.IsIterator; }
+  override get IsInitOnly(): bool { return this.definition.IsInitOnly; }
+  override get IsExtern(): bool { return this.definition.IsExtern; }
+  override get ReturnsByRef(): bool { return this.definition.ReturnsByRef; }
+  override get IsFromSource(): bool { return this.definition.IsFromSource; }
+  override get AssociatedSymbol(): Symbol? { return this.definition.AssociatedSymbol; }
+  override get Locations(): ImmutableArray<SourceLocation> { return this.definition.Locations; }
+  override GetAttributes(): ImmutableArray<AttributeData> { return this.definition.GetAttributes(); }
+  override get Parameters(): ImmutableArray<ParameterSymbol> {
+    if (this.parameters.IsDefault) {
+      const builder = ImmutableArray.CreateBuilder<ParameterSymbol>();
+      for (const parameter of this.definition.Parameters) builder.Add(parameter.WithType(this.Map.Substitute(parameter.Type), this));
+      this.parameters = builder.ToImmutable();
+    }
+    return this.parameters;
+  }
+}
+export sealed class SubstitutedMethodSymbol extends MethodSymbol {
+  private parameters: ImmutableArray<ParameterSymbol>;
+  private typeParameters: ImmutableArray<TypeParameterSymbol>;
+  private associated: Symbol? = null;
+  private fullMap: TypeMap? = null;
+  constructor(private readonly container: ConstructedNamedType, private readonly original: MethodSymbol, private readonly map: TypeMap) { super(); }
+  SetAssociated(symbol: Symbol): void { this.associated = symbol; }
+  override get Name(): string { return this.original.Name; }
+  override get MetadataName(): string { return this.original.MetadataName; }
+  override get ContainingSymbol(): Symbol? { return this.container; }
+  override get MethodKind(): MethodKind { return this.original.MethodKind; }
+  override get OriginalDefinition(): MethodSymbol { return this.original.OriginalDefinition; }
+  override get DeclaredAccessibility(): Accessibility { return this.original.DeclaredAccessibility; }
+  override get IsStatic(): bool { return this.original.IsStatic; }
+  override get IsAbstract(): bool { return this.original.IsAbstract; }
+  override get IsVirtual(): bool { return this.original.IsVirtual; }
+  override get IsOverride(): bool { return this.original.IsOverride; }
+  override get IsSealed(): bool { return this.original.IsSealed; }
+  override get IsExtensionMethod(): bool { return this.original.IsExtensionMethod; }
+  override get IsAsync(): bool { return this.original.IsAsync; }
+  override get IsIterator(): bool { return this.original.IsIterator; }
+  override get IsInitOnly(): bool { return this.original.IsInitOnly; }
+  override get IsExtern(): bool { return this.original.IsExtern; }
+  override get ReturnsByRef(): bool { return this.original.ReturnsByRef; }
+  override get IsFromSource(): bool { return this.original.IsFromSource; }
+  override get AssociatedSymbol(): Symbol? { return this.associated ?? this.original.AssociatedSymbol; }
+  override GetAttributes(): ImmutableArray<AttributeData> { return this.original.GetAttributes(); }
+  override get Locations(): ImmutableArray<SourceLocation> { return this.original.Locations; }
+  private get FullMap(): TypeMap {
+    if (this.fullMap == null) {
+      this.fullMap = this.original.Arity == 0 ? this.map : this.map.Extend(this.original.TypeParameters, ImmutableArrayExtensions.ToTypes(this.TypeParameters));
+    }
+    return this.fullMap!;
+  }
+  private SubstituteConstraints(original: TypeParameterSymbol): TypeParameterConstraints {
+    const builder = ImmutableArray.CreateBuilder<TypeSymbol>();
+    for (const type of original.ConstraintTypes) builder.Add(this.FullMap.Substitute(type));
+    return new TypeParameterConstraints(original.HasReferenceTypeConstraint, original.HasValueTypeConstraint,
+      original.HasConstructorConstraint && !original.HasValueTypeConstraint, original.HasNotNullConstraint, builder.ToImmutable());
+  }
+  override get TypeParameters(): ImmutableArray<TypeParameterSymbol> {
+    if (this.original.Arity == 0) return ImmutableArray<TypeParameterSymbol>.Empty;
+    if (this.typeParameters.IsDefault) {
+      const builder = ImmutableArray.CreateBuilder<TypeParameterSymbol>();
+      for (const parameter of this.original.TypeParameters) {
+        const captured = parameter;
+        builder.Add(new TypeParameterSymbol(parameter.Name, parameter.Ordinal, this, parameter.Variance,
+          self => this.SubstituteConstraints(captured)));
+      }
+      this.typeParameters = builder.ToImmutable();
+    }
+    return this.typeParameters;
+  }
+  override get ReturnType(): TypeSymbol { return this.FullMap.Substitute(this.original.ReturnType); }
+  override get Parameters(): ImmutableArray<ParameterSymbol> {
+    if (this.parameters.IsDefault) {
+      const builder = ImmutableArray.CreateBuilder<ParameterSymbol>();
+      for (const parameter of this.original.Parameters) builder.Add(parameter.WithType(this.FullMap.Substitute(parameter.Type), this));
+      this.parameters = builder.ToImmutable();
+    }
+    return this.parameters;
+  }
+  override get OverriddenMethod(): MethodSymbol? { return this.original.OverriddenMethod; }
+}
+export class ParameterSymbol extends Symbol {
+  OriginalParameter: ParameterSymbol? = null;
+  DeclaringSyntax: SyntaxNode? = null;
+  IsCaptured: bool = false;
+  IsReassigned: bool = false;
+  IsFromSourceParam: bool = false;
+  readonly IsOptional: bool;
+  constructor(private readonly name: string, public Type: TypeSymbol, public readonly Ordinal: int,
+    public readonly Container: Symbol?, public readonly RefKind: RefKind, public readonly IsParams: bool,
+    public readonly DefaultValue: ConstantValue?, isOptional: bool = false, public readonly IsThis: bool = false) {
+    super();
+    this.IsOptional = isOptional || DefaultValue != null;
+  }
+  constructor(name: string, type: TypeSymbol, ordinal: int, container: Symbol?, refKind: RefKind = RefKind.None, isParams: bool = false) {
+    super();
+    this.name = name;
+    this.Type = type;
+    this.Ordinal = ordinal;
+    this.Container = container;
+    this.RefKind = refKind;
+    this.IsParams = isParams;
+    this.DefaultValue = null;
+    this.IsOptional = false;
+    this.IsThis = false;
+  }
+  override get Name(): string { return this.name; }
+  override get Kind(): SymbolKind { return SymbolKind.Parameter; }
+  override get ContainingSymbol(): Symbol? { return this.Container; }
+  override get IsFromSource(): bool { return this.IsFromSourceParam; }
+  WithType(type: TypeSymbol, container: Symbol?): ParameterSymbol {
+    const parameter = new ParameterSymbol(this.Name, type, this.Ordinal, container, this.RefKind, this.IsParams, this.DefaultValue, this.IsOptional, this.IsThis);
+    parameter.OriginalParameter = this.OriginalParameter ?? this;
+    parameter.DeclaringSyntax = this.DeclaringSyntax;
+    parameter.IsFromSourceParam = this.IsFromSourceParam;
+    return parameter;
+  }
+  override ToString(): string { return this.Name + ": " + this.Type.ToDisplayString(); }
+}
+export abstract class FieldSymbol extends Symbol {
+  override get Kind(): SymbolKind { return SymbolKind.Field; }
+  abstract get Type(): TypeSymbol;
+  get IsConst(): bool { return false; }
+  get ConstantValue(): ConstantValue? { return null; }
+  get IsReadOnly(): bool { return false; }
+  get OriginalDefinition(): FieldSymbol { return this; }
+  override get OriginalSymbolDefinition(): Symbol { return this.OriginalDefinition; }
+  get AssociatedSymbol(): Symbol? { return null; }
+}
+export sealed class SubstitutedFieldSymbol extends FieldSymbol {
+  constructor(private readonly container: ConstructedNamedType, private readonly original: FieldSymbol, private readonly map: TypeMap) { super(); }
+  override get Name(): string { return this.original.Name; }
+  override get ContainingSymbol(): Symbol? { return this.container; }
+  override get Type(): TypeSymbol { return this.map.Substitute(this.original.Type); }
+  override get OriginalDefinition(): FieldSymbol { return this.original.OriginalDefinition; }
+  override get IsStatic(): bool { return this.original.IsStatic; }
+  override get IsConst(): bool { return this.original.IsConst; }
+  override get ConstantValue(): ConstantValue? { return this.original.ConstantValue; }
+  override get IsReadOnly(): bool { return this.original.IsReadOnly; }
+  override get DeclaredAccessibility(): Accessibility { return this.original.DeclaredAccessibility; }
+  override GetAttributes(): ImmutableArray<AttributeData> { return this.original.GetAttributes(); }
+}
+export abstract class PropertySymbol extends Symbol {
+  override get Kind(): SymbolKind { return SymbolKind.Property; }
+  abstract get Type(): TypeSymbol;
+  abstract get GetMethod(): MethodSymbol?;
+  abstract get SetMethod(): MethodSymbol?;
+  get Parameters(): ImmutableArray<ParameterSymbol> { return ImmutableArray<ParameterSymbol>.Empty; }
+  get IsIndexer(): bool { return this.Parameters.Length > 0; }
+  get OriginalDefinition(): PropertySymbol { return this; }
+  override get OriginalSymbolDefinition(): Symbol { return this.OriginalDefinition; }
+  get OverriddenProperty(): PropertySymbol? { return null; }
+  get IsReadOnlyProperty(): bool { return this.SetMethod == null; }
+  get IsInitOnly(): bool { return this.SetMethod != null && this.SetMethod.IsInitOnly; }
+}
+export sealed class SubstitutedPropertySymbol extends PropertySymbol {
+  private getter: MethodSymbol? = null;
+  private setter: MethodSymbol? = null;
+  private parameters: ImmutableArray<ParameterSymbol>;
+  constructor(private readonly container: ConstructedNamedType, private readonly original: PropertySymbol, private readonly map: TypeMap) { super(); }
+  Link(members: ImmutableArray<Symbol>): void {
+    for (const member of members) {
+      if (!(member instanceof SubstitutedMethodSymbol)) continue;
+      const method = member as SubstitutedMethodSymbol;
+      if (this.original.GetMethod != null && Object.ReferenceEquals(method.OriginalDefinition, this.original.GetMethod.OriginalDefinition)) {
+        this.getter = method; method.SetAssociated(this);
+      } else if (this.original.SetMethod != null && Object.ReferenceEquals(method.OriginalDefinition, this.original.SetMethod.OriginalDefinition)) {
+        this.setter = method; method.SetAssociated(this);
+      }
+    }
+  }
+  override get Name(): string { return this.original.Name; }
+  override get ContainingSymbol(): Symbol? { return this.container; }
+  override get Type(): TypeSymbol { return this.map.Substitute(this.original.Type); }
+  override get GetMethod(): MethodSymbol? { return this.getter; }
+  override get SetMethod(): MethodSymbol? { return this.setter; }
+  override get IsStatic(): bool { return this.original.IsStatic; }
+  override get IsAbstract(): bool { return this.original.IsAbstract; }
+  override get IsVirtual(): bool { return this.original.IsVirtual; }
+  override get IsOverride(): bool { return this.original.IsOverride; }
+  override get DeclaredAccessibility(): Accessibility { return this.original.DeclaredAccessibility; }
+  override get OriginalDefinition(): PropertySymbol { return this.original.OriginalDefinition; }
+  override GetAttributes(): ImmutableArray<AttributeData> { return this.original.GetAttributes(); }
+  override get Parameters(): ImmutableArray<ParameterSymbol> {
+    if (this.parameters.IsDefault) {
+      const builder = ImmutableArray.CreateBuilder<ParameterSymbol>();
+      for (const parameter of this.original.Parameters) builder.Add(parameter.WithType(this.map.Substitute(parameter.Type), this));
+      this.parameters = builder.ToImmutable();
+    }
+    return this.parameters;
+  }
+}
+export sealed class LocalSymbol extends Symbol {
+  ConstantValue: ConstantValue? = null;
+  IsCaptured: bool = false;
+  IsReassigned: bool = false;
+  IsUsingVariable: bool = false;
+  IsSynthesized: bool = false;
+  IsFixedUp: bool = false;
+  constructor(private readonly name: string, public Type: TypeSymbol, public readonly IsConst: bool,
+    public Container: Symbol?, public readonly DeclaringSyntax: SyntaxNode?) { super(); }
+  constructor(name: string, type: TypeSymbol, isConst: bool, container: Symbol?) {
+    super();
+    this.name = name;
+    this.Type = type;
+    this.IsConst = isConst;
+    this.Container = container;
+    this.DeclaringSyntax = null;
+  }
+  override get Name(): string { return this.name; }
+  override get Kind(): SymbolKind { return SymbolKind.Local; }
+  override get ContainingSymbol(): Symbol? { return this.Container; }
+  override ToString(): string { return this.Name + ": " + this.Type.ToDisplayString(); }
+}
+export sealed class LabelSymbol extends Symbol {
+  constructor(private readonly name: string) { super(); }
+  override get Kind(): SymbolKind { return SymbolKind.Label; }
+  override get Name(): string { return this.name; }
+}
+export static class ImmutableArrayExtensions {
+  static ToTypes(parameters: ImmutableArray<TypeParameterSymbol>): ImmutableArray<TypeSymbol> {
+    const builder = ImmutableArray.CreateBuilder<TypeSymbol>();
+    for (const parameter of parameters) builder.Add(parameter);
+    return builder.ToImmutable();
+  }
+}

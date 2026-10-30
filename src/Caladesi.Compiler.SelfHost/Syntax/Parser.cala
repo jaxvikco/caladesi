@@ -1,0 +1,1635 @@
+import { List } from "System.Collections.Generic";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { StringBuilder } from "System.Text";
+import { Diagnostic, DiagnosticBag, DiagnosticDescriptor } from "../Diagnostics/Diagnostic";
+import { Descriptors } from "../Diagnostics/Descriptors";
+import { SourceText } from "../Text/SourceText";
+import { TextSpan } from "../Text/TextSpan";
+import { SyntaxKind } from "./SyntaxKind";
+import { SyntaxFacts } from "./SyntaxFacts";
+import { SyntaxToken, SyntaxTrivia } from "./SyntaxToken";
+import { SyntaxElement, SyntaxNode, ListNode } from "./SyntaxElement";
+import { Lexer } from "./Lexer";
+import {
+  StatementSyntax, ExpressionSyntax, TypeSyntax, NameSyntax, SimpleNameSyntax, MemberDeclarationSyntax,
+  CompilationUnitSyntax, IdentifierNameSyntax, GenericNameSyntax, QualifiedNameSyntax,
+  TypeArgumentListSyntax, ArrayTypeSyntax, ReadonlyArrayTypeSyntax, TupleTypeSyntax, TupleElementSyntax,
+  UnionTypeSyntax, IntersectionTypeSyntax, NullableTypeSyntax, FunctionTypeSyntax, ObjectTypeSyntax,
+  LiteralTypeSyntax, ParenthesizedTypeSyntax, NewConstraintTypeSyntax, SpecialConstraintTypeSyntax,
+  MissingTypeSyntax, TypeAnnotationSyntax, EqualsValueClauseSyntax, TypeParameterListSyntax,
+  TypeParameterSyntax, DecoratorSyntax, ParameterListSyntax, ParameterSyntax, BindingPatternSyntax,
+  ObjectBindingPatternSyntax, ArrayBindingPatternSyntax, BindingElementSyntax, ImportDeclarationSyntax,
+  NamedImportsSyntax, ImportSpecifierSyntax, NamespaceImportSyntax, FunctionDeclarationSyntax,
+  HeritageClauseSyntax, ClassDeclarationSyntax, InterfaceDeclarationSyntax, EnumDeclarationSyntax,
+  EnumMemberSyntax, TypeAliasDeclarationSyntax, PropertyDeclarationSyntax, MethodDeclarationSyntax,
+  ConstructorDeclarationSyntax, AccessorDeclarationSyntax, BlockSyntax, VariableStatementSyntax,
+  VariableDeclarationListSyntax, VariableDeclaratorSyntax, ExpressionStatementSyntax, IfStatementSyntax,
+  ForStatementSyntax, ForOfStatementSyntax, ForInStatementSyntax, WhileStatementSyntax, DoStatementSyntax,
+  ReturnStatementSyntax, BreakStatementSyntax, ContinueStatementSyntax, ThrowStatementSyntax,
+  TryStatementSyntax, CatchClauseSyntax, FinallyClauseSyntax, SwitchStatementSyntax, SwitchSectionSyntax,
+  SwitchLabelSyntax, LabeledStatementSyntax, EmptyStatementSyntax, MissingStatementSyntax,
+  LiteralExpressionSyntax, TemplateExpressionSyntax, TemplateSpanSyntax, ThisExpressionSyntax,
+  SuperExpressionSyntax, MissingExpressionSyntax, ParenthesizedExpressionSyntax, ArrayLiteralExpressionSyntax,
+  SpreadElementSyntax, ObjectLiteralExpressionSyntax, PropertyAssignmentSyntax, ShorthandPropertyAssignmentSyntax,
+  SpreadAssignmentSyntax, FunctionExpressionSyntax, ArrowFunctionSyntax, PrefixUnaryExpressionSyntax,
+  PostfixUnaryExpressionSyntax, AwaitExpressionSyntax, ThrowExpressionSyntax, TypeOfExpressionSyntax,
+  YieldExpressionSyntax, BinaryExpressionSyntax, AssignmentExpressionSyntax, ConditionalExpressionSyntax,
+  ArgumentListSyntax, InvocationExpressionSyntax, NewExpressionSyntax, ArrayCreationExpressionSyntax,
+  MemberAccessExpressionSyntax, ElementAccessExpressionSyntax, NonNullExpressionSyntax,
+  AsExpressionSyntax, SatisfiesExpressionSyntax, InstanceOfExpressionSyntax
+} from "./Nodes.Core";
+
+export sealed class Parser {
+  readonly _path: string;
+  readonly _tokens: List<SyntaxToken>;
+  readonly _diagnostics: DiagnosticBag;
+  _i: int = 0;
+  _speculating: int = 0;
+  _depth: int = 0;
+  _nestingReported: bool = false;
+  _tooDeep: bool = false;
+  _specErrors: int = 0;
+  _noNullableMarker: bool = false;
+
+  constructor(source: SourceText) {
+    this._path = "";
+    this._diagnostics = new DiagnosticBag();
+    this._tokens = new Lexer(source, this._path, this._diagnostics).LexAll();
+  }
+
+  constructor(path: string, tokens: List<SyntaxToken>, diagnostics: DiagnosticBag) {
+    this._path = path;
+    this._tokens = tokens;
+    this._diagnostics = diagnostics;
+  }
+
+  get Diagnostics(): DiagnosticBag { return this._diagnostics; }
+
+  EnterNesting(): bool {
+    if (this._depth >= 256) {
+      if (!this._nestingReported) {
+        this._nestingReported = true;
+        this.ReportAtCurrent(Descriptors.NestingTooDeep);
+      }
+      this._tooDeep = true;
+      this.SkipRemainingTokens();
+      return false;
+    }
+    this._depth++;
+    return true;
+  }
+
+  ExitNesting(): void {
+    this._depth--;
+    if (this._depth == 0) this._tooDeep = false;
+  }
+
+  get Current(): SyntaxToken { return this._tokens[this._i]; }
+  get Kind(): SyntaxKind { return this.Current.Kind; }
+  get Previous(): SyntaxToken { return this._tokens[Math.Max(0, this._i - 1)]; }
+
+  PeekToken(n: int): SyntaxToken {
+    const index = this._i + n;
+    return index < this._tokens.Count ? this._tokens[index] : this._tokens[this._tokens.Count - 1];
+  }
+  PeekKind(n: int): SyntaxKind { return this.PeekToken(n).Kind; }
+  Eat(): SyntaxToken {
+    const token = this.Current;
+    if (token.Kind != SyntaxKind.EndOfFileToken) this._i++;
+    return token;
+  }
+  TryEat(kind: SyntaxKind): SyntaxToken? { return this.Kind == kind ? this.Eat() : null; }
+  Expect(kind: SyntaxKind): SyntaxToken {
+    if (this.Kind == kind) return this.Eat();
+    this.ReportExpected(SyntaxFacts.GetText(kind));
+    return this.Missing(kind);
+  }
+  Missing(kind: SyntaxKind): SyntaxToken {
+    return new SyntaxToken(kind, "", this.Current.FullStart, ImmutableArray<SyntaxTrivia>.Empty,
+      ImmutableArray<SyntaxTrivia>.Empty, null, true);
+  }
+  ReportExpected(what: string): void {
+    this.Report(Descriptors.ExpectedToken, new TextSpan(this.ErrorPosition(), 0), what);
+  }
+  ErrorPosition(): int {
+    return this._i > 0 && this._speculating == 0 ? this.Previous.End : this.Current.Start;
+  }
+  Report(descriptor: DiagnosticDescriptor, span: TextSpan, ...args: object?[]): void {
+    if (this._speculating > 0) { this._specErrors++; return; }
+    if (this._tooDeep) return;
+    this._diagnostics.Add(Diagnostic.Create(descriptor, this._path, span, ...args));
+  }
+  ReportAtCurrent(descriptor: DiagnosticDescriptor, ...args: object?[]): void {
+    const span = this.Current.Span;
+    this.Report(descriptor, span.Length == 0 && this.Kind == SyntaxKind.EndOfFileToken
+      ? new TextSpan(this.Current.Start, 0) : span, ...args);
+  }
+
+  SkipCurrent(): void {
+    if (this.Kind == SyntaxKind.EndOfFileToken) return;
+    if (this._speculating > 0) { this._i++; return; }
+    const skipped = this.Current;
+    const next = this._tokens[this._i + 1];
+    this._tokens[this._i + 1] = this.WithSkippedTrivia(next, skipped.ToFullString(), skipped.FullStart);
+    this._i++;
+  }
+
+  WithSkippedTrivia(token: SyntaxToken, text: string, start: int): SyntaxToken {
+    const trivia = new List<SyntaxTrivia>();
+    trivia.Add(new SyntaxTrivia(SyntaxKind.SkippedTokensTrivia, text));
+    trivia.AddRange(token.LeadingTrivia);
+    return new SyntaxToken(token.Kind, token.Text, start, ImmutableArray.CreateRange<SyntaxTrivia>(trivia),
+      token.TrailingTrivia, token.Value, token.IsMissingToken);
+  }
+
+  PrependSkipped(text: string): void {
+    if (text.Length == 0 || this._speculating > 0) return;
+    const token = this.Current;
+    this._tokens[this._i] = this.WithSkippedTrivia(token, text, token.FullStart - text.Length);
+  }
+  SkipRemainingTokens(): void {
+    const eof = this._tokens.Count - 1;
+    if (this._i >= eof) return;
+    if (this._speculating == 0) {
+      const text = new StringBuilder();
+      for (let k = this._i; k < eof; k++) text.Append(this._tokens[k].ToFullString());
+      this._tokens[eof] = this.WithSkippedTrivia(this._tokens[eof], text.ToString(), this.Current.FullStart);
+    }
+    this._i = eof;
+  }
+  Absorb(skipped: SyntaxToken, next: SyntaxToken): SyntaxToken {
+    return this.WithSkippedTrivia(next, skipped.ToFullString(), skipped.IsMissing ? next.FullStart : skipped.FullStart);
+  }
+  HasNewlineBefore(index: int): bool {
+    for (const trivia of this._tokens[index].LeadingTrivia) {
+      if (trivia.Kind == SyntaxKind.EndOfLineTrivia ||
+          (trivia.Kind == SyntaxKind.MultiLineCommentTrivia && trivia.Text.Contains('\n'))) return true;
+    }
+    if (index > 0) {
+      for (const trivia of this._tokens[index - 1].TrailingTrivia) {
+        if (trivia.Kind == SyntaxKind.EndOfLineTrivia) return true;
+      }
+    }
+    return false;
+  }
+  get NewlineBeforeCurrent(): bool { return this.HasNewlineBefore(this._i); }
+  NewlineBeforePeek(n: int): bool { return this.HasNewlineBefore(Math.Min(this._i + n, this._tokens.Count - 1)); }
+
+  Speculate<T extends object>(parse: Func<T?>): T? {
+    const save = this._i;
+    const errors = this._specErrors;
+    this._speculating++;
+    let result: T?;
+    try { result = parse(); }
+    finally { this._speculating--; }
+    const failed = result == null || this._specErrors != errors;
+    this._specErrors = errors;
+    this._i = save;
+    return failed ? null : parse();
+  }
+
+  MakeList(items: List<SyntaxElement>): ListNode {
+    return new ListNode(SyntaxKind.List, items.ToArray());
+  }
+  MakeSepList(items: List<SyntaxElement>): ListNode {
+    return new ListNode(SyntaxKind.SeparatedList, items.ToArray());
+  }
+  ParseSeparatedList<T extends SyntaxElement>(parseElement: Func<T>, isEnd: Func<bool>,
+    isStartOfElement: Func<bool>?): ListNode {
+    const items = new List<SyntaxElement>();
+    while (!isEnd() && this.Kind != SyntaxKind.EndOfFileToken) {
+      const before = this._i;
+      items.Add(parseElement());
+      if (this.Kind == SyntaxKind.CommaToken) { items.Add(this.Eat()); continue; }
+      if (isEnd()) break;
+      if (isStartOfElement != null && isStartOfElement() && this._i > before) {
+        this.ReportExpected(",");
+        items.Add(this.Missing(SyntaxKind.CommaToken));
+        continue;
+      }
+      break;
+    }
+    return this.MakeSepList(items);
+  }
+
+  ParseCompilationUnit(): CompilationUnitSyntax {
+    const statements = new List<SyntaxElement>();
+    while (this.Kind != SyntaxKind.EndOfFileToken) {
+      const before = this._i;
+      statements.Add(this.ParseStatement(true));
+      if (this._i == before) this.SkipCurrent();
+    }
+    return new CompilationUnitSyntax(this.MakeList(statements), this.Expect(SyntaxKind.EndOfFileToken));
+  }
+  ParseIdentifierToken(): SyntaxToken {
+    if (SyntaxFacts.IsIdentifierLike(this.Kind)) return this.Eat();
+    this.ReportExpected("identifier");
+    return this.Missing(SyntaxKind.IdentifierToken);
+  }
+  ParseSemicolon(): SyntaxToken? {
+    if (this.Kind == SyntaxKind.SemicolonToken) return this.Eat();
+    if (this.Kind == SyntaxKind.CloseBraceToken || this.Kind == SyntaxKind.EndOfFileToken || this.NewlineBeforeCurrent) return null;
+    this.ReportExpected(";");
+    return null;
+  }
+
+  ParseType(): TypeSyntax {
+    if (!this.EnterNesting()) return new MissingTypeSyntax(this.Missing(SyntaxKind.IdentifierToken));
+    try { return this.IsStartOfFunctionType() ? this.ParseFunctionType() : this.ParseUnionType(); }
+    finally { this.ExitNesting(); }
+  }
+  IsStartOfFunctionType(): bool {
+    if (this.Kind == SyntaxKind.LessThanToken) return true;
+    if (this.Kind != SyntaxKind.OpenParenToken) return false;
+    const k1 = this.PeekKind(1);
+    if (k1 == SyntaxKind.CloseParenToken) return this.PeekKind(2) == SyntaxKind.EqualsGreaterThanToken;
+    if (k1 == SyntaxKind.DotDotDotToken) return true;
+    if (SyntaxFacts.IsIdentifierLike(k1) || k1 == SyntaxKind.ThisKeyword) {
+      const k2 = this.PeekKind(2);
+      if (k2 == SyntaxKind.ColonToken || k2 == SyntaxKind.CommaToken ||
+          k2 == SyntaxKind.QuestionToken || k2 == SyntaxKind.EqualsToken) return true;
+      if (k2 == SyntaxKind.CloseParenToken && this.PeekKind(3) == SyntaxKind.EqualsGreaterThanToken) return true;
+    }
+    if (k1 == SyntaxKind.OpenBraceToken || k1 == SyntaxKind.OpenBracketToken) {
+      const j = this.SkipBalanced(this._i);
+      return j < this._tokens.Count && this._tokens[j].Kind == SyntaxKind.EqualsGreaterThanToken;
+    }
+    return false;
+  }
+  SkipBalanced(index: int): int {
+    let depth = 0;
+    for (let j = index; j < this._tokens.Count; j++) {
+      const kind = this._tokens[j].Kind;
+      if (kind == SyntaxKind.OpenParenToken || kind == SyntaxKind.OpenBracketToken ||
+          kind == SyntaxKind.OpenBraceToken || kind == SyntaxKind.TemplateHeadToken) depth++;
+      else if (kind == SyntaxKind.CloseParenToken || kind == SyntaxKind.CloseBracketToken ||
+               kind == SyntaxKind.CloseBraceToken || kind == SyntaxKind.TemplateTailToken) {
+        depth--;
+        if (depth == 0) return j + 1;
+      } else if (kind == SyntaxKind.EndOfFileToken) return j;
+    }
+    return this._tokens.Count;
+  }
+  ParseFunctionType(): FunctionTypeSyntax {
+    const typeParams = this.Kind == SyntaxKind.LessThanToken ? this.ParseTypeParameterList() : null;
+    const parameters = this.ParseParameterList();
+    const arrow = this.Expect(SyntaxKind.EqualsGreaterThanToken);
+    return new FunctionTypeSyntax(typeParams, parameters, arrow, this.ParseType());
+  }
+  ParseUnionType(): TypeSyntax {
+    const leading = this.TryEat(SyntaxKind.BarToken);
+    const first = this.ParseIntersectionType();
+    if (this.Kind != SyntaxKind.BarToken && leading == null) return first;
+    const items = new List<SyntaxElement>();
+    items.Add(first);
+    while (this.Kind == SyntaxKind.BarToken) { items.Add(this.Eat()); items.Add(this.ParseIntersectionType()); }
+    return new UnionTypeSyntax(leading, this.MakeSepList(items));
+  }
+  ParseIntersectionType(): TypeSyntax {
+    const first = this.ParsePostfixType();
+    if (this.Kind != SyntaxKind.AmpersandToken) return first;
+    const items = new List<SyntaxElement>();
+    items.Add(first);
+    while (this.Kind == SyntaxKind.AmpersandToken) { items.Add(this.Eat()); items.Add(this.ParsePostfixType()); }
+    return new IntersectionTypeSyntax(this.MakeSepList(items));
+  }
+  CanFollowNullableMarker(kind: SyntaxKind): bool {
+    return kind == SyntaxKind.CloseParenToken || kind == SyntaxKind.CloseBracketToken ||
+      kind == SyntaxKind.CloseBraceToken || kind == SyntaxKind.GreaterThanToken ||
+      kind == SyntaxKind.CommaToken || kind == SyntaxKind.SemicolonToken ||
+      kind == SyntaxKind.EqualsToken || kind == SyntaxKind.BarToken ||
+      kind == SyntaxKind.AmpersandToken || kind == SyntaxKind.OpenBracketToken ||
+      kind == SyntaxKind.OpenBraceToken || kind == SyntaxKind.EqualsGreaterThanToken ||
+      kind == SyntaxKind.EndOfFileToken;
+  }
+  ParsePostfixType(): TypeSyntax {
+    if (this.Kind == SyntaxKind.ReadonlyKeyword) {
+      const ro = this.Eat();
+      return new ReadonlyArrayTypeSyntax(ro, this.ParsePostfixType());
+    }
+    let type = this.ParsePrimaryType();
+    while (true) {
+      if (this.Kind == SyntaxKind.OpenBracketToken && this.PeekKind(1) == SyntaxKind.CloseBracketToken && !this.NewlineBeforeCurrent) {
+        const open = this.Eat();
+        type = new ArrayTypeSyntax(type, open, this.Eat());
+      } else if (this.Kind == SyntaxKind.QuestionToken && !this._noNullableMarker && this.CanFollowNullableMarker(this.PeekKind(1))) {
+        type = new NullableTypeSyntax(type, this.Eat());
+      } else break;
+    }
+    return type;
+  }
+  ParsePrimaryType(): TypeSyntax {
+    const kind = this.Kind;
+    if (kind == SyntaxKind.OpenParenToken) {
+      const open = this.Eat();
+      const type = this.ParseType();
+      return new ParenthesizedTypeSyntax(open, type, this.Expect(SyntaxKind.CloseParenToken));
+    }
+    if (kind == SyntaxKind.OpenBracketToken) return this.ParseTupleType();
+    if (kind == SyntaxKind.OpenBraceToken) return this.ParseObjectType();
+    if (kind == SyntaxKind.StringLiteralToken) return new LiteralTypeSyntax(new LiteralExpressionSyntax(SyntaxKind.StringLiteralExpression, this.Eat()));
+    if (kind == SyntaxKind.NumericLiteralToken) return new LiteralTypeSyntax(new LiteralExpressionSyntax(SyntaxKind.NumericLiteralExpression, this.Eat()));
+    if (kind == SyntaxKind.TrueKeyword) return new LiteralTypeSyntax(new LiteralExpressionSyntax(SyntaxKind.TrueLiteralExpression, this.Eat()));
+    if (kind == SyntaxKind.FalseKeyword) return new LiteralTypeSyntax(new LiteralExpressionSyntax(SyntaxKind.FalseLiteralExpression, this.Eat()));
+    if (kind == SyntaxKind.NullKeyword) return new LiteralTypeSyntax(new LiteralExpressionSyntax(SyntaxKind.NullLiteralExpression, this.Eat()));
+    if (kind == SyntaxKind.MinusToken && this.PeekKind(1) == SyntaxKind.NumericLiteralToken) {
+      const minus = this.Eat();
+      return new LiteralTypeSyntax(new PrefixUnaryExpressionSyntax(minus, new LiteralExpressionSyntax(SyntaxKind.NumericLiteralExpression, this.Eat())));
+    }
+    if (kind == SyntaxKind.VoidKeyword || kind == SyntaxKind.ThisKeyword) return new IdentifierNameSyntax(this.Eat());
+    if (kind == SyntaxKind.NewKeyword && this.PeekKind(1) == SyntaxKind.OpenParenToken) {
+      const n = this.Eat();
+      const open = this.Eat();
+      return new NewConstraintTypeSyntax(n, open, this.Expect(SyntaxKind.CloseParenToken));
+    }
+    if (kind == SyntaxKind.ClassKeyword || kind == SyntaxKind.StructKeyword) return new SpecialConstraintTypeSyntax(this.Eat());
+    if (kind == SyntaxKind.TypeOfKeyword) {
+      this.ReportAtCurrent(Descriptors.FeatureNotSupported, "'typeof' types");
+      this.Eat();
+      return this.ParsePrimaryType();
+    }
+    if (SyntaxFacts.IsIdentifierLike(kind)) return this.ParseTypeName();
+    this.ReportExpected("type");
+    return new MissingTypeSyntax(this.Missing(SyntaxKind.IdentifierToken));
+  }
+  ParseTupleType(): TupleTypeSyntax {
+    const open = this.Eat();
+    const items = new List<SyntaxElement>();
+    while (this.Kind != SyntaxKind.CloseBracketToken && this.Kind != SyntaxKind.EndOfFileToken) {
+      const before = this._i;
+      let name: SyntaxToken? = null;
+      let colon: SyntaxToken? = null;
+      if (SyntaxFacts.IsIdentifierLike(this.Kind) && this.PeekKind(1) == SyntaxKind.ColonToken) {
+        name = this.Eat();
+        colon = this.Eat();
+      }
+      items.Add(new TupleElementSyntax(name, colon, this.ParseType()));
+      if (this.Kind == SyntaxKind.CommaToken) items.Add(this.Eat());
+      else break;
+      if (this._i == before) break;
+    }
+    return new TupleTypeSyntax(open, this.MakeSepList(items), this.Expect(SyntaxKind.CloseBracketToken));
+  }
+  ParseObjectType(): ObjectTypeSyntax {
+    const open = this.Eat();
+    const members = this.ParseMembers(true);
+    return new ObjectTypeSyntax(open, members, this.Expect(SyntaxKind.CloseBraceToken));
+  }
+  ParseTypeName(): NameSyntax {
+    let name: NameSyntax = this.ParseSimpleTypeName();
+    while (this.Kind == SyntaxKind.DotToken && SyntaxFacts.IsIdentifierLike(this.PeekKind(1))) {
+      const dot = this.Eat();
+      name = new QualifiedNameSyntax(name, dot, this.ParseSimpleTypeName());
+    }
+    return name;
+  }
+  ParseSimpleTypeName(): SimpleNameSyntax {
+    const id = this.ParseIdentifierToken();
+    return this.Kind == SyntaxKind.LessThanToken ? new GenericNameSyntax(id, this.ParseTypeArgumentList()) : new IdentifierNameSyntax(id);
+  }
+  ParseTypeArgumentList(): TypeArgumentListSyntax {
+    const lt = this.Expect(SyntaxKind.LessThanToken);
+    const saved = this._noNullableMarker;
+    this._noNullableMarker = false;
+    const args = this.ParseSeparatedList<TypeSyntax>(() => this.ParseType(), () => this.Kind == SyntaxKind.GreaterThanToken, null);
+    this._noNullableMarker = saved;
+    return new TypeArgumentListSyntax(lt, args, this.Expect(SyntaxKind.GreaterThanToken));
+  }
+  ParseTypeParameterList(): TypeParameterListSyntax {
+    const lt = this.Expect(SyntaxKind.LessThanToken);
+    const parameters = this.ParseSeparatedList<TypeParameterSyntax>(() => this.ParseTypeParameter(), () => this.Kind == SyntaxKind.GreaterThanToken, null);
+    return new TypeParameterListSyntax(lt, parameters, this.Expect(SyntaxKind.GreaterThanToken));
+  }
+  ParseTypeParameter(): TypeParameterSyntax {
+    let variance: SyntaxToken? = null;
+    if ((this.Kind == SyntaxKind.InKeyword || this.Kind == SyntaxKind.OutKeyword) && SyntaxFacts.IsIdentifierLike(this.PeekKind(1))) variance = this.Eat();
+    const id = this.ParseIdentifierToken();
+    let ext: SyntaxToken? = null;
+    let constraint: TypeSyntax? = null;
+    if (this.Kind == SyntaxKind.ExtendsKeyword) { ext = this.Eat(); constraint = this.ParseConstraintType(); }
+    let def: EqualsValueClauseSyntax? = null;
+    if (this.Kind == SyntaxKind.EqualsToken) {
+      const eq = this.Eat();
+      def = new EqualsValueClauseSyntax(eq, this.ParseType());
+    }
+    return new TypeParameterSyntax(variance, id, ext, constraint, def);
+  }
+  ParseConstraintType(): TypeSyntax { return this.ParseIntersectionType(); }
+  _arrowNeedsColon: bool = false;
+  _greaterThanFamilyCount: int = 1;
+
+  ParseExpression(): ExpressionSyntax {
+    return this.ParseAssignmentExpression();
+  }
+
+  // The token count accompanies the returned kind and must be captured before parsing further.
+  PeekGreaterThanFamily(): SyntaxKind {
+    this._greaterThanFamilyCount = 1;
+    if (this.Kind != SyntaxKind.GreaterThanToken) return this.Kind;
+    let n = 1;
+    while (n < 3 && this.PeekKind(n) == SyntaxKind.GreaterThanToken && this.IsAdjacent(this._i + n)) {
+      n++;
+    }
+    const hasEquals = this.PeekKind(n) == SyntaxKind.EqualsToken && this.IsAdjacent(this._i + n);
+    this._greaterThanFamilyCount = n + (hasEquals ? 1 : 0);
+    if (n == 1) return hasEquals ? SyntaxKind.GreaterThanEqualsToken : SyntaxKind.GreaterThanToken;
+    if (n == 2) return hasEquals ? SyntaxKind.GreaterThanGreaterThanEqualsToken : SyntaxKind.GreaterThanGreaterThanToken;
+    return hasEquals ? SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken : SyntaxKind.GreaterThanGreaterThanGreaterThanToken;
+  }
+
+  IsAdjacent(index: int): bool {
+    return this._tokens[index].LeadingTrivia.Length == 0 && this._tokens[index - 1].TrailingTrivia.Length == 0;
+  }
+
+  EatComposite(kind: SyntaxKind, count: int): SyntaxToken {
+    if (count == 1) return this.Eat();
+    const first = this._tokens[this._i];
+    const last = this._tokens[this._i + count - 1];
+    const token = new SyntaxToken(kind, SyntaxFacts.GetText(kind), first.FullStart, first.LeadingTrivia, last.TrailingTrivia, null, false);
+    this._i += count;
+    return token;
+  }
+
+  ParseAssignmentExpression(): ExpressionSyntax {
+    if (!this.EnterNesting()) return new MissingExpressionSyntax(this.Missing(SyntaxKind.IdentifierToken));
+    try { return this.ParseAssignmentExpressionCore(); }
+    finally { this.ExitNesting(); }
+  }
+
+  ParseAssignmentExpressionCore(): ExpressionSyntax {
+    const arrowNeedsColon = this._arrowNeedsColon;
+    this._arrowNeedsColon = false;
+    if (this.Kind == SyntaxKind.YieldKeyword) return this.ParseYield();
+    const arrow = this.TryParseArrowFunction(arrowNeedsColon);
+    if (arrow != null) return arrow;
+    const left = this.ParseConditionalExpression();
+    const opKind = this.PeekGreaterThanFamily();
+    const count = this._greaterThanFamilyCount;
+    if (SyntaxFacts.IsAssignmentOperator(opKind)) {
+      if (!this.IsValidAssignmentTarget(left)) this.Report(Descriptors.InvalidAssignmentTarget, left.Span);
+      const op = this.EatComposite(opKind, count);
+      const right = this.ParseAssignmentExpression();
+      return new AssignmentExpressionSyntax(left, op, right);
+    }
+    return left;
+  }
+
+  IsValidAssignmentTarget(e: ExpressionSyntax): bool {
+    const kind = e.Kind;
+    if (kind == SyntaxKind.IdentifierName || kind == SyntaxKind.MemberAccessExpression ||
+        kind == SyntaxKind.ElementAccessExpression || kind == SyntaxKind.ArrayLiteralExpression ||
+        kind == SyntaxKind.ObjectLiteralExpression || kind == SyntaxKind.MissingExpression ||
+        kind == SyntaxKind.ThisExpression) return true;
+    if (kind == SyntaxKind.ParenthesizedExpression) {
+      const paren = e as ParenthesizedExpressionSyntax;
+      return this.IsValidAssignmentTarget(paren.Expression);
+    }
+    if (kind == SyntaxKind.NonNullExpression) {
+      const nonNull = e as NonNullExpressionSyntax;
+      return this.IsValidAssignmentTarget(nonNull.Expression);
+    }
+    return false;
+  }
+
+  ParseYield(): YieldExpressionSyntax {
+    const kw = this.Eat();
+    let star: SyntaxToken? = null;
+    let operand: ExpressionSyntax? = null;
+    if (this.Kind == SyntaxKind.AsteriskToken && !this.NewlineBeforeCurrent) star = this.Eat();
+    if (star != null || (!this.NewlineBeforeCurrent && this.IsStartOfExpression())) {
+      operand = this.ParseAssignmentExpression();
+    }
+    return new YieldExpressionSyntax(kw, star, operand);
+  }
+
+  IsStartOfExpression(): bool {
+    const kind = this.Kind;
+    return kind != SyntaxKind.CloseParenToken && kind != SyntaxKind.CloseBracketToken &&
+      kind != SyntaxKind.CloseBraceToken && kind != SyntaxKind.CommaToken &&
+      kind != SyntaxKind.SemicolonToken && kind != SyntaxKind.ColonToken &&
+      kind != SyntaxKind.EndOfFileToken && kind != SyntaxKind.EqualsToken &&
+      kind != SyntaxKind.QuestionToken && kind != SyntaxKind.EqualsGreaterThanToken;
+  }
+
+  ParseConditionalExpression(): ExpressionSyntax {
+    const cond = this.ParseBinaryExpression(0);
+    if (this.Kind != SyntaxKind.QuestionToken) return cond;
+    const q = this.Eat();
+    this._arrowNeedsColon = true;
+    const whenTrue = this.ParseAssignmentExpression();
+    const colon = this.Expect(SyntaxKind.ColonToken);
+    const whenFalse = this.ParseAssignmentExpression();
+    return new ConditionalExpressionSyntax(cond, q, whenTrue, colon, whenFalse);
+  }
+
+  ParseBinaryExpression(minPrecedence: int): ExpressionSyntax {
+    let left = this.ParseUnaryExpression();
+    while (true) {
+      const opKind = this.PeekGreaterThanFamily();
+      const count = this._greaterThanFamilyCount;
+      const prec = SyntaxFacts.GetBinaryPrecedence(opKind);
+      if ((opKind == SyntaxKind.AsKeyword || opKind == SyntaxKind.SatisfiesKeyword ||
+           opKind == SyntaxKind.InstanceOfKeyword) && this.NewlineBeforeCurrent &&
+          opKind != SyntaxKind.InstanceOfKeyword) break;
+      if (prec == 0 || prec <= minPrecedence) break;
+      let op: SyntaxToken;
+      if ((opKind == SyntaxKind.EqualsEqualsToken || opKind == SyntaxKind.ExclamationEqualsToken) &&
+          this.PeekKind(1) == SyntaxKind.EqualsToken && this.IsAdjacent(this._i + 1)) {
+        const first = this.Eat();
+        const extra = this.Eat();
+        op = new SyntaxToken(first.Kind, first.Text + extra.Text, first.FullStart, first.LeadingTrivia, extra.TrailingTrivia, null, false);
+        this.Report(Descriptors.NotSupportedUseInstead, op.Span, op.Text, first.Text);
+      } else {
+        op = this.EatComposite(opKind, count);
+      }
+      if (opKind == SyntaxKind.AsKeyword || opKind == SyntaxKind.SatisfiesKeyword || opKind == SyntaxKind.InstanceOfKeyword) {
+        const saved = this._noNullableMarker;
+        this._noNullableMarker = true;
+        const t = this.ParseType();
+        this._noNullableMarker = saved;
+        if (opKind == SyntaxKind.AsKeyword) left = new AsExpressionSyntax(left, op, t);
+        else if (opKind == SyntaxKind.SatisfiesKeyword) left = new SatisfiesExpressionSyntax(left, op, t);
+        else left = new InstanceOfExpressionSyntax(left, op, t);
+      } else if (opKind == SyntaxKind.AsteriskAsteriskToken) {
+        let unaryBeforeExponent = left instanceof AwaitExpressionSyntax;
+        if (left instanceof PrefixUnaryExpressionSyntax) {
+          const prefix = left as PrefixUnaryExpressionSyntax;
+          unaryBeforeExponent = prefix.OperatorToken.Kind != SyntaxKind.PlusPlusToken &&
+            prefix.OperatorToken.Kind != SyntaxKind.MinusMinusToken;
+        }
+        if (unaryBeforeExponent) this.Report(Descriptors.UnaryBeforeExponent, op.Span);
+        const right = this.ParseBinaryExpression(prec - 1);
+        left = new BinaryExpressionSyntax(left, op, right);
+      } else {
+        const right = this.ParseBinaryExpression(prec);
+        left = new BinaryExpressionSyntax(left, op, right);
+      }
+    }
+    return left;
+  }
+
+  ParseUnaryExpression(): ExpressionSyntax {
+    const kind = this.Kind;
+    if (kind == SyntaxKind.PlusToken || kind == SyntaxKind.MinusToken ||
+        kind == SyntaxKind.ExclamationToken || kind == SyntaxKind.TildeToken ||
+        kind == SyntaxKind.PlusPlusToken || kind == SyntaxKind.MinusMinusToken) {
+      const op = this.Eat();
+      return new PrefixUnaryExpressionSyntax(op, this.ParseUnaryExpression());
+    }
+    if (kind == SyntaxKind.AwaitKeyword) {
+      const kw = this.Eat();
+      return new AwaitExpressionSyntax(kw, this.ParseUnaryExpression());
+    }
+    if (kind == SyntaxKind.ThrowKeyword) {
+      const kw = this.Eat();
+      return new ThrowExpressionSyntax(kw, this.ParseAssignmentExpression());
+    }
+    if (kind == SyntaxKind.VoidKeyword) {
+      this.ReportAtCurrent(Descriptors.FeatureNotSupported, "The 'void' operator");
+      const kw = this.Eat();
+      return new PrefixUnaryExpressionSyntax(kw, this.ParseUnaryExpression());
+    }
+    return this.ParsePostfixExpression();
+  }
+
+  ParsePostfixExpression(): ExpressionSyntax {
+    let e = this.ParseLeftHandSideExpression();
+    while (true) {
+      if ((this.Kind == SyntaxKind.PlusPlusToken || this.Kind == SyntaxKind.MinusMinusToken) && !this.NewlineBeforeCurrent) {
+        e = new PostfixUnaryExpressionSyntax(e, this.Eat());
+      } else if (this.Kind == SyntaxKind.ExclamationToken && !this.NewlineBeforeCurrent) {
+        e = new NonNullExpressionSyntax(e, this.Eat());
+      } else {
+        break;
+      }
+      e = this.ParseCallSuffixes(e);
+    }
+    return e;
+  }
+
+  ParseLeftHandSideExpression(): ExpressionSyntax {
+    const e = this.ParsePrimaryExpression();
+    return this.ParseCallSuffixes(e);
+  }
+
+  CanFollowTypeArgumentsInExpression(k: SyntaxKind): bool {
+    return k == SyntaxKind.OpenParenToken || k == SyntaxKind.CloseParenToken ||
+      k == SyntaxKind.CloseBracketToken || k == SyntaxKind.ColonToken ||
+      k == SyntaxKind.SemicolonToken || k == SyntaxKind.CommaToken ||
+      k == SyntaxKind.DotToken || k == SyntaxKind.QuestionDotToken ||
+      k == SyntaxKind.QuestionToken || k == SyntaxKind.EqualsEqualsToken ||
+      k == SyntaxKind.ExclamationEqualsToken || k == SyntaxKind.AmpersandAmpersandToken ||
+      k == SyntaxKind.BarBarToken || k == SyntaxKind.QuestionQuestionToken ||
+      k == SyntaxKind.CloseBraceToken || k == SyntaxKind.EndOfFileToken ||
+      k == SyntaxKind.EqualsToken;
+  }
+
+  ParseCallSuffixes(e: ExpressionSyntax): ExpressionSyntax {
+    while (true) {
+      if (this.Kind == SyntaxKind.DotToken) {
+        const dot = this.Eat();
+        e = new MemberAccessExpressionSyntax(e, dot, this.ParseMemberName());
+        continue;
+      }
+      if (this.Kind == SyntaxKind.QuestionDotToken) {
+        const qd = this.Eat();
+        if (this.Kind == SyntaxKind.OpenBracketToken) {
+          const open = this.Eat();
+          const args = this.ParseSeparatedList<ExpressionSyntax>(() => this.ParseArgument(), () => this.Kind == SyntaxKind.CloseBracketToken, null);
+          const close = this.Expect(SyntaxKind.CloseBracketToken);
+          e = new ElementAccessExpressionSyntax(e, qd, open, args, close);
+        } else if (this.Kind == SyntaxKind.OpenParenToken) {
+          this.ReportAtCurrent(Descriptors.FeatureNotSupported, "Optional call '?.()'");
+          if (this._speculating == 0) this._tokens[this._i] = this.Absorb(qd, this.Current);
+          e = new InvocationExpressionSyntax(e, this.ParseArgumentList());
+        } else {
+          e = new MemberAccessExpressionSyntax(e, qd, this.ParseMemberName());
+        }
+        continue;
+      }
+      if (this.Kind == SyntaxKind.OpenBracketToken && !this.NewlineBeforeCurrent) {
+        const open = this.Eat();
+        const args = this.ParseSeparatedList<ExpressionSyntax>(() => this.ParseArgument(), () => this.Kind == SyntaxKind.CloseBracketToken, null);
+        const close = this.Expect(SyntaxKind.CloseBracketToken);
+        e = new ElementAccessExpressionSyntax(e, null, open, args, close);
+        continue;
+      }
+      if (this.Kind == SyntaxKind.OpenParenToken) {
+        e = new InvocationExpressionSyntax(e, this.ParseArgumentList());
+        continue;
+      }
+      let canHaveTypeArguments = e instanceof IdentifierNameSyntax;
+      if (e instanceof MemberAccessExpressionSyntax) {
+        const member = e as MemberAccessExpressionSyntax;
+        canHaveTypeArguments = member.Name instanceof IdentifierNameSyntax;
+      }
+      if (this.Kind == SyntaxKind.LessThanToken && canHaveTypeArguments) {
+        const generic = this.Speculate<TypeArgumentListSyntax>(() => {
+          const args = this.ParseTypeArgumentList();
+          if (args.IsMissing || args.GreaterThanToken.IsMissing ||
+              (this.Kind == SyntaxKind.EqualsToken && this.IsAdjacent(this._i))) return null;
+          return this.CanFollowTypeArgumentsInExpression(this.Kind) ? args : null;
+        });
+        if (generic == null) return e;
+        e = this.WithTypeArguments(e, generic);
+        continue;
+      }
+      return e;
+    }
+  }
+
+  WithTypeArguments(e: ExpressionSyntax, args: TypeArgumentListSyntax): ExpressionSyntax {
+    if (e instanceof IdentifierNameSyntax) {
+      const id = e as IdentifierNameSyntax;
+      return new GenericNameSyntax(this.DetachToken(id.Identifier), args);
+    }
+    if (e instanceof MemberAccessExpressionSyntax) {
+      const ma = e as MemberAccessExpressionSyntax;
+      if (ma.Name instanceof IdentifierNameSyntax) {
+        const n = ma.Name as IdentifierNameSyntax;
+        return new MemberAccessExpressionSyntax(ma.Expression, ma.OperatorToken, new GenericNameSyntax(this.DetachToken(n.Identifier), args));
+      }
+    }
+    this.ReportAtCurrent(Descriptors.UnexpectedToken, "<");
+    return e;
+  }
+
+  DetachToken(t: SyntaxToken): SyntaxToken {
+    return new SyntaxToken(t.Kind, t.Text, t.FullStart, t.LeadingTrivia, t.TrailingTrivia, t.Value, t.IsMissingToken);
+  }
+
+  ParseMemberName(): IdentifierNameSyntax {
+    if (SyntaxFacts.IsIdentifierLike(this.Kind) || SyntaxFacts.IsKeyword(this.Kind)) {
+      const t = this.Eat();
+      return new IdentifierNameSyntax(t.WithKind(SyntaxKind.IdentifierToken));
+    }
+    this.ReportExpected("identifier");
+    return new IdentifierNameSyntax(this.Missing(SyntaxKind.IdentifierToken));
+  }
+
+  ParseArgumentList(): ArgumentListSyntax {
+    const open = this.Expect(SyntaxKind.OpenParenToken);
+    const args = this.ParseSeparatedList<ExpressionSyntax>(() => this.ParseArgument(), () => this.Kind == SyntaxKind.CloseParenToken, null);
+    const close = this.Expect(SyntaxKind.CloseParenToken);
+    return new ArgumentListSyntax(open, args, close);
+  }
+
+  ParseArgument(): ExpressionSyntax {
+    if (this.Kind == SyntaxKind.DotDotDotToken) {
+      const dots = this.Eat();
+      return new SpreadElementSyntax(dots, this.ParseAssignmentExpression());
+    }
+    return this.ParseAssignmentExpression();
+  }
+
+  ParsePrimaryExpression(): ExpressionSyntax {
+    const kind = this.Kind;
+    if (kind == SyntaxKind.NumericLiteralToken) return new LiteralExpressionSyntax(SyntaxKind.NumericLiteralExpression, this.Eat());
+    if (kind == SyntaxKind.BigIntLiteralToken) return new LiteralExpressionSyntax(SyntaxKind.BigIntLiteralExpression, this.Eat());
+    if (kind == SyntaxKind.StringLiteralToken) return new LiteralExpressionSyntax(SyntaxKind.StringLiteralExpression, this.Eat());
+    if (kind == SyntaxKind.TrueKeyword) return new LiteralExpressionSyntax(SyntaxKind.TrueLiteralExpression, this.Eat());
+    if (kind == SyntaxKind.FalseKeyword) return new LiteralExpressionSyntax(SyntaxKind.FalseLiteralExpression, this.Eat());
+    if (kind == SyntaxKind.NullKeyword) return new LiteralExpressionSyntax(SyntaxKind.NullLiteralExpression, this.Eat());
+    if (kind == SyntaxKind.NoSubstitutionTemplateToken) return new LiteralExpressionSyntax(SyntaxKind.NoSubstitutionTemplateExpression, this.Eat());
+    if (kind == SyntaxKind.TemplateHeadToken) return this.ParseTemplateExpression();
+    if (kind == SyntaxKind.ThisKeyword) return new ThisExpressionSyntax(this.Eat());
+    if (kind == SyntaxKind.SuperKeyword) return new SuperExpressionSyntax(this.Eat());
+    if (kind == SyntaxKind.OpenParenToken) {
+      const open = this.Eat();
+      const e = this.ParseExpression();
+      const close = this.Expect(SyntaxKind.CloseParenToken);
+      return new ParenthesizedExpressionSyntax(open, e, close);
+    }
+    if (kind == SyntaxKind.TypeOfKeyword) {
+      const kw = this.Eat();
+      const open = this.Expect(SyntaxKind.OpenParenToken);
+      const t = this.ParseType();
+      const close = this.Expect(SyntaxKind.CloseParenToken);
+      return new TypeOfExpressionSyntax(kw, open, t, close);
+    }
+    if (kind == SyntaxKind.OpenBracketToken) return this.ParseArrayLiteral();
+    if (kind == SyntaxKind.OpenBraceToken) return this.ParseObjectLiteral();
+    if (kind == SyntaxKind.FunctionKeyword) return this.ParseFunctionExpression(null);
+    if (kind == SyntaxKind.AsyncKeyword && this.PeekKind(1) == SyntaxKind.FunctionKeyword && !this.NewlineBeforePeek(1)) {
+      return this.ParseFunctionExpression(this.Eat());
+    }
+    if (kind == SyntaxKind.NewKeyword) return this.ParseNewExpression();
+    if (kind == SyntaxKind.ClassKeyword) {
+      this.ReportAtCurrent(Descriptors.FeatureNotSupported, "Class expressions");
+    } else if (kind == SyntaxKind.SlashToken || kind == SyntaxKind.SlashEqualsToken) {
+      this.ReportAtCurrent(Descriptors.RegexNotSupported);
+    } else if (SyntaxFacts.IsIdentifierLike(kind)) {
+      return new IdentifierNameSyntax(this.Eat());
+    }
+    this.ReportAtCurrent(Descriptors.ExpectedExpression);
+    return new MissingExpressionSyntax(this.Missing(SyntaxKind.IdentifierToken));
+  }
+
+  ParseTemplateExpression(): TemplateExpressionSyntax {
+    const head = this.Eat();
+    const spans = new List<SyntaxElement>();
+    while (true) {
+      const expr = this.ParseExpression();
+      let literal: SyntaxToken;
+      if (this.Kind == SyntaxKind.TemplateMiddleToken || this.Kind == SyntaxKind.TemplateTailToken) {
+        literal = this.Eat();
+      } else {
+        this.ReportExpected("}");
+        literal = this.Missing(SyntaxKind.TemplateTailToken);
+        spans.Add(new TemplateSpanSyntax(expr, literal));
+        break;
+      }
+      spans.Add(new TemplateSpanSyntax(expr, literal));
+      if (literal.Kind == SyntaxKind.TemplateTailToken) break;
+    }
+    return new TemplateExpressionSyntax(head, this.MakeList(spans));
+  }
+
+  ParseArrayLiteral(): ArrayLiteralExpressionSyntax {
+    const open = this.Eat();
+    const elements = this.ParseSeparatedList<ExpressionSyntax>(() => this.ParseArgument(), () => this.Kind == SyntaxKind.CloseBracketToken, null);
+    const close = this.Expect(SyntaxKind.CloseBracketToken);
+    return new ArrayLiteralExpressionSyntax(open, elements, close);
+  }
+
+  ParseObjectLiteral(): ObjectLiteralExpressionSyntax {
+    const open = this.Eat();
+    const members = this.ParseSeparatedList<SyntaxNode>(() => this.ParseObjectLiteralMember(), () => this.Kind == SyntaxKind.CloseBraceToken, null);
+    const close = this.Expect(SyntaxKind.CloseBraceToken);
+    return new ObjectLiteralExpressionSyntax(open, members, close);
+  }
+
+  ParseObjectLiteralMember(): SyntaxNode {
+    if (this.Kind == SyntaxKind.DotDotDotToken) {
+      const dots = this.Eat();
+      return new SpreadAssignmentSyntax(dots, this.ParseAssignmentExpression());
+    }
+    let name: SyntaxToken;
+    if (this.Kind == SyntaxKind.StringLiteralToken || this.Kind == SyntaxKind.NumericLiteralToken) {
+      name = this.Eat();
+    } else if (SyntaxFacts.IsIdentifierLike(this.Kind) || SyntaxFacts.IsKeyword(this.Kind)) {
+      name = this.Eat().WithKind(SyntaxKind.IdentifierToken);
+    } else {
+      this.ReportExpected("property name");
+      this.SkipCurrent();
+      name = this.Missing(SyntaxKind.IdentifierToken);
+    }
+    if (this.Kind == SyntaxKind.ColonToken) {
+      const colon = this.Eat();
+      return new PropertyAssignmentSyntax(name, colon, this.ParseAssignmentExpression());
+    }
+    if (this.Kind == SyntaxKind.OpenParenToken) {
+      this.ReportAtCurrent(Descriptors.FeatureNotSupported, "Method shorthand in object literals");
+      let depth = 0;
+      while (this.Kind != SyntaxKind.EndOfFileToken) {
+        if (this.Kind == SyntaxKind.OpenParenToken || this.Kind == SyntaxKind.OpenBraceToken) depth++;
+        else if (this.Kind == SyntaxKind.CloseParenToken || this.Kind == SyntaxKind.CloseBraceToken) depth--;
+        this.SkipCurrent();
+        if (depth == 0 && (this.PeekKind(-1) == SyntaxKind.CloseBraceToken ||
+            (this.PeekKind(-1) == SyntaxKind.CloseParenToken &&
+             this.Kind != SyntaxKind.OpenBraceToken && this.Kind != SyntaxKind.ColonToken))) break;
+      }
+    }
+    return new ShorthandPropertyAssignmentSyntax(name);
+  }
+
+  ParseNewExpression(): ExpressionSyntax {
+    const kw = this.Eat();
+    const type = this.ParseNewTypeName();
+    if (this.Kind == SyntaxKind.OpenBracketToken && this.PeekKind(1) != SyntaxKind.CloseBracketToken) {
+      const open = this.Eat();
+      const size = this.ParseExpression();
+      const close = this.Expect(SyntaxKind.CloseBracketToken);
+      return new ArrayCreationExpressionSyntax(kw, type, open, size, close);
+    }
+    const args: ArgumentListSyntax? = this.Kind == SyntaxKind.OpenParenToken ? this.ParseArgumentList() : null;
+    return new NewExpressionSyntax(kw, type, args);
+  }
+
+  ParseNewTypeName(): TypeSyntax {
+    if (this.Kind == SyntaxKind.OpenParenToken) {
+      this.ReportAtCurrent(Descriptors.ExpectedType);
+      return new MissingTypeSyntax(this.Missing(SyntaxKind.IdentifierToken));
+    }
+    return this.ParseTypeName();
+  }
+
+  ParseFunctionExpression(asyncKw: SyntaxToken?): FunctionExpressionSyntax {
+    const fn = this.Expect(SyntaxKind.FunctionKeyword);
+    const star = this.TryEat(SyntaxKind.AsteriskToken);
+    const name: SyntaxToken? = SyntaxFacts.IsIdentifierLike(this.Kind) ? this.Eat() : null;
+    const tp: TypeParameterListSyntax? = this.Kind == SyntaxKind.LessThanToken ? this.ParseTypeParameterList() : null;
+    const ps = this.ParseParameterList();
+    const ret = this.ParseOptionalTypeAnnotation();
+    const body = this.ParseBlock();
+    return new FunctionExpressionSyntax(asyncKw, fn, star, name, tp, ps, ret, body);
+  }
+
+  TryParseArrowFunction(arrowNeedsColon: bool): ArrowFunctionSyntax? {
+    if (this.Kind == SyntaxKind.AsyncKeyword && !this.NewlineBeforePeek(1)) {
+      const k1 = this.PeekKind(1);
+      if (SyntaxFacts.IsIdentifierLike(k1) && this.PeekKind(2) == SyntaxKind.EqualsGreaterThanToken) {
+        const asyncKw = this.Eat();
+        return this.ParseSimpleArrow(asyncKw);
+      }
+      if (k1 == SyntaxKind.OpenParenToken || k1 == SyntaxKind.LessThanToken) {
+        return this.Speculate<ArrowFunctionSyntax>(() => this.ParseParenthesizedArrow(true));
+      }
+      return null;
+    }
+    if (this.Kind == SyntaxKind.OpenParenToken || this.Kind == SyntaxKind.LessThanToken) {
+      if (this.Kind == SyntaxKind.OpenParenToken) {
+        const after = this.SkipBalanced(this._i);
+        if (after >= this._tokens.Count) return null;
+        const ak = this._tokens[after].Kind;
+        if (ak != SyntaxKind.EqualsGreaterThanToken && ak != SyntaxKind.ColonToken) return null;
+        if (ak == SyntaxKind.ColonToken && arrowNeedsColon) {
+          return this.Speculate<ArrowFunctionSyntax>(() => {
+            const candidate = this.ParseParenthesizedArrow(false);
+            return candidate != null && this.Kind == SyntaxKind.ColonToken ? candidate : null;
+          });
+        }
+      }
+      return this.Speculate<ArrowFunctionSyntax>(() => this.ParseParenthesizedArrow(false));
+    }
+    if (SyntaxFacts.IsIdentifierLike(this.Kind) && this.PeekKind(1) == SyntaxKind.EqualsGreaterThanToken) {
+      return this.ParseSimpleArrow(null);
+    }
+    return null;
+  }
+
+  ParseSimpleArrow(asyncKw: SyntaxToken?): ArrowFunctionSyntax {
+    const id = this.Eat();
+    const arrow = this.Expect(SyntaxKind.EqualsGreaterThanToken);
+    const body = this.ParseArrowBody();
+    return new ArrowFunctionSyntax(asyncKw, null, null, id, null, arrow, body);
+  }
+
+  ParseParenthesizedArrow(isAsync: bool): ArrowFunctionSyntax? {
+    const asyncKw: SyntaxToken? = isAsync ? this.Eat() : null;
+    const tp: TypeParameterListSyntax? = this.Kind == SyntaxKind.LessThanToken ? this.ParseTypeParameterList() : null;
+    if (this.Kind != SyntaxKind.OpenParenToken) return null;
+    const ps = this.ParseParameterList();
+    let ret: TypeAnnotationSyntax? = null;
+    if (this.Kind == SyntaxKind.ColonToken) {
+      const saved = this._noNullableMarker;
+      ret = this.ParseOptionalTypeAnnotation();
+      this._noNullableMarker = saved;
+    }
+    if (this.Kind != SyntaxKind.EqualsGreaterThanToken) return null;
+    const arrow = this.Eat();
+    const body = this.ParseArrowBody();
+    return new ArrowFunctionSyntax(asyncKw, tp, ps, null, ret, arrow, body);
+  }
+
+  ParseArrowBody(): SyntaxNode {
+    return this.Kind == SyntaxKind.OpenBraceToken ? this.ParseBlock() : this.ParseAssignmentExpression();
+  }
+  private ParseStatement(_1: bool = false): StatementSyntax {
+    if (!this.EnterNesting()) {
+      return new EmptyStatementSyntax(this.Missing(SyntaxKind.SemicolonToken));
+    }
+    try { return this.ParseStatementCore(); }
+    finally { this.ExitNesting(); }
+  }
+
+  private ParseStatementCore(): StatementSyntax {
+    if (this.Kind == SyntaxKind.OpenBraceToken) return this.ParseBlock();
+    if (this.Kind == SyntaxKind.SemicolonToken) return new EmptyStatementSyntax(this.Eat());
+    if (this.Kind == SyntaxKind.IfKeyword) return this.ParseIf();
+    if (this.Kind == SyntaxKind.ForKeyword) return this.ParseFor();
+    if (this.Kind == SyntaxKind.WhileKeyword) return this.ParseWhile();
+    if (this.Kind == SyntaxKind.DoKeyword) return this.ParseDo();
+    if (this.Kind == SyntaxKind.ReturnKeyword) return this.ParseReturn();
+    if (this.Kind == SyntaxKind.BreakKeyword) return this.ParseBreak();
+    if (this.Kind == SyntaxKind.ContinueKeyword) return this.ParseContinue();
+    if (this.Kind == SyntaxKind.ThrowKeyword) return this.ParseThrow();
+    if (this.Kind == SyntaxKind.TryKeyword) return this.ParseTry();
+    if (this.Kind == SyntaxKind.SwitchKeyword) return this.ParseSwitch();
+    if (this.Kind == SyntaxKind.ImportKeyword
+      && this.PeekKind(1) != SyntaxKind.OpenParenToken && this.PeekKind(1) != SyntaxKind.DotToken) {
+      return this.ParseImport();
+    }
+    if (this.Kind == SyntaxKind.AtToken) return this.ParseDeclarationWithModifiers();
+    if (this.IsStartOfDeclaration()) return this.ParseDeclarationWithModifiers();
+    if (SyntaxFacts.IsIdentifierLike(this.Kind) && this.PeekKind(1) == SyntaxKind.ColonToken) {
+      const label = this.Eat();
+      const colon = this.Eat();
+      return new LabeledStatementSyntax(label, colon, this.ParseStatement());
+    }
+    return this.ParseExpressionStatement();
+  }
+
+  private ParseExpressionStatement(): ExpressionStatementSyntax {
+    const before = this._i;
+    const e = this.ParseExpression();
+    if (this._i == before && e instanceof MissingExpressionSyntax) {
+      this.SkipCurrent();
+      return new ExpressionStatementSyntax(e, null);
+    }
+    return new ExpressionStatementSyntax(e, this.ParseSemicolon());
+  }
+
+  ParseBlock(): BlockSyntax {
+    const open = this.Expect(SyntaxKind.OpenBraceToken);
+    const statements = new List<SyntaxElement>();
+    while (this.Kind != SyntaxKind.CloseBraceToken && this.Kind != SyntaxKind.EndOfFileToken) {
+      const before = this._i;
+      statements.Add(this.ParseStatement());
+      if (this._i == before) this.SkipCurrent();
+    }
+    const close = this.Expect(SyntaxKind.CloseBraceToken);
+    return new BlockSyntax(open, this.MakeList(statements), close);
+  }
+
+  private ParseIf(): IfStatementSyntax {
+    const kw = this.Eat();
+    const open = this.Expect(SyntaxKind.OpenParenToken);
+    const cond = this.ParseExpression();
+    const close = this.Expect(SyntaxKind.CloseParenToken);
+    const then = this.ParseStatement();
+    let elseKw: SyntaxToken? = null;
+    let els: StatementSyntax? = null;
+    if (this.Kind == SyntaxKind.ElseKeyword) {
+      elseKw = this.Eat();
+      els = this.ParseStatement();
+    }
+    return new IfStatementSyntax(kw, open, cond, close, then, elseKw, els);
+  }
+
+  private ParseWhile(): WhileStatementSyntax {
+    const kw = this.Eat();
+    const open = this.Expect(SyntaxKind.OpenParenToken);
+    const cond = this.ParseExpression();
+    const close = this.Expect(SyntaxKind.CloseParenToken);
+    return new WhileStatementSyntax(kw, open, cond, close, this.ParseStatement());
+  }
+
+  private ParseDo(): DoStatementSyntax {
+    const kw = this.Eat();
+    const body = this.ParseStatement();
+    const whileKw = this.Expect(SyntaxKind.WhileKeyword);
+    const open = this.Expect(SyntaxKind.OpenParenToken);
+    const cond = this.ParseExpression();
+    const close = this.Expect(SyntaxKind.CloseParenToken);
+    const semi = this.TryEat(SyntaxKind.SemicolonToken);
+    return new DoStatementSyntax(kw, body, whileKw, open, cond, close, semi);
+  }
+
+  private ParseFor(): StatementSyntax {
+    const kw = this.Eat();
+    const awaitKw = this.TryEat(SyntaxKind.AwaitKeyword);
+    let open = this.Expect(SyntaxKind.OpenParenToken);
+    let init: SyntaxNode? = null;
+    if (this.Kind != SyntaxKind.SemicolonToken) {
+      if (this.Kind == SyntaxKind.LetKeyword || this.Kind == SyntaxKind.ConstKeyword
+        || (this.Kind == SyntaxKind.UsingKeyword && SyntaxFacts.IsIdentifierLike(this.PeekKind(1)))) {
+        init = this.ParseVariableDeclarationList(true);
+      } else {
+        init = this.ParseExpression();
+      }
+    }
+    if (this.Kind == SyntaxKind.OfKeyword && init != null) {
+      const ofKw = this.Eat();
+      const expr = this.ParseAssignmentExpression();
+      const close = this.Expect(SyntaxKind.CloseParenToken);
+      return new ForOfStatementSyntax(kw, awaitKw, open, init, ofKw, expr, close, this.ParseStatement());
+    }
+    if (this.Kind == SyntaxKind.InKeyword && init != null) {
+      this.Report(Descriptors.ForInNotSupported, this.Current.Span);
+      if (awaitKw != null) open = this.Absorb(awaitKw, open);
+      const inKw = this.Eat();
+      const expr = this.ParseExpression();
+      const close = this.Expect(SyntaxKind.CloseParenToken);
+      return new ForInStatementSyntax(kw, open, init, inKw, expr, close, this.ParseStatement());
+    }
+    if (awaitKw != null) {
+      this.Report(Descriptors.ExpectedToken, awaitKw.Span, "of");
+      open = this.Absorb(awaitKw, open);
+    }
+    const semi1 = this.Expect(SyntaxKind.SemicolonToken);
+    let cond: ExpressionSyntax? = null;
+    if (this.Kind != SyntaxKind.SemicolonToken && this.Kind != SyntaxKind.CloseParenToken) {
+      cond = this.ParseExpression();
+    }
+    const semi2 = this.Expect(SyntaxKind.SemicolonToken);
+    let incr: ExpressionSyntax? = null;
+    if (this.Kind != SyntaxKind.CloseParenToken) incr = this.ParseExpression();
+    const closeParen = this.Expect(SyntaxKind.CloseParenToken);
+    return new ForStatementSyntax(kw, open, init, semi1, cond, semi2, incr, closeParen, this.ParseStatement());
+  }
+
+  private ParseReturn(): ReturnStatementSyntax {
+    const kw = this.Eat();
+    let e: ExpressionSyntax? = null;
+    if (!this.NewlineBeforeCurrent && this.Kind != SyntaxKind.SemicolonToken
+      && this.Kind != SyntaxKind.CloseBraceToken && this.Kind != SyntaxKind.EndOfFileToken) {
+      e = this.ParseExpression();
+    }
+    return new ReturnStatementSyntax(kw, e, this.ParseSemicolon());
+  }
+
+  private ParseBreak(): BreakStatementSyntax {
+    const kw = this.Eat();
+    let label: SyntaxToken? = null;
+    if (!this.NewlineBeforeCurrent && SyntaxFacts.IsIdentifierLike(this.Kind)) label = this.Eat();
+    return new BreakStatementSyntax(kw, label, this.ParseSemicolon());
+  }
+
+  private ParseContinue(): ContinueStatementSyntax {
+    const kw = this.Eat();
+    let label: SyntaxToken? = null;
+    if (!this.NewlineBeforeCurrent && SyntaxFacts.IsIdentifierLike(this.Kind)) label = this.Eat();
+    return new ContinueStatementSyntax(kw, label, this.ParseSemicolon());
+  }
+
+  private ParseThrow(): ThrowStatementSyntax {
+    const kw = this.Eat();
+    let e: ExpressionSyntax? = null;
+    if (!this.NewlineBeforeCurrent && this.Kind != SyntaxKind.SemicolonToken
+      && this.Kind != SyntaxKind.CloseBraceToken && this.Kind != SyntaxKind.EndOfFileToken) {
+      e = this.ParseExpression();
+    }
+    return new ThrowStatementSyntax(kw, e, this.ParseSemicolon());
+  }
+
+  private ParseTry(): TryStatementSyntax {
+    const kw = this.Eat();
+    const block = this.ParseBlock();
+    const catches = new List<SyntaxElement>();
+    while (this.Kind == SyntaxKind.CatchKeyword) {
+      const catchKw = this.Eat();
+      let open: SyntaxToken? = null;
+      let id: SyntaxToken? = null;
+      let close: SyntaxToken? = null;
+      let type: TypeAnnotationSyntax? = null;
+      if (this.Kind == SyntaxKind.OpenParenToken) {
+        open = this.Eat();
+        id = this.ParseIdentifierToken();
+        type = this.ParseOptionalTypeAnnotation();
+        close = this.Expect(SyntaxKind.CloseParenToken);
+      }
+      catches.Add(new CatchClauseSyntax(catchKw, open, id, type, close, this.ParseBlock()));
+    }
+    let fin: FinallyClauseSyntax? = null;
+    if (this.Kind == SyntaxKind.FinallyKeyword) {
+      const fkw = this.Eat();
+      fin = new FinallyClauseSyntax(fkw, this.ParseBlock());
+    }
+    if (catches.Count == 0 && fin == null) this.ReportExpected("catch' or 'finally");
+    return new TryStatementSyntax(kw, block, this.MakeList(catches), fin);
+  }
+
+  private ParseSwitch(): SwitchStatementSyntax {
+    const kw = this.Eat();
+    const open = this.Expect(SyntaxKind.OpenParenToken);
+    const expr = this.ParseExpression();
+    const close = this.Expect(SyntaxKind.CloseParenToken);
+    const openBrace = this.Expect(SyntaxKind.OpenBraceToken);
+    const sections = new List<SyntaxElement>();
+    while (this.Kind == SyntaxKind.CaseKeyword || this.Kind == SyntaxKind.DefaultKeyword) {
+      const labels = new List<SyntaxElement>();
+      while (this.Kind == SyntaxKind.CaseKeyword || this.Kind == SyntaxKind.DefaultKeyword) {
+        if (this.Kind == SyntaxKind.CaseKeyword) {
+          const ck = this.Eat();
+          const v = this.ParseExpression();
+          const colon = this.Expect(SyntaxKind.ColonToken);
+          labels.Add(new SwitchLabelSyntax(SyntaxKind.CaseSwitchLabel, ck, v, colon));
+        } else {
+          const dk = this.Eat();
+          const colon = this.Expect(SyntaxKind.ColonToken);
+          labels.Add(new SwitchLabelSyntax(SyntaxKind.DefaultSwitchLabel, dk, null, colon));
+        }
+      }
+      const stmts = new List<SyntaxElement>();
+      while (this.Kind != SyntaxKind.CaseKeyword && this.Kind != SyntaxKind.DefaultKeyword
+        && this.Kind != SyntaxKind.CloseBraceToken && this.Kind != SyntaxKind.EndOfFileToken) {
+        const before = this._i;
+        stmts.Add(this.ParseStatement());
+        if (this._i == before) this.SkipCurrent();
+      }
+      sections.Add(new SwitchSectionSyntax(this.MakeList(labels), this.MakeList(stmts)));
+    }
+    while (this.Kind != SyntaxKind.CloseBraceToken && this.Kind != SyntaxKind.EndOfFileToken) {
+      this.ReportAtCurrent(Descriptors.UnexpectedToken, this.Current.Text);
+      this.SkipCurrent();
+    }
+    const closeBrace = this.Expect(SyntaxKind.CloseBraceToken);
+    return new SwitchStatementSyntax(kw, open, expr, close, openBrace, this.MakeList(sections), closeBrace);
+  }
+
+  private ParseVariableDeclarationList(forHeader: bool = false): VariableDeclarationListSyntax {
+    let awaitKw: SyntaxToken? = null;
+    if (this.Kind == SyntaxKind.AwaitKeyword && this.PeekKind(1) == SyntaxKind.UsingKeyword) {
+      awaitKw = this.Eat();
+    }
+    const kw = this.Eat();
+    const items = new List<SyntaxElement>();
+    while (true) {
+      items.Add(this.ParseVariableDeclarator(forHeader));
+      if (this.Kind == SyntaxKind.CommaToken) {
+        items.Add(this.Eat());
+        continue;
+      }
+      break;
+    }
+    return new VariableDeclarationListSyntax(awaitKw, kw, this.MakeSepList(items));
+  }
+
+  private ParseVariableDeclarator(_1: bool): VariableDeclaratorSyntax {
+    let id: SyntaxToken? = null;
+    let pattern: BindingPatternSyntax? = null;
+    if (this.Kind == SyntaxKind.OpenBraceToken || this.Kind == SyntaxKind.OpenBracketToken) {
+      pattern = this.ParseBindingPattern();
+    } else {
+      id = this.ParseIdentifierToken();
+    }
+    const type = this.ParseOptionalTypeAnnotation();
+    let init: EqualsValueClauseSyntax? = null;
+    if (this.Kind == SyntaxKind.EqualsToken) {
+      const eq = this.Eat();
+      init = new EqualsValueClauseSyntax(eq, this.ParseAssignmentExpression());
+    }
+    return new VariableDeclaratorSyntax(id, pattern, type, init);
+  }
+
+  private ParseBindingPattern(): BindingPatternSyntax {
+    if (this.Kind == SyntaxKind.OpenBraceToken) {
+      const open = this.Eat();
+      const elems = this.ParseSeparatedList<BindingElementSyntax>(
+        () => this.ParseBindingElement(true), () => this.Kind == SyntaxKind.CloseBraceToken, null);
+      const close = this.Expect(SyntaxKind.CloseBraceToken);
+      return new ObjectBindingPatternSyntax(open, elems, close);
+    } else {
+      const open = this.Eat();
+      const elems = this.ParseSeparatedList<BindingElementSyntax>(
+        () => this.ParseBindingElement(false), () => this.Kind == SyntaxKind.CloseBracketToken, null);
+      const close = this.Expect(SyntaxKind.CloseBracketToken);
+      return new ArrayBindingPatternSyntax(open, elems, close);
+    }
+  }
+
+  private ParseBindingElement(isObject: bool): BindingElementSyntax {
+    if (!isObject && this.Kind == SyntaxKind.CommaToken) {
+      return new BindingElementSyntax(null, null, null, null, null, null);
+    }
+    const dots = this.TryEat(SyntaxKind.DotDotDotToken);
+    let propName: SyntaxToken? = null;
+    let colon: SyntaxToken? = null;
+    let id: SyntaxToken? = null;
+    let nested: BindingPatternSyntax? = null;
+    if (isObject && dots == null) {
+      if (SyntaxFacts.IsIdentifierLike(this.Kind) && this.PeekKind(1) == SyntaxKind.ColonToken) {
+        propName = this.Eat();
+        colon = this.Eat();
+        if (this.Kind == SyntaxKind.OpenBraceToken || this.Kind == SyntaxKind.OpenBracketToken) {
+          nested = this.ParseBindingPattern();
+        } else {
+          id = this.ParseIdentifierToken();
+        }
+      } else {
+        id = this.ParseIdentifierToken();
+      }
+    } else {
+      if (this.Kind == SyntaxKind.OpenBraceToken || this.Kind == SyntaxKind.OpenBracketToken) {
+        nested = this.ParseBindingPattern();
+      } else {
+        id = this.ParseIdentifierToken();
+      }
+    }
+    let init: EqualsValueClauseSyntax? = null;
+    if (this.Kind == SyntaxKind.EqualsToken) {
+      const eq = this.Eat();
+      init = new EqualsValueClauseSyntax(eq, this.ParseAssignmentExpression());
+    }
+    return new BindingElementSyntax(dots, propName, colon, id, nested, init);
+  }
+
+  private ParseOptionalTypeAnnotation(): TypeAnnotationSyntax? {
+    if (this.Kind != SyntaxKind.ColonToken) return null;
+    const colon = this.Eat();
+    return new TypeAnnotationSyntax(colon, this.ParseType());
+  }
+
+  private ParseImport(): ImportDeclarationSyntax {
+    const kw = this.Eat();
+    let typeKw: SyntaxToken? = null;
+    let clause: SyntaxNode? = null;
+    let fromKw: SyntaxToken? = null;
+    if (this.Kind == SyntaxKind.TypeKeyword
+      && (this.PeekKind(1) == SyntaxKind.OpenBraceToken || this.PeekKind(1) == SyntaxKind.AsteriskToken)) {
+      typeKw = this.Eat();
+    }
+    if (this.Kind == SyntaxKind.OpenBraceToken) {
+      const open = this.Eat();
+      const specs = this.ParseSeparatedList<ImportSpecifierSyntax>(
+        () => this.ParseImportSpecifier(), () => this.Kind == SyntaxKind.CloseBraceToken, null);
+      const close = this.Expect(SyntaxKind.CloseBraceToken);
+      clause = new NamedImportsSyntax(open, specs, close);
+      fromKw = this.Expect(SyntaxKind.FromKeyword);
+    } else if (this.Kind == SyntaxKind.AsteriskToken) {
+      const star = this.Eat();
+      const asKw = this.Expect(SyntaxKind.AsKeyword);
+      const alias = this.ParseIdentifierToken();
+      clause = new NamespaceImportSyntax(star, asKw, alias);
+      fromKw = this.Expect(SyntaxKind.FromKeyword);
+    } else if (this.Kind == SyntaxKind.DefaultKeyword
+      || (SyntaxFacts.IsIdentifierLike(this.Kind)
+        && (this.PeekKind(1) == SyntaxKind.FromKeyword || this.PeekKind(1) == SyntaxKind.CommaToken))) {
+      this.ReportAtCurrent(Descriptors.FeatureNotSupported, "Default imports");
+      this.SkipCurrent();
+      fromKw = this.Expect(SyntaxKind.FromKeyword);
+    }
+    let spec: SyntaxToken;
+    if (this.Kind == SyntaxKind.StringLiteralToken) {
+      spec = this.Eat();
+    } else {
+      this.ReportExpected("module specifier string");
+      spec = this.Missing(SyntaxKind.StringLiteralToken);
+    }
+    return new ImportDeclarationSyntax(kw, typeKw, clause, fromKw, spec, this.ParseSemicolon());
+  }
+
+  private ParseImportSpecifier(): ImportSpecifierSyntax {
+    let typeKw: SyntaxToken? = null;
+    if (this.Kind == SyntaxKind.TypeKeyword && SyntaxFacts.IsIdentifierLike(this.PeekKind(1))
+      && this.PeekKind(1) != SyntaxKind.AsKeyword) {
+      typeKw = this.Eat();
+    }
+    const name = this.ParseIdentifierToken();
+    let asKw: SyntaxToken? = null;
+    let alias: SyntaxToken? = null;
+    if (this.Kind == SyntaxKind.AsKeyword) {
+      asKw = this.Eat();
+      alias = this.ParseIdentifierToken();
+    }
+    return new ImportSpecifierSyntax(typeKw, name, asKw, alias);
+  }
+  IsDeclModifier(k: SyntaxKind): bool {
+    return k != SyntaxKind.ConstKeyword && SyntaxFacts.IsModifier(k);
+  }
+
+  IsStartOfDeclaration(): bool {
+    const kind = this.Kind;
+    if (kind == SyntaxKind.LetKeyword || kind == SyntaxKind.ConstKeyword
+      || kind == SyntaxKind.FunctionKeyword || kind == SyntaxKind.ClassKeyword
+      || kind == SyntaxKind.InterfaceKeyword || kind == SyntaxKind.EnumKeyword) return true;
+    if (kind == SyntaxKind.UsingKeyword)
+      return SyntaxFacts.IsIdentifierLike(this.PeekKind(1)) && !this.NewlineBeforePeek(1);
+    if (kind == SyntaxKind.AwaitKeyword)
+      return this.PeekKind(1) == SyntaxKind.UsingKeyword && SyntaxFacts.IsIdentifierLike(this.PeekKind(2));
+    if (kind == SyntaxKind.TypeKeyword) return this.IsTypeAliasStart(this._i);
+    if (!this.IsDeclModifier(kind)) return false;
+    let j = this._i;
+    while (j < this._tokens.Count && this.IsDeclModifier(this._tokens[j].Kind)) j++;
+    if (j >= this._tokens.Count) return false;
+    const k = this._tokens[j].Kind;
+    if (k == SyntaxKind.FunctionKeyword || k == SyntaxKind.ClassKeyword
+      || k == SyntaxKind.InterfaceKeyword || k == SyntaxKind.EnumKeyword
+      || k == SyntaxKind.LetKeyword || k == SyntaxKind.ConstKeyword
+      || k == SyntaxKind.DefaultKeyword || k == SyntaxKind.UsingKeyword) return true;
+    if (k == SyntaxKind.TypeKeyword) return this.IsTypeAliasStart(j);
+    if (k == SyntaxKind.OpenBraceToken || k == SyntaxKind.AsteriskToken)
+      return this._tokens[this._i].Kind == SyntaxKind.ExportKeyword;
+    return false;
+  }
+
+  IsTypeAliasStart(index: int): bool {
+    const t1: SyntaxToken? = index + 1 < this._tokens.Count ? this._tokens[index + 1] : null;
+    const t2: SyntaxToken? = index + 2 < this._tokens.Count ? this._tokens[index + 2] : null;
+    return t1 != null && t2 != null && SyntaxFacts.IsIdentifierLike(t1.Kind)
+      && (t2.Kind == SyntaxKind.EqualsToken || t2.Kind == SyntaxKind.LessThanToken)
+      && !this.HasNewlineBefore(index + 1);
+  }
+
+  ParseDecorators(): ListNode {
+    const list = new List<SyntaxElement>();
+    while (this.Kind == SyntaxKind.AtToken) {
+      const at = this.Eat();
+      list.Add(new DecoratorSyntax(at, this.ParseLeftHandSideExpression()));
+    }
+    return this.MakeList(list);
+  }
+
+  ParseDeclModifiers(): ListNode {
+    const mods = new List<SyntaxElement>();
+    while (this.IsDeclModifier(this.Kind)) {
+      const next = this.PeekKind(1);
+      if (next == SyntaxKind.EqualsToken || next == SyntaxKind.OpenParenToken
+        || next == SyntaxKind.DotToken || next == SyntaxKind.SemicolonToken
+        || next == SyntaxKind.ColonToken || next == SyntaxKind.CommaToken) break;
+      mods.Add(this.Eat());
+    }
+    return this.MakeList(mods);
+  }
+
+  ParseDeclarationWithModifiers(): StatementSyntax {
+    const decorators: SyntaxNode = this.ParseDecorators();
+    const modifiers: SyntaxNode = this.ParseDeclModifiers();
+    this.CheckDuplicateModifiers(modifiers);
+    const kind = this.Kind;
+    if (kind == SyntaxKind.FunctionKeyword) return this.ParseFunctionDeclaration(decorators, modifiers);
+    if (kind == SyntaxKind.ClassKeyword) return this.ParseClassDeclaration(decorators, modifiers);
+    if (kind == SyntaxKind.InterfaceKeyword) return this.ParseInterfaceDeclaration(decorators, modifiers);
+    if (kind == SyntaxKind.EnumKeyword) return this.ParseEnumDeclaration(decorators, modifiers);
+    if (kind == SyntaxKind.TypeKeyword) return this.ParseTypeAlias(decorators, modifiers);
+    if (kind == SyntaxKind.LetKeyword || kind == SyntaxKind.ConstKeyword || kind == SyntaxKind.UsingKeyword
+      || (kind == SyntaxKind.AwaitKeyword && this.PeekKind(1) == SyntaxKind.UsingKeyword)) {
+      const decl = this.ParseVariableDeclarationList(false);
+      return new VariableStatementSyntax(decorators, modifiers, decl, this.ParseSemicolon());
+    }
+    if (kind == SyntaxKind.DefaultKeyword) {
+      this.Report(Descriptors.ExportDefaultNotSupported, this.Current.Span);
+      const consumed = decorators.ToFullString() + modifiers.ToFullString();
+      this.SkipCurrent();
+      this.PrependSkipped(consumed);
+      return this.ParseStatement();
+    }
+    if ((kind == SyntaxKind.OpenBraceToken || kind == SyntaxKind.AsteriskToken) && modifiers.SlotCount > 0)
+      this.ReportAtCurrent(Descriptors.FeatureNotSupported, "Re-exports and export lists");
+    this.ReportAtCurrent(Descriptors.ExpectedDeclaration);
+    const missing = new MissingExpressionSyntax(this.Missing(SyntaxKind.IdentifierToken));
+    const stmt = new ExpressionStatementSyntax(missing, null);
+    if (modifiers.SlotCount == 0 && decorators.SlotCount == 0) return stmt;
+    const declarators = new List<SyntaxElement>();
+    declarators.Add(new VariableDeclaratorSyntax(this.Missing(SyntaxKind.IdentifierToken), null, null, null));
+    return new VariableStatementSyntax(decorators, modifiers,
+      new VariableDeclarationListSyntax(null, this.Missing(SyntaxKind.LetKeyword), this.MakeSepList(declarators)), null);
+  }
+
+  CheckDuplicateModifiers(modifiers: SyntaxNode): void {
+    const seen = new List<SyntaxKind>();
+    for (const m of (modifiers as ListNode).Children()) {
+      if (m instanceof SyntaxToken) {
+        const t = m as SyntaxToken;
+        if (seen.Contains(t.Kind)) this.Report(Descriptors.DuplicateModifier, t.Span, t.Text);
+        else seen.Add(t.Kind);
+      }
+    }
+  }
+
+  ParseFunctionDeclaration(decorators: SyntaxNode, modifiers: SyntaxNode): FunctionDeclarationSyntax {
+    const fn = this.Eat();
+    const star = this.TryEat(SyntaxKind.AsteriskToken);
+    const name = this.ParseIdentifierToken();
+    const tp: TypeParameterListSyntax? = this.Kind == SyntaxKind.LessThanToken ? this.ParseTypeParameterList() : null;
+    const ps = this.ParseParameterList();
+    const ret = this.ParseOptionalTypeAnnotation();
+    let body: BlockSyntax? = null;
+    let semi: SyntaxToken? = null;
+    if (this.Kind == SyntaxKind.OpenBraceToken) body = this.ParseBlock();
+    else semi = this.ParseSemicolon();
+    return new FunctionDeclarationSyntax(decorators, modifiers, fn, star, name, tp, ps, ret, body, semi);
+  }
+
+  ParseClassDeclaration(decorators: SyntaxNode, modifiers: SyntaxNode): ClassDeclarationSyntax {
+    const kw = this.Eat();
+    const name = this.ParseIdentifierToken();
+    const tp: TypeParameterListSyntax? = this.Kind == SyntaxKind.LessThanToken ? this.ParseTypeParameterList() : null;
+    let ext: HeritageClauseSyntax? = null;
+    let impl: HeritageClauseSyntax? = null;
+    while (this.Kind == SyntaxKind.ExtendsKeyword || this.Kind == SyntaxKind.ImplementsKeyword) {
+      const isExt = this.Kind == SyntaxKind.ExtendsKeyword;
+      const hkw = this.Eat();
+      const types = this.ParseSeparatedList<TypeSyntax>(() => this.ParseHeritageType(),
+        () => this.Kind == SyntaxKind.OpenBraceToken, null);
+      const clause = new HeritageClauseSyntax(hkw, types);
+      if (isExt) ext = clause;
+      else impl = clause;
+    }
+    const open = this.Expect(SyntaxKind.OpenBraceToken);
+    const members = this.ParseMembers(false);
+    const close = this.Expect(SyntaxKind.CloseBraceToken);
+    return new ClassDeclarationSyntax(decorators, modifiers, kw, name, tp, ext, impl, open, members, close);
+  }
+
+  ParseHeritageType(): TypeSyntax {
+    return this.ParseTypeName();
+  }
+
+  ParseInterfaceDeclaration(decorators: SyntaxNode, modifiers: SyntaxNode): InterfaceDeclarationSyntax {
+    const kw = this.Eat();
+    const name = this.ParseIdentifierToken();
+    const tp: TypeParameterListSyntax? = this.Kind == SyntaxKind.LessThanToken ? this.ParseTypeParameterList() : null;
+    let ext: HeritageClauseSyntax? = null;
+    if (this.Kind == SyntaxKind.ExtendsKeyword) {
+      const hkw = this.Eat();
+      ext = new HeritageClauseSyntax(hkw, this.ParseSeparatedList<TypeSyntax>(() => this.ParseHeritageType(),
+        () => this.Kind == SyntaxKind.OpenBraceToken, null));
+    }
+    const open = this.Expect(SyntaxKind.OpenBraceToken);
+    const members = this.ParseMembers(true);
+    const close = this.Expect(SyntaxKind.CloseBraceToken);
+    return new InterfaceDeclarationSyntax(decorators, modifiers, kw, name, tp, ext, open, members, close);
+  }
+
+  ParseEnumDeclaration(decorators: SyntaxNode, modifiers: SyntaxNode): EnumDeclarationSyntax {
+    const kw = this.Eat();
+    const name = this.ParseIdentifierToken();
+    const open = this.Expect(SyntaxKind.OpenBraceToken);
+    const members = this.ParseSeparatedList<EnumMemberSyntax>(() => this.ParseEnumMember(),
+      () => this.Kind == SyntaxKind.CloseBraceToken, null);
+    const close = this.Expect(SyntaxKind.CloseBraceToken);
+    return new EnumDeclarationSyntax(decorators, modifiers, kw, name, open, members, close);
+  }
+
+  ParseEnumMember(): EnumMemberSyntax {
+    const id = this.Kind == SyntaxKind.StringLiteralToken ? this.Eat() : this.ParseIdentifierToken();
+    let init: EqualsValueClauseSyntax? = null;
+    if (this.Kind == SyntaxKind.EqualsToken) {
+      const eq = this.Eat();
+      init = new EqualsValueClauseSyntax(eq, this.ParseAssignmentExpression());
+    }
+    return new EnumMemberSyntax(id, init);
+  }
+
+  ParseTypeAlias(decorators: SyntaxNode, modifiers: SyntaxNode): TypeAliasDeclarationSyntax {
+    const kw = this.Eat();
+    const name = this.ParseIdentifierToken();
+    const tp: TypeParameterListSyntax? = this.Kind == SyntaxKind.LessThanToken ? this.ParseTypeParameterList() : null;
+    const eq = this.Expect(SyntaxKind.EqualsToken);
+    const type = this.ParseType();
+    return new TypeAliasDeclarationSyntax(decorators, modifiers, kw, name, tp, eq, type, this.ParseSemicolon());
+  }
+
+  ParseParameterList(): ParameterListSyntax {
+    const open = this.Expect(SyntaxKind.OpenParenToken);
+    const ps = this.ParseSeparatedList<ParameterSyntax>(() => this.ParseParameter(),
+      () => this.Kind == SyntaxKind.CloseParenToken, null);
+    const close = this.Expect(SyntaxKind.CloseParenToken);
+    return new ParameterListSyntax(open, ps, close);
+  }
+
+  IsParameterModifier(k: SyntaxKind): bool {
+    return k == SyntaxKind.PublicKeyword || k == SyntaxKind.PrivateKeyword
+      || k == SyntaxKind.ProtectedKeyword || k == SyntaxKind.InternalKeyword
+      || k == SyntaxKind.ReadonlyKeyword || k == SyntaxKind.OverrideKeyword || k == SyntaxKind.ThisKeyword;
+  }
+
+  ParseParameter(): ParameterSyntax {
+    const decorators = this.ParseDecorators();
+    const mods = new List<SyntaxElement>();
+    while (this.IsParameterModifier(this.Kind)) {
+      const next = this.PeekKind(1);
+      if (!(SyntaxFacts.IsIdentifierLike(next) || next == SyntaxKind.OpenBraceToken
+        || next == SyntaxKind.OpenBracketToken || next == SyntaxKind.DotDotDotToken)) break;
+      mods.Add(this.Eat());
+    }
+    const dots = this.TryEat(SyntaxKind.DotDotDotToken);
+    let id: SyntaxToken? = null;
+    let pattern: BindingPatternSyntax? = null;
+    if (this.Kind == SyntaxKind.OpenBraceToken || this.Kind == SyntaxKind.OpenBracketToken)
+      pattern = this.ParseBindingPattern();
+    else id = this.Kind == SyntaxKind.ThisKeyword ? this.Eat() : this.ParseIdentifierToken();
+    const q = this.TryEat(SyntaxKind.QuestionToken);
+    const type = this.ParseOptionalTypeAnnotation();
+    let init: EqualsValueClauseSyntax? = null;
+    if (this.Kind == SyntaxKind.EqualsToken) {
+      const eq = this.Eat();
+      init = new EqualsValueClauseSyntax(eq, this.ParseAssignmentExpression());
+    }
+    return new ParameterSyntax(decorators, this.MakeList(mods), dots, id, pattern, q, type, init);
+  }
+
+  ParseMembers(isInterfaceOrObjectType: bool): ListNode {
+    const members = new List<SyntaxElement>();
+    while (this.Kind != SyntaxKind.CloseBraceToken && this.Kind != SyntaxKind.EndOfFileToken) {
+      const before = this._i;
+      if (this.Kind == SyntaxKind.SemicolonToken) {
+        this.SkipCurrent();
+        continue;
+      }
+      const m = this.ParseMember(isInterfaceOrObjectType);
+      if (m == null) {
+        this.ReportAtCurrent(Descriptors.ExpectedMember);
+        this.SkipCurrent();
+        continue;
+      }
+      members.Add(m);
+      if (this._i == before) this.SkipCurrent();
+    }
+    return this.MakeList(members);
+  }
+
+  IsMemberNameToken(k: SyntaxKind): bool {
+    return SyntaxFacts.IsIdentifierLike(k) || SyntaxFacts.IsKeyword(k)
+      || k == SyntaxKind.StringLiteralToken || k == SyntaxKind.NumericLiteralToken;
+  }
+
+  ParseMember(inInterface: bool): MemberDeclarationSyntax? {
+    const decorators = this.ParseDecorators();
+    const mods = new List<SyntaxElement>();
+    while (this.IsDeclModifier(this.Kind)) {
+      const next = this.PeekKind(1);
+      if (next == SyntaxKind.OpenParenToken || next == SyntaxKind.ColonToken
+        || next == SyntaxKind.EqualsToken || next == SyntaxKind.SemicolonToken
+        || next == SyntaxKind.QuestionToken || next == SyntaxKind.LessThanToken
+        || next == SyntaxKind.ExclamationToken || next == SyntaxKind.CloseBraceToken
+        || next == SyntaxKind.CommaToken) break;
+      mods.Add(this.Eat());
+    }
+    const modList = this.MakeList(mods);
+    this.CheckDuplicateModifiers(modList);
+    if (this.Kind == SyntaxKind.ConstructorKeyword && this.PeekKind(1) == SyntaxKind.OpenParenToken) {
+      const kw = this.Eat();
+      const ps = this.ParseParameterList();
+      let body: BlockSyntax? = null;
+      let semi: SyntaxToken? = null;
+      if (this.Kind == SyntaxKind.OpenBraceToken) body = this.ParseBlock();
+      else semi = this.ParseSemicolon();
+      return new ConstructorDeclarationSyntax(decorators, modList, kw, ps, body, semi);
+    }
+    if ((this.Kind == SyntaxKind.GetKeyword || this.Kind == SyntaxKind.SetKeyword)
+      && this.IsMemberNameToken(this.PeekKind(1)) && this.PeekKind(1) != SyntaxKind.OpenParenToken
+      && this.PeekKind(2) == SyntaxKind.OpenParenToken) {
+      const kw = this.Eat();
+      const name = this.Eat();
+      const ps = this.ParseParameterList();
+      const ret = this.ParseOptionalTypeAnnotation();
+      let body: BlockSyntax? = null;
+      let semi: SyntaxToken? = null;
+      if (this.Kind == SyntaxKind.OpenBraceToken) body = this.ParseBlock();
+      else semi = this.ParseSemicolon();
+      const kind = kw.Kind == SyntaxKind.GetKeyword ? SyntaxKind.GetAccessorDeclaration : SyntaxKind.SetAccessorDeclaration;
+      return new AccessorDeclarationSyntax(kind, decorators, modList, kw, name, ps, ret, body, semi);
+    }
+    const star = this.TryEat(SyntaxKind.AsteriskToken);
+    if (!this.IsMemberNameToken(this.Kind)) {
+      if (star != null || mods.Count > 0 || decorators.SlotCount > 0) {
+        this.ReportExpected("member name");
+        return new PropertyDeclarationSyntax(decorators, modList, this.Missing(SyntaxKind.IdentifierToken),
+          null, null, null, null);
+      }
+      return null;
+    }
+    const id = this.Eat();
+    const q = this.TryEat(SyntaxKind.QuestionToken);
+    if (this.Kind == SyntaxKind.OpenParenToken || this.Kind == SyntaxKind.LessThanToken) {
+      const tp: TypeParameterListSyntax? = this.Kind == SyntaxKind.LessThanToken ? this.ParseTypeParameterList() : null;
+      const ps = this.ParseParameterList();
+      const ret = this.ParseOptionalTypeAnnotation();
+      let body: BlockSyntax? = null;
+      let sep: SyntaxToken? = null;
+      if (this.Kind == SyntaxKind.OpenBraceToken) body = this.ParseBlock();
+      else sep = this.ParseMemberSeparator(inInterface);
+      return new MethodDeclarationSyntax(decorators, modList, star, id, q, tp, ps, ret, body, sep);
+    }
+    const type = this.ParseOptionalTypeAnnotation();
+    let init: EqualsValueClauseSyntax? = null;
+    if (this.Kind == SyntaxKind.EqualsToken) {
+      const eq = this.Eat();
+      init = new EqualsValueClauseSyntax(eq, this.ParseAssignmentExpression());
+    }
+    const sep2 = this.ParseMemberSeparator(inInterface);
+    return new PropertyDeclarationSyntax(decorators, modList, id, q, type, init, sep2);
+  }
+
+  ParseMemberSeparator(inInterface: bool): SyntaxToken? {
+    if (this.Kind == SyntaxKind.SemicolonToken) return this.Eat();
+    if (inInterface && this.Kind == SyntaxKind.CommaToken) return this.Eat();
+    if (this.Kind == SyntaxKind.CloseBraceToken || this.Kind == SyntaxKind.EndOfFileToken
+      || this.NewlineBeforeCurrent) return null;
+    this.ReportExpected(";");
+    return null;
+  }
+}

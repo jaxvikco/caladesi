@@ -1,0 +1,423 @@
+import { List } from "System.Collections.Generic";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { CultureInfo, NumberStyles } from "System.Globalization";
+import { BigInteger } from "System.Numerics";
+import { StringBuilder } from "System.Text";
+import { SourceText } from "../Text/SourceText";
+import { TextSpan } from "../Text/TextSpan";
+import { Diagnostic, DiagnosticBag, DiagnosticDescriptor } from "../Diagnostics/Diagnostic";
+import { Descriptors } from "../Diagnostics/Descriptors";
+import { SyntaxKind } from "./SyntaxKind";
+import { SyntaxFacts } from "./SyntaxFacts";
+import { SyntaxToken, SyntaxTrivia } from "./SyntaxToken";
+
+struct type LexedToken = { readonly Kind: SyntaxKind; readonly Text: string; readonly Value: object? };
+
+// Greater-than signs stay separate so the parser can distinguish generic closers from shifts.
+export sealed class Lexer {
+  private readonly text: string;
+  private pos: int = 0;
+  private readonly templateBraceDepths: List<int> = new List<int>();
+  constructor(source: SourceText, private readonly path: string, private readonly diagnostics: DiagnosticBag) {
+    this.text = source.Text;
+  }
+
+  LexAll(): List<SyntaxToken> {
+    const tokens = new List<SyntaxToken>();
+    let leading = this.ReadLeadingTrivia(true);
+    while (true) {
+      let leadingWidth = 0;
+      for (const trivia of leading) leadingWidth += trivia.Text.Length;
+      const fullStart = this.pos - leadingWidth;
+      const token = this.LexToken();
+      const trailing = this.ReadTrailingTrivia();
+      tokens.Add(new SyntaxToken(token.Kind, token.Text, fullStart, leading, trailing, token.Value));
+      if (token.Kind == SyntaxKind.EndOfFileToken) break;
+      leading = this.ReadLeadingTrivia(false);
+    }
+    return tokens;
+  }
+
+  private Report(descriptor: DiagnosticDescriptor, start: int, length: int, ...args: object?[]): void {
+    this.diagnostics.Add(Diagnostic.Create(descriptor, this.path, new TextSpan(start, length), ...args));
+  }
+
+  private Peek(offset: int = 0): char {
+    return this.pos + offset < this.text.Length ? this.text[this.pos + offset] : '\0';
+  }
+  private static IsNewLine(c: char): bool {
+    return c == '\n' || c == '\r' || c == '\u2028' || c == '\u2029';
+  }
+  private Slice(start: int): string { return this.text.Substring(start, this.pos - start); }
+
+  private ReadLeadingTrivia(first: bool): ImmutableArray<SyntaxTrivia> {
+    const items = new List<SyntaxTrivia>();
+    if (first && this.text.StartsWith("#!", StringComparison.Ordinal)) {
+      const start = this.pos;
+      while (this.pos < this.text.Length && !Lexer.IsNewLine(this.text[this.pos])) this.pos++;
+      items.Add(new SyntaxTrivia(SyntaxKind.SingleLineCommentTrivia, this.Slice(start)));
+    }
+    while (this.pos < this.text.Length) {
+      const c = this.text[this.pos];
+      if (Lexer.IsNewLine(c)) items.Add(this.ReadNewLine());
+      else if (char.IsWhiteSpace(c)) items.Add(this.ReadWhitespace());
+      else if (c == '/' && this.Peek(1) == '/') items.Add(this.ReadSingleLineComment());
+      else if (c == '/' && this.Peek(1) == '*') items.Add(this.ReadMultiLineComment());
+      else break;
+    }
+    return ImmutableArray.CreateRange<SyntaxTrivia>(items);
+  }
+
+  private ReadTrailingTrivia(): ImmutableArray<SyntaxTrivia> {
+    const items = new List<SyntaxTrivia>();
+    while (this.pos < this.text.Length) {
+      const c = this.text[this.pos];
+      if (Lexer.IsNewLine(c)) {
+        items.Add(this.ReadNewLine());
+        break;
+      }
+      if (char.IsWhiteSpace(c)) items.Add(this.ReadWhitespace());
+      else if (c == '/' && this.Peek(1) == '/') items.Add(this.ReadSingleLineComment());
+      else if (c == '/' && this.Peek(1) == '*') {
+        const end = this.text.IndexOf("*/", this.pos + 2, StringComparison.Ordinal);
+        const limit = end < 0 ? this.text.Length : end;
+        let hasNewline = false;
+        for (let i = this.pos; i < limit; i++) {
+          if (Lexer.IsNewLine(this.text[i])) { hasNewline = true; break; }
+        }
+        if (hasNewline) break;
+        items.Add(this.ReadMultiLineComment());
+      } else break;
+    }
+    return ImmutableArray.CreateRange<SyntaxTrivia>(items);
+  }
+
+  private ReadNewLine(): SyntaxTrivia {
+    const start = this.pos;
+    this.pos += this.text[this.pos] == '\r' && this.Peek(1) == '\n' ? 2 : 1;
+    return new SyntaxTrivia(SyntaxKind.EndOfLineTrivia, this.Slice(start));
+  }
+  private ReadWhitespace(): SyntaxTrivia {
+    const start = this.pos;
+    while (this.pos < this.text.Length && char.IsWhiteSpace(this.text[this.pos]) && !Lexer.IsNewLine(this.text[this.pos])) this.pos++;
+    return new SyntaxTrivia(SyntaxKind.WhitespaceTrivia, this.Slice(start));
+  }
+  private ReadSingleLineComment(): SyntaxTrivia {
+    const start = this.pos;
+    while (this.pos < this.text.Length && !Lexer.IsNewLine(this.text[this.pos])) this.pos++;
+    return new SyntaxTrivia(SyntaxKind.SingleLineCommentTrivia, this.Slice(start));
+  }
+  private ReadMultiLineComment(): SyntaxTrivia {
+    const start = this.pos;
+    const end = this.text.IndexOf("*/", this.pos + 2, StringComparison.Ordinal);
+    if (end < 0) {
+      this.pos = this.text.Length;
+      this.Report(Descriptors.UnterminatedComment, start, 2);
+    } else this.pos = end + 2;
+    return new SyntaxTrivia(SyntaxKind.MultiLineCommentTrivia, this.Slice(start));
+  }
+
+  private Make(kind: SyntaxKind, length: int): SyntaxKind {
+    this.pos += length;
+    return kind;
+  }
+  private LexToken(): LexedToken {
+    if (this.pos >= this.text.Length) return new LexedToken(SyntaxKind.EndOfFileToken, "", null);
+    const start = this.pos;
+    const c = this.text[this.pos];
+    if (Lexer.IsIdentifierStart(c)) {
+      this.pos++;
+      while (this.pos < this.text.Length && Lexer.IsIdentifierPart(this.text[this.pos])) this.pos++;
+      const text = this.Slice(start);
+      return new LexedToken(SyntaxFacts.GetKeywordKind(text), text, null);
+    }
+    if (char.IsAsciiDigit(c) || (c == '.' && char.IsAsciiDigit(this.Peek(1)))) return this.LexNumber();
+    if (c == '"' || c == '\'') return this.LexString(c);
+    if (c == '`') return this.LexTemplate(start, false);
+    let kind = SyntaxKind.BadToken;
+    switch (c) {
+      case '{':
+        if (this.templateBraceDepths.Count > 0) {
+          const index = this.templateBraceDepths.Count - 1;
+          this.templateBraceDepths[index] = this.templateBraceDepths[index] + 1;
+        }
+        kind = this.Make(SyntaxKind.OpenBraceToken, 1); break;
+      case '}':
+        if (this.templateBraceDepths.Count > 0) {
+          const index = this.templateBraceDepths.Count - 1;
+          if (this.templateBraceDepths[index] == 0) {
+            this.templateBraceDepths.RemoveAt(index);
+            return this.LexTemplate(start, true);
+          }
+          this.templateBraceDepths[index] = this.templateBraceDepths[index] - 1;
+        }
+        kind = this.Make(SyntaxKind.CloseBraceToken, 1); break;
+      case '(': kind = this.Make(SyntaxKind.OpenParenToken, 1); break;
+      case ')': kind = this.Make(SyntaxKind.CloseParenToken, 1); break;
+      case '[': kind = this.Make(SyntaxKind.OpenBracketToken, 1); break;
+      case ']': kind = this.Make(SyntaxKind.CloseBracketToken, 1); break;
+      case ';': kind = this.Make(SyntaxKind.SemicolonToken, 1); break;
+      case ',': kind = this.Make(SyntaxKind.CommaToken, 1); break;
+      case ':': kind = this.Make(SyntaxKind.ColonToken, 1); break;
+      case '~': kind = this.Make(SyntaxKind.TildeToken, 1); break;
+      case '@': kind = this.Make(SyntaxKind.AtToken, 1); break;
+      case '.':
+        kind = this.Peek(1) == '.' && this.Peek(2) == '.' ? this.Make(SyntaxKind.DotDotDotToken, 3) : this.Make(SyntaxKind.DotToken, 1); break;
+      case '?':
+        kind = this.Peek(1) == '?'
+          ? this.Peek(2) == '=' ? this.Make(SyntaxKind.QuestionQuestionEqualsToken, 3) : this.Make(SyntaxKind.QuestionQuestionToken, 2)
+          : this.Peek(1) == '.' && !char.IsAsciiDigit(this.Peek(2)) ? this.Make(SyntaxKind.QuestionDotToken, 2) : this.Make(SyntaxKind.QuestionToken, 1); break;
+      case '<':
+        kind = this.Peek(1) == '<'
+          ? this.Peek(2) == '=' ? this.Make(SyntaxKind.LessThanLessThanEqualsToken, 3) : this.Make(SyntaxKind.LessThanLessThanToken, 2)
+          : this.Peek(1) == '=' ? this.Make(SyntaxKind.LessThanEqualsToken, 2) : this.Make(SyntaxKind.LessThanToken, 1); break;
+      case '>': kind = this.Make(SyntaxKind.GreaterThanToken, 1); break;
+      case '=':
+        kind = this.Peek(1) == '=' ? this.Make(SyntaxKind.EqualsEqualsToken, 2)
+          : this.Peek(1) == '>' ? this.Make(SyntaxKind.EqualsGreaterThanToken, 2) : this.Make(SyntaxKind.EqualsToken, 1); break;
+      case '!': kind = this.Peek(1) == '=' ? this.Make(SyntaxKind.ExclamationEqualsToken, 2) : this.Make(SyntaxKind.ExclamationToken, 1); break;
+      case '+': kind = this.Peek(1) == '+' ? this.Make(SyntaxKind.PlusPlusToken, 2) : this.Peek(1) == '=' ? this.Make(SyntaxKind.PlusEqualsToken, 2) : this.Make(SyntaxKind.PlusToken, 1); break;
+      case '-': kind = this.Peek(1) == '-' ? this.Make(SyntaxKind.MinusMinusToken, 2) : this.Peek(1) == '=' ? this.Make(SyntaxKind.MinusEqualsToken, 2) : this.Make(SyntaxKind.MinusToken, 1); break;
+      case '*':
+        kind = this.Peek(1) == '*'
+          ? this.Peek(2) == '=' ? this.Make(SyntaxKind.AsteriskAsteriskEqualsToken, 3) : this.Make(SyntaxKind.AsteriskAsteriskToken, 2)
+          : this.Peek(1) == '=' ? this.Make(SyntaxKind.AsteriskEqualsToken, 2) : this.Make(SyntaxKind.AsteriskToken, 1); break;
+      case '/': kind = this.Peek(1) == '=' ? this.Make(SyntaxKind.SlashEqualsToken, 2) : this.Make(SyntaxKind.SlashToken, 1); break;
+      case '%': kind = this.Peek(1) == '=' ? this.Make(SyntaxKind.PercentEqualsToken, 2) : this.Make(SyntaxKind.PercentToken, 1); break;
+      case '^': kind = this.Peek(1) == '=' ? this.Make(SyntaxKind.CaretEqualsToken, 2) : this.Make(SyntaxKind.CaretToken, 1); break;
+      case '&':
+        kind = this.Peek(1) == '&'
+          ? this.Peek(2) == '=' ? this.Make(SyntaxKind.AmpersandAmpersandEqualsToken, 3) : this.Make(SyntaxKind.AmpersandAmpersandToken, 2)
+          : this.Peek(1) == '=' ? this.Make(SyntaxKind.AmpersandEqualsToken, 2) : this.Make(SyntaxKind.AmpersandToken, 1); break;
+      case '|':
+        kind = this.Peek(1) == '|'
+          ? this.Peek(2) == '=' ? this.Make(SyntaxKind.BarBarEqualsToken, 3) : this.Make(SyntaxKind.BarBarToken, 2)
+          : this.Peek(1) == '=' ? this.Make(SyntaxKind.BarEqualsToken, 2) : this.Make(SyntaxKind.BarToken, 1); break;
+      default:
+        this.pos++;
+        this.Report(Descriptors.UnexpectedCharacter, start, 1, c);
+        return new LexedToken(SyntaxKind.BadToken, this.Slice(start), null);
+    }
+    return new LexedToken(kind, this.Slice(start), null);
+  }
+
+  private static IsIdentifierStart(c: char): bool { return c == '_' || c == '$' || char.IsLetter(c); }
+  private static IsIdentifierPart(c: char): bool { return c == '_' || c == '$' || char.IsLetterOrDigit(c); }
+
+  private LexNumber(): LexedToken {
+    const start = this.pos;
+    let isHexOrBin = false;
+    let radix = 10;
+    let isReal = false;
+    if (this.Peek() == '0' && (this.Peek(1) == 'x' || this.Peek(1) == 'X')) { radix = 16; this.pos += 2; isHexOrBin = true; }
+    else if (this.Peek() == '0' && (this.Peek(1) == 'b' || this.Peek(1) == 'B')) { radix = 2; this.pos += 2; isHexOrBin = true; }
+    const digitsStart = this.pos;
+    if (isHexOrBin) {
+      while ((radix == 2 ? char.IsAsciiDigit(this.Peek()) : Uri.IsHexDigit(this.Peek())) || this.Peek() == '_') this.pos++;
+    } else {
+      while (char.IsAsciiDigit(this.Peek()) || this.Peek() == '_') this.pos++;
+      if (this.Peek() == '.' && char.IsAsciiDigit(this.Peek(1))) {
+        isReal = true;
+        this.pos++;
+        while (char.IsAsciiDigit(this.Peek()) || this.Peek() == '_') this.pos++;
+      }
+      if ((this.Peek() == 'e' || this.Peek() == 'E') &&
+        (char.IsAsciiDigit(this.Peek(1)) || ((this.Peek(1) == '+' || this.Peek(1) == '-') && char.IsAsciiDigit(this.Peek(2))))) {
+        isReal = true;
+        this.pos += 2;
+        while (char.IsAsciiDigit(this.Peek())) this.pos++;
+      }
+    }
+    const digits = this.text.Substring(digitsStart, this.pos - digitsStart).Replace("_", "", StringComparison.Ordinal);
+    const suffixStart = this.pos;
+    while (this.pos < this.text.Length && char.IsAsciiLetter(this.text[this.pos]) && this.pos - suffixStart < 2) this.pos++;
+    let suffix = this.text.Substring(suffixStart, this.pos - suffixStart).ToLowerInvariant();
+    let tokenText = this.Slice(start);
+    let value: object? = null;
+    let kind = SyntaxKind.NumericLiteralToken;
+    let ok = true;
+    let error: string? = null;
+    if (suffix != "" && suffix != "l" && suffix != "u" && suffix != "ul" && suffix != "lu" &&
+        suffix != "f" && suffix != "d" && suffix != "m" && suffix != "n") {
+      this.pos = suffixStart;
+      suffix = "";
+      tokenText = this.Slice(start);
+      this.Report(Descriptors.InvalidNumber, start, tokenText.Length, "invalid suffix");
+      ok = false;
+    }
+    if (ok) {
+      try {
+        let invalidBinary = false;
+        if (radix == 2) {
+          for (let i = 0; i < digits.Length; i++) {
+            if (digits[i] != '0' && digits[i] != '1') invalidBinary = true;
+          }
+        }
+        if (isHexOrBin && digits.Length == 0) { error = "missing digits"; ok = false; }
+        else if (invalidBinary) { error = "invalid digit in binary literal"; ok = false; }
+        else if (suffix == "n") {
+          kind = SyntaxKind.BigIntLiteralToken;
+          value = isHexOrBin ? Lexer.ParseBig(digits, radix) : BigInteger.Parse(digits, CultureInfo.InvariantCulture);
+        } else if (suffix == "f") {
+          const number = float.Parse(digits, NumberStyles.Float, CultureInfo.InvariantCulture);
+          value = number;
+          if (float.IsInfinity(number)) { error = "out of range"; ok = false; }
+        } else if (suffix == "d" || (suffix == "" && isReal)) {
+          const number = double.Parse(digits, NumberStyles.Float, CultureInfo.InvariantCulture);
+          value = number;
+          if (double.IsInfinity(number)) { error = "out of range"; ok = false; }
+        } else if (suffix == "m") {
+          value = decimal.Parse(digits, NumberStyles.Float, CultureInfo.InvariantCulture);
+        } else if (isReal) {
+          const number = double.Parse(digits, NumberStyles.Float, CultureInfo.InvariantCulture);
+          value = number;
+          if (double.IsInfinity(number)) { error = "out of range"; ok = false; }
+        } else {
+          const number = isHexOrBin ? Lexer.ParseBig(digits, radix) : BigInteger.Parse(digits, CultureInfo.InvariantCulture);
+          value = Lexer.FitInteger(number, suffix, isHexOrBin);
+          if (value == null) { error = "value is out of range"; ok = false; }
+        }
+      } catch (e: FormatException) { error = "malformed or out of range"; ok = false; }
+      catch (e: OverflowException) { error = "malformed or out of range"; ok = false; }
+    }
+    if (!ok && error != null) this.Report(Descriptors.InvalidNumber, start, tokenText.Length, error);
+    if (!ok) value = 0;
+    return new LexedToken(kind, tokenText, value);
+  }
+
+  private static ParseBig(digits: string, radix: int): BigInteger {
+    let result = BigInteger.Zero;
+    for (let i = 0; i < digits.Length; i++) result = result * radix + Convert.ToInt32(digits[i].ToString(), 16);
+    return result;
+  }
+  private static FitInteger(value: BigInteger, suffix: string, hexOrBin: bool): object? {
+    switch (suffix) {
+      case "l":
+        if (value <= long.MaxValue) return value as long;
+        if (hexOrBin && value <= ulong.MaxValue) return value as ulong;
+        break;
+      case "u":
+        if (value <= uint.MaxValue) return value as uint;
+        if (value <= ulong.MaxValue) return value as ulong;
+        break;
+      case "ul":
+      case "lu":
+        if (value <= ulong.MaxValue) return value as ulong;
+        break;
+      default:
+        if (value <= int.MaxValue) return value as int;
+        if (hexOrBin && value <= uint.MaxValue) return value as uint;
+        if (value <= long.MaxValue) return value as long;
+        if (value <= ulong.MaxValue) return value as ulong;
+        break;
+    }
+    return null;
+  }
+
+  private LexString(quote: char): LexedToken {
+    const start = this.pos;
+    this.pos++;
+    const builder = new StringBuilder();
+    while (true) {
+      if (this.pos >= this.text.Length || Lexer.IsNewLine(this.text[this.pos])) {
+        this.Report(Descriptors.UnterminatedString, start, this.pos - start);
+        break;
+      }
+      const c = this.text[this.pos];
+      if (c == quote) { this.pos++; break; }
+      if (c == '\\') this.ReadEscape(builder);
+      else { builder.Append(c); this.pos++; }
+    }
+    return new LexedToken(SyntaxKind.StringLiteralToken, this.Slice(start), builder.ToString());
+  }
+
+  private ReadEscape(builder: StringBuilder): void {
+    const start = this.pos;
+    this.pos++;
+    if (this.pos >= this.text.Length) return;
+    const c = this.text[this.pos];
+    this.pos++;
+    switch (c) {
+      case 'n': builder.Append('\n'); break;
+      case 'r': builder.Append('\r'); break;
+      case 't': builder.Append('\t'); break;
+      case 'b': builder.Append('\b'); break;
+      case 'f': builder.Append('\f'); break;
+      case 'v': builder.Append('\v'); break;
+      case '0': builder.Append('\0'); break;
+      case '\\': builder.Append('\\'); break;
+      case '\'': builder.Append('\''); break;
+      case '"': builder.Append('"'); break;
+      case '`': builder.Append('`'); break;
+      case '$': builder.Append('$'); break;
+      case '\r': if (this.Peek() == '\n') this.pos++; break;
+      case '\n': break;
+      case 'x':
+        const x = this.ReadHex(2);
+        if (x >= 0) builder.Append(x as char);
+        else this.Report(Descriptors.InvalidEscape, start, this.pos - start);
+        break;
+      case 'u':
+        if (this.Peek() == '{') {
+          const close = this.text.IndexOf('}', this.pos);
+          let cp = -1;
+          if (close > 0) cp = Lexer.ParseHex(this.text.Substring(this.pos + 1, close - this.pos - 1), NumberStyles.HexNumber);
+          if (cp >= 0 && cp <= 0x10FFFF) {
+            if (cp <= 0xFFFF) builder.Append(cp as char);
+            else builder.Append(char.ConvertFromUtf32(cp));
+            this.pos = close + 1;
+          } else this.Report(Descriptors.InvalidEscape, start, this.pos - start);
+        } else {
+          const u = this.ReadHex(4);
+          if (u >= 0) builder.Append(u as char);
+          else this.Report(Descriptors.InvalidEscape, start, this.pos - start);
+        }
+        break;
+      default:
+        this.Report(Descriptors.InvalidEscape, start, this.pos - start);
+        builder.Append(c);
+        break;
+    }
+  }
+
+  // Parsing with exceptions avoids ref/out interop while retaining NumberStyles' exact rules.
+  private static ParseHex(text: string, style: NumberStyles): int {
+    try { return int.Parse(text, style, CultureInfo.InvariantCulture); }
+    catch (e: FormatException) { return -1; }
+    catch (e: OverflowException) { return -1; }
+  }
+  private ReadHex(count: int): int {
+    if (this.pos + count > this.text.Length) return -1;
+    const value = Lexer.ParseHex(this.text.Substring(this.pos, count), NumberStyles.AllowHexSpecifier);
+    if (value < 0) return -1;
+    this.pos += count;
+    return value;
+  }
+
+  private LexTemplate(start: int, continuation: bool): LexedToken {
+    this.pos++;
+    const builder = new StringBuilder();
+    while (true) {
+      if (this.pos >= this.text.Length) {
+        this.Report(Descriptors.UnterminatedTemplate, start, this.pos - start);
+        return new LexedToken(continuation ? SyntaxKind.TemplateTailToken : SyntaxKind.NoSubstitutionTemplateToken, this.Slice(start), builder.ToString());
+      }
+      const c = this.text[this.pos];
+      if (c == '`') {
+        this.pos++;
+        return new LexedToken(continuation ? SyntaxKind.TemplateTailToken : SyntaxKind.NoSubstitutionTemplateToken, this.Slice(start), builder.ToString());
+      }
+      if (c == '$' && this.Peek(1) == '{') {
+        this.pos += 2;
+        this.templateBraceDepths.Add(0);
+        return new LexedToken(continuation ? SyntaxKind.TemplateMiddleToken : SyntaxKind.TemplateHeadToken, this.Slice(start), builder.ToString());
+      }
+      if (c == '\\') this.ReadEscape(builder);
+      else if (c == '\r') {
+        this.pos++;
+        if (this.Peek() == '\n') this.pos++;
+        builder.Append('\n');
+      } else { builder.Append(c); this.pos++; }
+    }
+  }
+}

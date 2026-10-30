@@ -1,0 +1,138 @@
+import { List } from "System.Collections.Generic";
+import { Directory, Path, MemoryStream, StringWriter } from "System.IO";
+import { Assembly, AssemblyName } from "System.Reflection";
+import { AssemblyLoadContext } from "System.Runtime.Loader";
+import { Monitor } from "System.Threading";
+import { Compilation, CompilationOptions, OutputKind } from "Caladesi.Compiler";
+import { SyntaxTree } from "Caladesi.Compiler.Syntax";
+import { ReferenceSet } from "Caladesi.Compiler.Symbols.Metadata";
+import { DiagnosticDescriptor } from "Caladesi.Compiler.Diagnostics";
+import { NativeCorpusILVerifier } from "./NativeCorpusILVerifier";
+
+class NativeCorpusLoadContext extends AssemblyLoadContext {
+  constructor() { super("NativeCorpus_" + Guid.NewGuid().ToString("N"), true); }
+  protected override Load(name: AssemblyName): Assembly? {
+    const runtime = NativeCorpusHarness.Runtime();
+    if (name.Name == runtime.GetName().Name) return runtime;
+    return null;
+  }
+}
+
+export class NativeCorpusHarness {
+  private static readonly gate: object = new object();
+  private static references: ReferenceSet? = null;
+
+  static Runtime(): Assembly {
+    const compiler = typeof(Compilation).Assembly;
+    if (compiler.GetType("Caladesi.Compiler.Binding.Binder`1") == null)
+      throw new Exception("Corpus runtime must come from the native compiler closure");
+    const runtimeName = compiler.GetName().Name == "Caladesi.Compiler.SelfHost" ?
+      "Caladesi.Runtime.SelfHost.dll" : "Caladesi.Runtime.dll";
+    return Assembly.LoadFrom(Path.Combine(Path.GetDirectoryName(compiler.Location)!, runtimeName));
+  }
+
+  static References(): ReferenceSet {
+    Monitor.Enter(NativeCorpusHarness.gate);
+    try {
+      if (NativeCorpusHarness.references != null) return NativeCorpusHarness.references!;
+      const root = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(typeof(object).Assembly.Location)!, "..", "..", ".."));
+      const packs = Path.Combine(root, "packs", "Microsoft.NETCore.App.Ref");
+      let selected = "";
+      let selectedVersion = new Version(0, 0);
+      for (const directory of Directory.GetDirectories(packs)) {
+        const [parsed, version] = Version.TryParse(Path.GetFileName(directory));
+        if (!parsed || version == null) continue;
+        const candidate = Path.Combine(directory, "ref", "net10.0");
+        if (Directory.Exists(candidate) && version.CompareTo(selectedVersion) > 0) {
+          selected = candidate;
+          selectedVersion = version;
+        }
+      }
+      if (selected.Length == 0) throw new Exception("Missing net10.0 reference pack");
+      const paths = new List<string>();
+      for (const path of Directory.GetFiles(selected, "*.dll")) paths.Add(path);
+      paths.Add(NativeCorpusHarness.Runtime().Location);
+      NativeCorpusHarness.references = ReferenceSet.Create(paths);
+      return NativeCorpusHarness.references!;
+    } finally { Monitor.Exit(NativeCorpusHarness.gate); }
+  }
+
+  static Create(source: string, kind: OutputKind = OutputKind.ConsoleApplication, record: bool = false): Compilation {
+    return NativeCorpusHarness.CreateFiles([SyntaxTree.ParseText(source, "/proj/main.cala")], kind, record);
+  }
+
+  static CreateFiles(trees: SyntaxTree[], kind: OutputKind, record: bool): Compilation {
+    const options = new CompilationOptions();
+    options.OutputKind = kind;
+    options.AssemblyName = "Test";
+    options.RootNamespace = "Test";
+    options.ProjectDirectory = "/proj";
+    options.RecordSemanticInfo = record;
+    if (typeof(Compilation).Assembly.GetType("Caladesi.Compiler.Binding.Binder`1") == null)
+      throw new Exception("Corpus must execute the native compiler");
+    return Compilation.Create(options, trees, NativeCorpusHarness.References());
+  }
+
+  static Clean(source: string, kind: OutputKind = OutputKind.ConsoleApplication): void {
+    const compilation = NativeCorpusHarness.Create(source, kind);
+    const diagnostics = compilation.GetDiagnostics();
+    if (diagnostics.Length != 0) {
+      let message = source;
+      for (const diagnostic of diagnostics) message += "\n" + diagnostic.ToString();
+      throw new Exception(message);
+    }
+  }
+
+  static Error(source: string, descriptor: DiagnosticDescriptor, kind: OutputKind = OutputKind.DynamicallyLinkedLibrary): void {
+    const compilation = NativeCorpusHarness.Create(source, kind);
+    let message = "Expected " + descriptor.Id;
+    for (const diagnostic of compilation.GetDiagnostics()) {
+      if (diagnostic.Id == descriptor.Id) return;
+      message += "\n" + diagnostic.ToString();
+    }
+    throw new Exception(message + "\n" + source);
+  }
+
+  static Check(source: string, expected: string, exitCode: int = 0): void {
+    NativeCorpusHarness.Execute(NativeCorpusHarness.Create(source), expected, exitCode);
+  }
+
+  static Execute(compilation: Compilation, expected: string, exitCode: int, trimFinalNewlines: bool = false, checkExitCode: bool = true): void {
+    const pe = new MemoryStream();
+    const pdb = new MemoryStream();
+    const context = new NativeCorpusLoadContext();
+    try {
+      const result = compilation.Emit(pe, pdb, "Test.pdb");
+      if (!result.Success) {
+        let message = "Native corpus compilation failed";
+        for (const diagnostic of result.Diagnostics) message += "\n" + diagnostic.ToString();
+        throw new Exception(message);
+      }
+      if (pe.Length == 0 || pdb.Length == 0) throw new Exception("Missing emitted PE or PDB");
+      NativeCorpusILVerifier.Verify("Test", pe.ToArray());
+      pe.Position = 0;
+      const assembly = context.LoadFromStream(pe);
+      const entry = assembly.EntryPoint;
+      if (entry == null) throw new Exception("No emitted entry point");
+      Monitor.Enter(NativeCorpusHarness.gate);
+      const original = Console.Out;
+      const writer = new StringWriter();
+      writer.NewLine = "\n";
+      try {
+        Console.SetOut(writer);
+        const args: object[]? = entry.GetParameters().Length == 0 ? null : [Array.Empty<string>()];
+        const value = entry.Invoke(null, args);
+        const actualCode = value instanceof int ? value as int : 0;
+        const output = trimFinalNewlines ? writer.ToString().TrimEnd(["\n"[0]]) : writer.ToString();
+        const target = trimFinalNewlines ? expected.TrimEnd(["\n"[0]]) : expected;
+        if (output != target)
+          throw new Exception("Expected stdout [" + expected + "] but got [" + writer.ToString() + "]");
+        if (checkExitCode && actualCode != exitCode) throw new Exception("Expected exit code " + exitCode + " but got " + actualCode);
+      } finally {
+        Console.SetOut(original);
+        writer.Dispose();
+        Monitor.Exit(NativeCorpusHarness.gate);
+      }
+    } finally { context.Unload(); pe.Dispose(); pdb.Dispose(); }
+  }
+}

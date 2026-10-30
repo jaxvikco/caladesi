@@ -1,0 +1,138 @@
+import { Dictionary, List } from "System.Collections.Generic";
+import { BlobBuilder, ILOpCode, EntityHandle, UserStringHandle } from "System.Reflection.Metadata";
+import { ControlFlowBuilder, InstructionEncoder, LabelHandle } from "System.Reflection.Metadata.Ecma335";
+import { TypeSymbol } from "../Symbols/TypeSymbols";
+
+export struct type SequencePoint = {
+  readonly Offset: int;
+  readonly StartLine: int;
+  readonly StartColumn: int;
+  readonly EndLine: int;
+  readonly EndColumn: int;
+  readonly IsHidden: bool;
+};
+
+export sealed class LocalSlot {
+  constructor(public readonly Type: TypeSymbol, public readonly Name: string?, public readonly Index: int) {}
+}
+
+export sealed class ILBuilder {
+  private readonly labelDepth: Dictionary<LabelHandle, int> = new Dictionary<LabelHandle, int>();
+  private max: int = 0;
+  private currentDepth: int = 0;
+  public readonly Code: BlobBuilder;
+  public readonly ControlFlow: ControlFlowBuilder;
+  // Encoder copies intentionally share the code and control-flow builders.
+  public readonly Encoder: InstructionEncoder;
+  public readonly Locals: List<LocalSlot> = new List<LocalSlot>();
+  public readonly SequencePoints: List<SequencePoint> = new List<SequencePoint>();
+
+  constructor() {
+    this.Code = new BlobBuilder();
+    this.ControlFlow = new ControlFlowBuilder();
+    this.Encoder = new InstructionEncoder(this.Code, this.ControlFlow);
+  }
+
+  get MaxStack(): int { return this.max + 4; }
+  get Offset(): int { return this.Encoder.Offset; }
+  get CurrentDepth(): int { return this.currentDepth; }
+
+  NewLocal(type: TypeSymbol): LocalSlot { return this.NewLocal(type, null); }
+
+  NewLocal(type: TypeSymbol, name: string?): LocalSlot {
+    const local = new LocalSlot(type, name, this.Locals.Count);
+    this.Locals.Add(local);
+    return local;
+  }
+
+  private Adjust(delta: int): void {
+    this.currentDepth += delta;
+    if (this.currentDepth < 0) this.currentDepth = 0;
+    if (this.currentDepth > this.max) this.max = this.currentDepth;
+  }
+
+  Op(op: ILOpCode, delta: int): void {
+    this.Encoder.OpCode(op);
+    this.Adjust(delta);
+    if (op == ILOpCode.Ret) this.currentDepth = 0;
+  }
+
+  Token(op: ILOpCode, handle: EntityHandle, delta: int): void {
+    this.Encoder.OpCode(op);
+    this.Encoder.Token(handle);
+    this.Adjust(delta);
+  }
+
+  Call(op: ILOpCode, method: EntityHandle, pops: int, pushes: int): void {
+    this.Encoder.OpCode(op);
+    this.Encoder.Token(method);
+    this.Adjust(-pops + pushes);
+  }
+
+  LdcI4(v: int): void { this.Encoder.LoadConstantI4(v); this.Adjust(1); }
+  LdcI8(v: long): void { this.Encoder.LoadConstantI8(v); this.Adjust(1); }
+  LdcR4(v: float): void { this.Encoder.LoadConstantR4(v); this.Adjust(1); }
+  LdcR8(v: double): void { this.Encoder.LoadConstantR8(v); this.Adjust(1); }
+  LdStr(h: UserStringHandle): void { this.Encoder.LoadString(h); this.Adjust(1); }
+  Ldloc(i: int): void { this.Encoder.LoadLocal(i); this.Adjust(1); }
+
+  Ldloca(i: int): void {
+    if (i < 256) {
+      this.Encoder.OpCode(ILOpCode.Ldloca_s);
+      this.Encoder.CodeBuilder.WriteByte(i as byte);
+    } else {
+      this.Encoder.OpCode(ILOpCode.Ldloca);
+      this.Encoder.CodeBuilder.WriteUInt16(i as ushort);
+    }
+    this.Adjust(1);
+  }
+
+  Stloc(i: int): void { this.Encoder.StoreLocal(i); this.Adjust(-1); }
+  Ldarg(i: int): void { this.Encoder.LoadArgument(i); this.Adjust(1); }
+
+  Ldarga(i: int): void {
+    if (i < 256) {
+      this.Encoder.OpCode(ILOpCode.Ldarga_s);
+      this.Encoder.CodeBuilder.WriteByte(i as byte);
+    } else {
+      this.Encoder.OpCode(ILOpCode.Ldarga);
+      this.Encoder.CodeBuilder.WriteUInt16(i as ushort);
+    }
+    this.Adjust(1);
+  }
+
+  Starg(i: int): void { this.Encoder.StoreArgument(i); this.Adjust(-1); }
+  NewLabel(): LabelHandle { return this.Encoder.DefineLabel(); }
+
+  Mark(label: LabelHandle): void {
+    this.Encoder.MarkLabel(label);
+    if (this.labelDepth.ContainsKey(label) && this.labelDepth[label] > this.currentDepth) {
+      this.currentDepth = this.labelDepth[label];
+    }
+  }
+
+  Branch(op: ILOpCode, target: LabelHandle): void {
+    let pops = 2;
+    if (op == ILOpCode.Br || op == ILOpCode.Leave) pops = 0;
+    else if (op == ILOpCode.Brtrue || op == ILOpCode.Brfalse) pops = 1;
+    this.Adjust(-pops);
+    if (!this.labelDepth.ContainsKey(target) || this.labelDepth[target] < this.currentDepth) {
+      this.labelDepth[target] = this.currentDepth;
+    }
+    this.Encoder.Branch(op, target);
+    if (op == ILOpCode.Br || op == ILOpCode.Leave) this.currentDepth = 0;
+  }
+
+  ResetDepth(depth: int = 0): void {
+    this.currentDepth = depth;
+    if (this.currentDepth > this.max) this.max = this.currentDepth;
+  }
+
+  MarkSequencePoint(startLine: int, startCol: int, endLine: int, endCol: int): void {
+    this.SequencePoints.Add(new SequencePoint(this.Offset, startLine, startCol, endLine, endCol, false));
+  }
+
+  MarkHidden(): void {
+    this.SequencePoints.Add(new SequencePoint(this.Offset, 0xFEEFEE, 0, 0xFEEFEE, 0, true));
+  }
+}

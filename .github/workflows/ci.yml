@@ -15,6 +15,10 @@ permissions:
 jobs:
   build-test:
     runs-on: ubuntu-latest
+    env:
+      CALADESI_BOOTSTRAP_DIR: ${{ github.workspace }}/artifacts/bootstrap
+      CALADESI_E2E_FEED: ${{ github.workspace }}/artifacts/packages
+      CALADESI_LS_FEED: ${{ github.workspace }}/artifacts/packages
     steps:
       - uses: actions/checkout@v4
 
@@ -25,11 +29,30 @@ jobs:
       - name: Restore
         run: dotnet restore Caladesi.slnx
 
-      - name: Format (verify)
+      - name: Build and test explicit oracle-derived native bootstrap
+        run: eng/bootstrap.sh
+
+      - name: Format (verify against built native references)
+        env:
+          Configuration: Release
+          UseArtifactsOutput: 'true'
+          ArtifactsPath: ${{ github.workspace }}/artifacts/bootstrap-build
         run: dotnet format style Caladesi.slnx --verify-no-changes --no-restore
 
-      - name: Build
-        run: dotnet build Caladesi.slnx --no-restore --configuration Release
+      - name: Three-stage native fixed point and stage3-compiled corpus
+        run: eng/verify-native.sh
+
+      - name: Verify native release identities and packaged SDK
+        env:
+          CALADESI_VERSION: 1.0.0
+        run: eng/pack.sh
 
       - name: Test
-        run: dotnet test --solution Caladesi.slnx --no-build --configuration Release
+        run: dotnet test --solution Caladesi.slnx --no-build --configuration Release --artifacts-path artifacts/bootstrap-build
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Verify and package native language server in VSIX
+        run: eng/package-vscode.sh

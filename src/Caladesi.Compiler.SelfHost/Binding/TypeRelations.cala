@@ -1,0 +1,153 @@
+import { Dictionary } from "System.Collections.Generic";
+import { SpecialType, SpecialTypes } from "../Symbols/SpecialType";
+import { TypeSymbol, NamedTypeSymbol, TypeKind, VarianceKind, NullableTypeSymbol, ArrayTypeSymbol, TypeParameterSymbol } from "Caladesi.Compiler.Symbols";
+
+export static class TypeRelations {
+  private static readonly implicitNumeric: Dictionary<SpecialType, SpecialType[]> = TypeRelations.CreateImplicitNumeric();
+
+  private static CreateImplicitNumeric(): Dictionary<SpecialType, SpecialType[]> {
+    const table = new Dictionary<SpecialType, SpecialType[]>();
+    table[SpecialType.SByte] = [SpecialType.Int16, SpecialType.Int32, SpecialType.Int64, SpecialType.Single, SpecialType.Double, SpecialType.Decimal, SpecialType.IntPtr];
+    table[SpecialType.Byte] = [SpecialType.Int16, SpecialType.UInt16, SpecialType.Int32, SpecialType.UInt32, SpecialType.Int64, SpecialType.UInt64, SpecialType.Single, SpecialType.Double, SpecialType.Decimal, SpecialType.IntPtr, SpecialType.UIntPtr];
+    table[SpecialType.Int16] = [SpecialType.Int32, SpecialType.Int64, SpecialType.Single, SpecialType.Double, SpecialType.Decimal, SpecialType.IntPtr];
+    table[SpecialType.UInt16] = [SpecialType.Int32, SpecialType.UInt32, SpecialType.Int64, SpecialType.UInt64, SpecialType.Single, SpecialType.Double, SpecialType.Decimal, SpecialType.IntPtr, SpecialType.UIntPtr];
+    table[SpecialType.Int32] = [SpecialType.Int64, SpecialType.Single, SpecialType.Double, SpecialType.Decimal, SpecialType.IntPtr];
+    table[SpecialType.UInt32] = [SpecialType.Int64, SpecialType.UInt64, SpecialType.Single, SpecialType.Double, SpecialType.Decimal, SpecialType.UIntPtr];
+    table[SpecialType.Int64] = [SpecialType.Single, SpecialType.Double, SpecialType.Decimal];
+    table[SpecialType.UInt64] = [SpecialType.Single, SpecialType.Double, SpecialType.Decimal];
+    table[SpecialType.Char] = [SpecialType.UInt16, SpecialType.Int32, SpecialType.UInt32, SpecialType.Int64, SpecialType.UInt64, SpecialType.Single, SpecialType.Double, SpecialType.Decimal, SpecialType.IntPtr, SpecialType.UIntPtr];
+    table[SpecialType.Single] = [SpecialType.Double];
+    table[SpecialType.IntPtr] = [SpecialType.Int64, SpecialType.Single, SpecialType.Double, SpecialType.Decimal];
+    table[SpecialType.UIntPtr] = [SpecialType.UInt64, SpecialType.Single, SpecialType.Double, SpecialType.Decimal];
+    return table;
+  }
+
+  static HasImplicitNumeric(from: SpecialType, to: SpecialType): bool {
+    const [found, targets] = TypeRelations.implicitNumeric.TryGetValue(from);
+    if (!found) return false;
+    for (const target of targets) if (target == to) return true;
+    return false;
+  }
+
+  static IsNumericType(type: TypeSymbol): bool {
+    return SpecialTypes.IsNumeric(type.SpecialType) && type.SpecialType != SpecialType.None;
+  }
+
+  static IsDerivedFrom(derived: TypeSymbol, baseType: TypeSymbol): bool {
+    let type = derived.BaseType;
+    while (type != null) {
+      if (type.Equals(baseType)) return true;
+      type = type.BaseType;
+    }
+    return false;
+  }
+
+  static ImplementsInterface(type: TypeSymbol, iface: NamedTypeSymbol): bool {
+    for (const item of type.AllInterfaces) if (item.Equals(iface)) return true;
+    return false;
+  }
+
+  static ImplementsInterfaceVariant(type: TypeSymbol, iface: NamedTypeSymbol): bool {
+    if (type instanceof NamedTypeSymbol && type.TypeKind == TypeKind.Interface &&
+        TypeRelations.IsVarianceConvertible(type as NamedTypeSymbol, iface)) return true;
+    for (const item of type.AllInterfaces) {
+      if (item.Equals(iface) || TypeRelations.IsVarianceConvertible(item, iface)) return true;
+    }
+    return false;
+  }
+
+  static IsVarianceConvertible(source: NamedTypeSymbol, target: NamedTypeSymbol): bool {
+    if (!Object.ReferenceEquals(source.OriginalDefinition, target.OriginalDefinition) || !source.IsGenericType) return false;
+    const definition = source.OriginalDefinition;
+    for (let i = 0; i < definition.TypeParameters.Length; i++) {
+      const sourceArgument = source.TypeArguments[i];
+      const targetArgument = target.TypeArguments[i];
+      if (sourceArgument.Equals(targetArgument)) continue;
+      switch (definition.TypeParameters[i].Variance) {
+        case VarianceKind.Out:
+          if (!(sourceArgument.IsReferenceType && targetArgument.IsReferenceType &&
+              TypeRelations.ImplicitReferenceConversionExists(sourceArgument, targetArgument))) return false;
+          break;
+        case VarianceKind.In:
+          if (!(sourceArgument.IsReferenceType && targetArgument.IsReferenceType &&
+              TypeRelations.ImplicitReferenceConversionExists(targetArgument, sourceArgument))) return false;
+          break;
+        default: return false;
+      }
+    }
+    return true;
+  }
+
+  static ImplicitReferenceConversionExists(source: TypeSymbol, target: TypeSymbol): bool {
+    if (source.Equals(target)) return true;
+    if (source instanceof NullableTypeSymbol) source = (source as NullableTypeSymbol).Underlying;
+    if (target instanceof NullableTypeSymbol) target = (target as NullableTypeSymbol).Underlying;
+    if (source.Equals(target)) return true;
+    if (!source.IsReferenceType && !(source instanceof TypeParameterSymbol)) return false;
+    if (target.SpecialType == SpecialType.Object) return true;
+    if (source instanceof ArrayTypeSymbol) {
+      const array = source as ArrayTypeSymbol;
+      if (target instanceof ArrayTypeSymbol) {
+        const targetArray = target as ArrayTypeSymbol;
+        return array.Rank == targetArray.Rank && array.ElementType.IsReferenceType && targetArray.ElementType.IsReferenceType &&
+          TypeRelations.ImplicitReferenceConversionExists(array.ElementType, targetArray.ElementType);
+      }
+      if (target.SpecialType == SpecialType.Array) return true;
+      if (target instanceof NamedTypeSymbol) {
+        const named = target as NamedTypeSymbol;
+        if (named.IsGenericType && array.Rank == 1) {
+          const name = named.OriginalDefinition.ToMetadataString();
+          if (name == "System.Collections.Generic.IList`1" || name == "System.Collections.Generic.ICollection`1" ||
+              name == "System.Collections.Generic.IEnumerable`1" || name == "System.Collections.Generic.IReadOnlyList`1" ||
+              name == "System.Collections.Generic.IReadOnlyCollection`1") {
+            const element = named.TypeArguments[0];
+            return array.ElementType.Equals(element) || (array.ElementType.IsReferenceType && element.IsReferenceType &&
+              TypeRelations.ImplicitReferenceConversionExists(array.ElementType, element));
+          }
+        }
+      }
+      return false;
+    }
+    if (source instanceof TypeParameterSymbol) {
+      const parameter = source as TypeParameterSymbol;
+      for (const constraint of parameter.ConstraintTypes) {
+        if (TypeRelations.ImplicitReferenceConversionExists(constraint, target)) return true;
+      }
+      return parameter.HasReferenceTypeConstraint && target.SpecialType == SpecialType.Object;
+    }
+    if (target instanceof NamedTypeSymbol) {
+      const named = target as NamedTypeSymbol;
+      if (named.TypeKind == TypeKind.Interface)
+        return TypeRelations.ImplementsInterface(source, named) || TypeRelations.ImplementsInterfaceVariant(source, named);
+      if (TypeRelations.IsDerivedFrom(source, named)) return true;
+      if (source.TypeKind == TypeKind.Delegate &&
+          (named.SpecialType == SpecialType.Delegate || named.SpecialType == SpecialType.MulticastDelegate)) return true;
+      if (TypeRelations.IsDelegateVarianceConvertible(source, named)) return true;
+    }
+    return false;
+  }
+
+  static IsDelegateVarianceConvertible(source: TypeSymbol, target: NamedTypeSymbol): bool {
+    return source instanceof NamedTypeSymbol && source.TypeKind == TypeKind.Delegate && target.TypeKind == TypeKind.Delegate &&
+      TypeRelations.IsVarianceConvertible(source as NamedTypeSymbol, target);
+  }
+
+  static BoxingConversionExists(source: TypeSymbol, target: TypeSymbol): bool {
+    if (target instanceof NullableTypeSymbol) return false;
+    if (source instanceof TypeParameterSymbol) {
+      const parameter = source as TypeParameterSymbol;
+      if (target.SpecialType == SpecialType.Object || target.SpecialType == SpecialType.ValueType) return true;
+      for (const constraint of parameter.ConstraintTypes) {
+        if (TypeRelations.ImplicitReferenceConversionExists(constraint, target) || constraint.Equals(target)) return true;
+      }
+      return false;
+    }
+    return source.IsValueType &&
+      (target.SpecialType == SpecialType.Object ||
+        (source.TypeKind == TypeKind.Enum && (target.SpecialType == SpecialType.Enum || target.SpecialType == SpecialType.ValueType)) ||
+        target.SpecialType == SpecialType.ValueType ||
+        (target instanceof NamedTypeSymbol && target.TypeKind == TypeKind.Interface &&
+          (TypeRelations.ImplementsInterface(source, target as NamedTypeSymbol) ||
+            TypeRelations.ImplementsInterfaceVariant(source, target as NamedTypeSymbol))));
+  }
+}

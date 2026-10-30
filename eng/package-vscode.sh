@@ -9,16 +9,28 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 ext="$root/editors/vscode"
 out="${CALADESI_VSIX_OUT:-$root/artifacts/vscode}"
 version="$(node -p "require('$ext/package.json').version")"
+bootstrap="${CALADESI_BOOTSTRAP_DIR:?Set CALADESI_BOOTSTRAP_DIR to a trusted native bootstrap directory; C# fallback is forbidden.}"
+bootstrap_identity="${CALADESI_BOOTSTRAP_RELEASE_IDENTITY:-false}"
+work="$root/artifacts/vscode-selfhost"
 
-rm -rf "$ext/server"
 mkdir -p "$out"
 
 echo "== cala-ls $version (framework-dependent)"
-# RollForward=Major: run on a newer .NET when .NET 10 is not installed.
-dotnet publish "$root/src/Caladesi.LanguageServer/Caladesi.LanguageServer.csproj" -c Release \
-  -p:PublishAot=false -p:UseAppHost=false -p:RollForward=Major \
-  -p:Version="$version" -p:ContinuousIntegrationBuild=true \
-  -o "$ext/server" --nologo -v:q
+dotnet msbuild "$root/eng/SelfHost.proj" -t:Verify \
+  -p:BootstrapDirectory="$bootstrap" -p:BootstrapReleaseIdentity="$bootstrap_identity" \
+  -p:SelfHostArtifactsDirectory="$work" -p:SelfHostReleaseIdentity=true \
+  -p:Version="$version" -p:Configuration=Release -p:ContinuousIntegrationBuild=true --nologo -v:minimal
+stage="$work/stage3"
+dotnet msbuild "$root/eng/NativePackaging.targets" -t:_RequireVerifiedNativeRelease \
+  -p:NativeVerificationManifest="$work/verified.txt" -p:NativeReleaseRoot="$stage/" \
+  -p:NativeRuntimeDir="$stage/bin/Caladesi.Runtime.SelfHost/release/" \
+  -p:CalacPublishDir="$stage/bin/Caladesi.Cli.SelfHost/release/" \
+  -p:CaladesiTasksDir="$stage/bin/Caladesi.Build.Tasks.SelfHost/release/" \
+  -p:Version="$version" -p:Configuration=Release --nologo -v:minimal
+rm -rf "$ext/server"
+mkdir -p "$ext/server"
+cp "$stage/bin/Caladesi.LanguageServer.SelfHost/release/"* "$ext/server/"
+node "$root/eng/verify-language-server.mjs" "$ext/server/cala-ls.dll"
 
 echo "== VSIX"
 cd "$ext"

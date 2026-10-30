@@ -1,0 +1,328 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { Dictionary } from "System.Collections.Generic";
+import { BigInteger } from "System.Numerics";
+import { SourceTypeContext, SourceNamedType, SourceClassSymbol, SourceInterfaceSymbol, SourceEnumSymbol,
+  SourceRecordSymbol, SourceLiteralEnumSymbol, SourceUnionSymbol, SourceModuleClassSymbol, TypeAliasSymbol,
+  TypeAliasDeclarations, SourceMethodSymbol, SourceFieldSymbol, SourcePropertySymbol, SynthesizedAnonymousRecord,
+  SynthesizedBodyKind, TopLevelAwaitScanner } from "Caladesi.Compiler.Symbols.Source";
+import { Symbol, NamedTypeSymbol, NamespaceSymbol, TypeSymbol, TypeParameterSymbol, TypeParameterConstraints,
+  NullableTypeSymbol, ErrorTypeSymbol, SpecialType, TypeKind, ParameterSymbol, PropertySymbol, ConstantValue, MethodKind } from "Caladesi.Compiler.Symbols";
+import { ReferenceSet } from "Caladesi.Compiler.Symbols.Metadata";
+import { SyntaxTree, TypeSyntax, IdentifierNameSyntax, GenericNameSyntax, ParenthesizedTypeSyntax,
+  ParameterListSyntax, TypeParameterSyntax, ExpressionSyntax, LiteralExpressionSyntax,
+  ClassDeclarationSyntax, InterfaceDeclarationSyntax, EnumDeclarationSyntax, TypeAliasDeclarationSyntax,
+  SyntaxKind } from "Caladesi.Compiler.Syntax";
+import { DiagnosticBag } from "Caladesi.Compiler.Diagnostics";
+import { BoundBlock } from "Caladesi.Compiler.Bound";
+
+@TestClass
+export class SourceTypesNativeTests {
+  @TestMethod
+  classMembersPreserveDeclarationOrderAndInitializerTargets(): void {
+    const fixture = new SourceTypesNativeFixture("class C { private field: int = 1; value: string = \"x\"; static readonly shared: int = 2; }");
+    const type = fixture.Types["C"] as SourceClassSymbol<string>;
+    const members = type.GetMembers();
+    const expected = ["field", "<value>k__BackingField", "value", "get_value", "set_value",
+      "<shared>k__BackingField", "shared", "get_shared", ".ctor", ".cctor"];
+    if (members.Length != expected.Length) throw new Exception("Class member count");
+    for (let i = 0; i < expected.Length; i++) if (members[i].Name != expected[i]) throw new Exception("Class declaration order");
+    if (type.InstanceInitializers.Length != 2 || type.StaticInitializers.Length != 1) throw new Exception("Initializer grouping");
+    if (type.InstanceInitializers[0].Item1.Name != "field" || type.InstanceInitializers[1].Item1.Name != "value")
+      throw new Exception("Initializer field/property targets");
+    const property = type.GetMembers("value")[0] as SourcePropertySymbol<string>;
+    if (!property.IsVirtual || property.Getter == null || property.Setter == null ||
+      !Object.ReferenceEquals(property.Getter.AssociatedProperty, property)) throw new Exception("Accessor association");
+    if (property.Type.SpecialType != SpecialType.String) throw new Exception("Lazy annotation binding");
+    if (type.GetMembers("Value").Length != 0 || !type.GetMembers().Equals(type.GetMembers())) throw new Exception("Ordinal cache");
+    type.ResetMemberCache();
+    if (!Object.ReferenceEquals(type.GetMembers("value")[0], property)) throw new Exception("Reset must preserve members");
+  }
+
+  @TestMethod
+  accessorGroupsSeparateStaticAndInstanceAndUseFirstDeclarations(): void {
+    const fixture = new SourceTypesNativeFixture("class C { get value(): string { return \"\"; } static get value(): int { return 1; } set value(v: string) {} }");
+    const type = fixture.Types["C"];
+    const properties = type.GetMembers("value");
+    if (properties.Length != 2) throw new Exception("Static accessor grouping");
+    const instance = properties[0] as SourcePropertySymbol<string>;
+    const statics = properties[1] as SourcePropertySymbol<string>;
+    if (instance.IsStatic || !statics.IsStatic || instance.Setter == null || statics.Setter != null)
+      throw new Exception("Accessor groups");
+    if (instance.Type.SpecialType != SpecialType.String || statics.Type.SpecialType != SpecialType.Int32)
+      throw new Exception("Accessor type capture");
+    if (instance.Getter!.SynthesizedKind != SynthesizedBodyKind.None || instance.Getter!.BodySyntax == null)
+      throw new Exception("Explicit accessor body");
+  }
+
+  @TestMethod
+  constructorsInheritAccessibleOverloadsButNotOnlyParameterlessBases(): void {
+    const fixture = new SourceTypesNativeFixture("class B { constructor(value: int) {} constructor(value: string) {} private constructor(flag: bool) {} } abstract class C extends B {} class Empty {} class D extends Empty {}");
+    const constructors = fixture.Types["C"].InstanceConstructors;
+    if (constructors.Length != 2) throw new Exception("Inherited overload count");
+    for (const constructor of constructors) {
+      const method = constructor as SourceMethodSymbol<string>;
+      if (method.SynthesizedKind != SynthesizedBodyKind.InheritedConstructor || method.InheritedBaseConstructor == null ||
+        method.Parameters.Length != 1) throw new Exception("Inherited constructor signature");
+    }
+    if (constructors[0].Parameters[0].Type.SpecialType != SpecialType.Int32 ||
+      constructors[1].Parameters[0].Type.SpecialType != SpecialType.String) throw new Exception("Distinct inherited captures");
+    const defaultConstructor = fixture.Types["D"].InstanceConstructors[0] as SourceMethodSymbol<string>;
+    if (defaultConstructor.SynthesizedKind != SynthesizedBodyKind.DefaultConstructor) throw new Exception("Parameterless base default");
+  }
+
+  @TestMethod
+  interfacesPreserveAbstractAndDefaultMethodFlagsWithoutBackingFields(): void {
+    const fixture = new SourceTypesNativeFixture("interface I<T> { readonly value?: T; method(x: int): string; concrete(): int { return 1; } get label(): string; set label(v: string); }");
+    const type = fixture.Types["I"];
+    const value = type.GetMembers("value")[0] as SourcePropertySymbol<string>;
+    if (!value.IsAbstract || value.Setter != null || value.BackingField != null || !(value.Type instanceof NullableTypeSymbol))
+      throw new Exception("Interface property synthesis");
+    const method = type.GetMembers("method")[0] as SourceMethodSymbol<string>;
+    const concrete = type.GetMembers("concrete")[0] as SourceMethodSymbol<string>;
+    if (!method.IsAbstract || method.IsVirtual || concrete.IsAbstract || !concrete.IsVirtual)
+      throw new Exception("Interface method body flags");
+    const label = type.GetMembers("label")[0] as SourcePropertySymbol<string>;
+    if (!label.IsAbstract || label.Getter == null || label.Setter == null) throw new Exception("Interface accessors");
+  }
+
+  @TestMethod
+  interfaceSetterUsesSynthesizedPropertyTypedValueInsteadOfUnannotatedSyntax(): void {
+    const fixture = new SourceTypesNativeFixture("interface I { get value(): int; set value(v); }");
+    const property = fixture.Types["I"].GetMembers("value")[0] as SourcePropertySymbol<string>;
+    const setter = property.Setter!;
+    if (property.Getter!.Declaration != null || setter.Declaration != null || setter.ParameterList != null || setter.Parameters.Length != 1)
+      throw new Exception("Interface setter declaration must be omitted");
+    const parameter = setter.Parameters[0];
+    if (parameter.Name != "value" || parameter.Type.SpecialType != SpecialType.Int32 || parameter.IsOptional ||
+      !Object.ReferenceEquals(parameter.ContainingSymbol, setter)) throw new Exception("Synthesized interface setter signature");
+  }
+
+  @TestMethod
+  recordsBuildOptionalConstructorSlotsAndClassOnlyMembers(): void {
+    const fixture = new SourceTypesNativeFixture("type R<T> = { first: T; second?: string; }; struct type S = { value: int; };");
+    const record = fixture.Types["R"] as SourceRecordSymbol<string>;
+    const value = fixture.Types["S"] as SourceRecordSymbol<string>;
+    if (!record.IsRecord || !record.IsSealed || record.IsReadOnlyStruct || !value.IsReadOnlyStruct || value.TypeKind != TypeKind.Struct)
+      throw new Exception("Record type flags");
+    if (record.Properties.Length != 2 || record.PrimaryConstructor!.Parameters.Length != 2) throw new Exception("Record positional properties");
+    if (!record.PrimaryConstructor!.Parameters[1].IsOptional || record.PrimaryConstructor!.Parameters[1].DefaultValue != ConstantValue.Null ||
+      record.PrimaryConstructor!.Parameters[0].OriginalParameter == null)
+      throw new Exception("Optional constructor default");
+    if (!record.Properties[0].IsInitOnlyProperty || !record.Properties[0].BackingField!.IsReadOnly ||
+      !record.Properties[0].Setter!.IsInitOnly) throw new Exception("Record readonly/init semantics");
+    if (record.GetMembers("<Clone>$").Length != 1 || record.GetMembers("EqualityContract").Length != 1 ||
+      value.GetMembers("<Clone>$").Length != 0 || value.GetMembers("EqualityContract").Length != 0)
+      throw new Exception("Class-only copy/equality members");
+    if (record.Interfaces.Length != 1 || record.GetMembers("Equals").Length != 2 || record.GetMembers("op_Equality").Length != 1)
+      throw new Exception("Record equality synthesis");
+  }
+
+  @TestMethod
+  unionCasesFlattenDeduplicateAndKeepConversionOrdinals(): void {
+    const fixture = new SourceTypesNativeFixture("type Inner = int | string; type Outer = Inner | bool | int | null;");
+    const type = fixture.Types["Outer"] as SourceUnionSymbol<string>;
+    const cases = type.UnionCases;
+    if (!type.IncludesNull || cases.Length != 3 || cases[0].SpecialType != SpecialType.Int32 ||
+      cases[1].SpecialType != SpecialType.String || cases[2].SpecialType != SpecialType.Boolean)
+      throw new Exception("Union flattening");
+    if (fixture.DeclarationDiagnostics.Count != 1) throw new Exception("Duplicate union case diagnostic");
+    const conversions = type.GetMembers("op_Implicit");
+    if (conversions.Length != cases.Length || type.InstanceConstructors.Length != cases.Length) throw new Exception("Union constructors/conversions");
+    for (let i = 0; i < conversions.Length; i++) {
+      const method = conversions[i] as SourceMethodSymbol<string>;
+      if (method.UnionCaseIndex != i || !method.IsStatic || !Object.ReferenceEquals(method.ReturnType, type) ||
+        !method.Parameters[0].Type.Equals(cases[i])) throw new Exception("Union conversion original slot");
+      if (Object.ReferenceEquals(method.Parameters[0], type.InstanceConstructors[i].Parameters[0]))
+        throw new Exception("Constructor and conversion need independent parameter slots");
+    }
+    if (!type.IsReadOnlyStruct || !type.IsUnionType || type.GetMembers("Value").Length != 1) throw new Exception("Union representation");
+  }
+
+  @TestMethod
+  enumConstantsAndLiteralEnumsKeepDistinctLazyValues(): void {
+    const fixture = new SourceTypesNativeFixture("enum E { Zero, Four = 4, Five, Six } type Labels = \"a-b\" | \"a b\" | \"3d\" | \"\";");
+    const type = fixture.Types["E"];
+    const expected = [0, 4, 5, 6];
+    const members = type.GetMembers();
+    for (let i = 0; i < expected.Length; i++) {
+      const field = members[i] as SourceFieldSymbol<string>;
+      if ((field.ConstantValue!.Value as int) != expected[i] || !field.IsConst || !field.IsEnumMember)
+        throw new Exception("Enum lazy constant capture");
+    }
+    const labels = fixture.Types["Labels"] as SourceLiteralEnumSymbol<string>;
+    if (labels.GetMembers().Length != 3 || labels.FindMember("a b") != null ||
+      labels.FindMember("3d")!.Name != "_3d" || (labels.FindMember("")!.ConstantValue!.Value as int) != 2)
+      throw new Exception("Literal enum sanitization/deduplication");
+    if (SourceLiteralEnumSymbol<string>.SanitizeName("éclair") != "éclair" ||
+      SourceLiteralEnumSymbol<string>.SanitizeName("") != "_") throw new Exception("Unicode literal names");
+  }
+
+  @TestMethod
+  classInterfaceAndAliasCyclesTerminateWithDiagnostics(): void {
+    const fixture = new SourceTypesNativeFixture("class A extends B {} class B extends A {} interface I extends J {} interface J extends I {} type X = Y; type Y = X;");
+    if (fixture.Types["A"].BaseType == null || fixture.Types["I"].Interfaces.Length != 0)
+      throw new Exception("Cycle fallback shape");
+    if (!fixture.Aliases["X"].Target.IsErrorType || fixture.DeclarationDiagnostics.Count != 3) throw new Exception("Cycle diagnostics");
+    if (!Object.ReferenceEquals(fixture.Aliases["X"].Target, fixture.Aliases["X"].Target)) throw new Exception("Alias target cache");
+  }
+
+  @TestMethod
+  anonymousRecordsUseOwnGenericSlotsAndGetOnlyProperties(): void {
+    const fixture = new SourceTypesNativeFixture("");
+    const record = new SynthesizedAnonymousRecord<string>(fixture, "", "<>f__AnonymousType0", ImmutableArray.Create<string>("x", "name"));
+    if (!record.IsCompilerGenerated || !record.IsRecord || record.TypeParameters.Length != 2) throw new Exception("Anonymous flags");
+    const concrete = record.Construct(ImmutableArray.Create<TypeSymbol>(fixture.GetSpecialType(SpecialType.Int32), fixture.GetSpecialType(SpecialType.String)));
+    const concreteX = concrete.GetMembers("x")[0] as PropertySymbol;
+    // Constructed members are substituted symbols, not source declarations.
+    const source = record.GetMembers("x")[0] as SourcePropertySymbol<string>;
+    if (source.Setter != null || !source.BackingField!.IsReadOnly || source.BackingField!.Name != "<x>i__Field")
+      throw new Exception("Anonymous property representation");
+    if (concrete.GetMembers("x")[0].Name != "x" || record.InstanceConstructors[0].Parameters.Length != 2 ||
+      record.GetMembers("Equals").Length != 2 || record.GetMembers("op_Equality").Length != 0)
+      throw new Exception("Anonymous equality/constructor shape");
+    if (!Object.ReferenceEquals(concrete.OriginalDefinition, record)) throw new Exception("Anonymous original definition");
+    if (concreteX.Type.SpecialType != SpecialType.Int32 || !Object.ReferenceEquals(concreteX.OriginalSymbolDefinition, source) ||
+      !Object.ReferenceEquals(concreteX.GetMethod, concrete.GetMembers("get_x")[0]))
+      throw new Exception("Anonymous substituted member original slots");
+  }
+
+  @TestMethod
+  moduleVariablesMainAndEntryDecisionsAreBuiltInCala(): void {
+    const variables = new SourceTypesNativeFixture("export const answer: int = 42; let title: string; function main(): void {}");
+    const module = variables.Module;
+    if (!module.IsStaticClass || !module.IsAbstract || !module.IsSealed || module.UserMain == null ||
+      module.TopLevelEntry != null || module.VariableInitializers.Length != 2 || module.StaticConstructors.Length != 1)
+      throw new Exception("Module variable/main synthesis");
+    const answer = module.GetMembers("answer")[0] as SourceFieldSymbol<string>;
+    if (!answer.IsModuleVariable || !answer.IsConstDeclaration || !answer.IsConst || (answer.ConstantValue!.Value as int) != 42)
+      throw new Exception("Module constant binding");
+    const entry = new SourceTypesNativeFixture("await task;").Module.TopLevelEntry!;
+    if (!entry.IsAsync || entry.Name != "<Main>$" || entry.Parameters.Length != 1 ||
+      entry.SynthesizedKind != SynthesizedBodyKind.Custom) throw new Exception("Async top-level entry");
+    const noInitializer = new SourceTypesNativeFixture("let value: int;").Module;
+    if (noInitializer.TopLevelEntry != null || noInitializer.StaticConstructors.Length != 0) throw new Exception("Uninitialized module variable");
+  }
+
+  @TestMethod
+  topLevelAwaitScannerSkipsNestedFunctionsAndTypes(): void {
+    if (TopLevelAwaitScanner.Contains(SyntaxTree.ParseText("async function f() { await task; } class C { async f() { await task; } }").Root))
+      throw new Exception("Nested await must not force entry");
+    if (!TopLevelAwaitScanner.Contains(SyntaxTree.ParseText("if (true) { await task; }").Root))
+      throw new Exception("Nested top-level statement await");
+    if (!TopLevelAwaitScanner.Contains(SyntaxTree.ParseText("for await (const x of values) {}").Root))
+      throw new Exception("For-await scanning");
+  }
+
+  @TestMethod
+  moduleDecimalAndBigIntegerConstantsAreRuntimeInitialized(): void {
+    const decimalFixture = new SourceTypesNativeFixture("const value: int = 1;");
+    decimalFixture.ConstantOverride = new ConstantValue(decimal.Parse("1"));
+    const decimalField = decimalFixture.Module.GetMembers("value")[0] as SourceFieldSymbol<string>;
+    if (decimalField.ConstantValue != null || decimalField.IsConst) throw new Exception("Decimal must not become an IL literal");
+    const bigintFixture = new SourceTypesNativeFixture("const value: int = 2;");
+    bigintFixture.ConstantOverride = new ConstantValue(BigInteger.Parse("2"));
+    const bigintField = bigintFixture.Module.GetMembers("value")[0] as SourceFieldSymbol<string>;
+    if (bigintField.ConstantValue != null || bigintField.IsConst) throw new Exception("BigInteger must not become an IL literal");
+  }
+}
+
+// Native leaf-service fixture: declaration/member construction is never replaced.
+sealed class SourceTypesNativeFixture extends SourceTypeContext<string> {
+  readonly Tree: SyntaxTree;
+  readonly Types: Dictionary<string, SourceNamedType<string>> = new Dictionary<string, SourceNamedType<string>>(StringComparer.Ordinal);
+  readonly Aliases: Dictionary<string, TypeAliasSymbol<string>> = new Dictionary<string, TypeAliasSymbol<string>>(StringComparer.Ordinal);
+  readonly Module: SourceModuleClassSymbol<string>;
+  ConstantOverride: ConstantValue? = null;
+  private readonly diagnostics: DiagnosticBag = new DiagnosticBag();
+  private readonly references: ReferenceSet = ReferenceSet.Create([typeof(object).Assembly.Location]);
+  private readonly ns: NamespaceSymbol = new NamespaceSymbol("Native", new NamespaceSymbol("", null));
+  constructor(source: string) {
+    super();
+    this.Tree = SyntaxTree.ParseText(source, "source-types.cala");
+    for (const statement of this.Tree.Root.Statements) {
+      let type: SourceNamedType<string>? = null;
+      if (statement instanceof ClassDeclarationSyntax)
+        type = new SourceClassSymbol<string>(this, "", statement as ClassDeclarationSyntax, this.ns);
+      else if (statement instanceof InterfaceDeclarationSyntax)
+        type = new SourceInterfaceSymbol<string>(this, "", statement as InterfaceDeclarationSyntax, this.ns);
+      else if (statement instanceof EnumDeclarationSyntax)
+        type = new SourceEnumSymbol<string>(this, "", statement as EnumDeclarationSyntax, this.ns);
+      else if (statement instanceof TypeAliasDeclarationSyntax) {
+        const creation = TypeAliasDeclarations<string>.Create(this, "", statement as TypeAliasDeclarationSyntax);
+        type = creation.Type;
+        if (creation.Alias != null) this.Aliases[creation.Alias.Name] = creation.Alias;
+      }
+      if (type != null) { this.Types[type.Name] = type; this.ns.AddType(type); }
+    }
+    this.Module = new SourceModuleClassSymbol<string>(this, "", "SourceTypes");
+  }
+  override GetTree(file: string): SyntaxTree { return this.Tree; }
+  override GetFilePath(file: string): string { return this.Tree.FilePath; }
+  override get DeclarationDiagnostics(): DiagnosticBag { return this.diagnostics; }
+  override GetSpecialType(type: SpecialType): NamedTypeSymbol { return this.references.GetSpecialType(type)!; }
+  override GetNamespace(file: string): Symbol { return this.ns; }
+  override GetWellKnownType(name: string): NamedTypeSymbol? { return this.references.FindType(name); }
+  override get IsConsoleApplication(): bool { return true; }
+  override HasTopLevelStatements(file: string): bool { return false; }
+  override IsSourceNamedType(type: NamedTypeSymbol): bool { return type.OriginalDefinition instanceof SourceNamedType<string>; }
+  override BindType(file: string, owner: Symbol, syntax: TypeSyntax, allowVoid: bool): TypeSymbol {
+    if (syntax instanceof ParenthesizedTypeSyntax) return this.BindType(file, owner, (syntax as ParenthesizedTypeSyntax).Type, allowVoid);
+    if (syntax instanceof IdentifierNameSyntax) {
+      const name = (syntax as IdentifierNameSyntax).Name;
+      if (this.Types.ContainsKey(name)) return this.Types[name];
+      if (this.Aliases.ContainsKey(name)) return this.Aliases[name].Target;
+      if (owner instanceof NamedTypeSymbol)
+        for (const parameter of (owner as NamedTypeSymbol).TypeParameters) if (parameter.Name == name) return parameter;
+      if (owner instanceof SourceMethodSymbol<string>) {
+        const method = owner as SourceMethodSymbol<string>;
+        for (const parameter of method.TypeParameters) if (parameter.Name == name) return parameter;
+        for (const parameter of method.ContainerType.TypeParameters) if (parameter.Name == name) return parameter;
+      }
+      if (name == "int") return this.GetSpecialType(SpecialType.Int32);
+      if (name == "string") return this.GetSpecialType(SpecialType.String);
+      if (name == "bool") return this.GetSpecialType(SpecialType.Boolean);
+      if (name == "object") return this.GetSpecialType(SpecialType.Object);
+      if (name == "void") return this.GetSpecialType(SpecialType.Void);
+    }
+    if (syntax instanceof GenericNameSyntax) {
+      const generic = syntax as GenericNameSyntax;
+      const arguments = ImmutableArray.CreateBuilder<TypeSymbol>();
+      for (const argument of generic.TypeArguments.Arguments) arguments.Add(this.BindType(file, owner, argument, false));
+      return this.Types[generic.Name].Construct(arguments.ToImmutable());
+    }
+    throw new Exception("Unexpected native SourceTypes fixture type syntax");
+  }
+  override BindParameters(file: string, method: SourceMethodSymbol<string>, syntax: ParameterListSyntax): ImmutableArray<ParameterSymbol> {
+    const builder = ImmutableArray.CreateBuilder<ParameterSymbol>();
+    for (let i = 0; i < syntax.Parameters.Count; i++) {
+      const parameter = syntax.Parameters.Get(i);
+      builder.Add(new ParameterSymbol(parameter.Identifier!.Text, this.BindType(file, method, parameter.TypeAnnotation!.Type, false), i, method));
+    }
+    return builder.ToImmutable();
+  }
+  override AdjustDeclaredReturnType(file: string, method: SourceMethodSymbol<string>, type: TypeSymbol, syntax: TypeSyntax): TypeSymbol { return type; }
+  override BindConstraints(file: string, owner: Symbol, syntax: TypeParameterSyntax, parameter: TypeParameterSymbol): TypeParameterConstraints {
+    if (syntax.Constraint != null) throw new Exception("Unexpected native SourceTypes fixture constraint");
+    return TypeParameterConstraints.None;
+  }
+  override InferVariableType(file: string, owner: Symbol, expression: ExpressionSyntax, allowTopLevelAwait: bool): TypeSymbol {
+    if (expression.Kind == SyntaxKind.StringLiteralExpression) return this.GetSpecialType(SpecialType.String);
+    if (expression.Kind == SyntaxKind.NumericLiteralExpression) return this.GetSpecialType(SpecialType.Int32);
+    throw new Exception("Unexpected native SourceTypes fixture inference");
+  }
+  override EvaluateEnumInitializer(file: string, owner: SourceNamedType<string>, expression: ExpressionSyntax,
+    previous: ImmutableArray<SourceFieldSymbol<string>>): ConstantValue? {
+    if (expression instanceof LiteralExpressionSyntax) return new ConstantValue(int.Parse((expression as LiteralExpressionSyntax).Token.Text));
+    throw new Exception("Unexpected native SourceTypes fixture enum initializer");
+  }
+  override TryEvaluateConstant(file: string, owner: Symbol, expression: ExpressionSyntax, type: TypeSymbol): ConstantValue? {
+    if (this.ConstantOverride != null) return this.ConstantOverride;
+    if (expression instanceof LiteralExpressionSyntax) return new ConstantValue(int.Parse((expression as LiteralExpressionSyntax).Token.Text));
+    throw new Exception("Unexpected native SourceTypes fixture constant");
+  }
+  override BindMethodBody(file: string, method: SourceMethodSymbol<string>): BoundBlock? { throw new Exception("SourceTypes tests never bind method bodies"); }
+  override BindTopLevelStatements(file: string, method: SourceMethodSymbol<string>, module: SourceModuleClassSymbol<string>): BoundBlock? {
+    throw new Exception("SourceTypes tests never bind top-level bodies");
+  }
+}

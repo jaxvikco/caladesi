@@ -1,0 +1,122 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { NativeCorpusHarness } from "./NativeCorpusHarness";
+
+@TestClass
+export class NativeCorpusTypesTests {
+  @TestMethod
+  ClassBasics(): void {
+    NativeCorpusHarness.Check(
+      "class Animal {\n name: string;\n constructor(name: string) { this.name = name; }\n speak(): string { return `${this.name} makes a sound`; }\n}\n" +
+      "class Dog extends Animal {\n override speak(): string { return `${this.name} barks`; }\n}\n" +
+      "const a: Animal = new Dog(\"Rex\");\nConsole.WriteLine(a.speak());", "Rex barks\n");
+  }
+  @TestMethod
+  ParameterPropertiesAndAccessors(): void {
+    NativeCorpusHarness.Check(
+      "class Counter {\n private _n = 0;\n constructor(public readonly step: int) {}\n get value(): int { return this._n; }\n" +
+      " inc(): void { this._n += this.step; }\n static create(): Counter { return new Counter(2); }\n}\n" +
+      "const c = Counter.create();\nc.inc(); c.inc();\nConsole.WriteLine(c.value);", "4\n");
+  }
+  @TestMethod
+  Interfaces(): void {
+    NativeCorpusHarness.Check("interface Shape { area(): double; }\nclass Sq implements Shape {\n constructor(private s: double) {}\n area(): double { return this.s * this.s; }\n}\nconst s: Shape = new Sq(3);\nConsole.WriteLine(s.area());", "9\n");
+  }
+  @TestMethod
+  Records(): void {
+    NativeCorpusHarness.Check("type Point = { x: int; y: int };\nconst p = new Point(1, 2);\nconst q: Point = { x: 1, y: 2 };\nConsole.WriteLine(p == q);\nConsole.WriteLine(p);\nconst r = { ...p, x: 5 };\nConsole.WriteLine(r.x + r.y);", "True\nPoint { x = 1, y = 2 }\n7\n");
+  }
+  @TestMethod
+  Enums(): void {
+    NativeCorpusHarness.Check("enum Color { Red, Green = 5, Blue }\nconst c = Color.Blue;\nConsole.WriteLine(c);\nConsole.WriteLine(c as int);", "Blue\n6\n");
+  }
+  @TestMethod
+  StringLiteralUnionEnum(): void {
+    NativeCorpusHarness.Check("type Dir = \"up\" | \"down\";\nfunction f(d: Dir): int { return d == \"up\" ? 1 : -1; }\nConsole.WriteLine(f(\"up\"));\nConsole.WriteLine(f(\"down\"));", "1\n-1\n");
+  }
+  @TestMethod
+  UnionsAndNarrowing(): void {
+    NativeCorpusHarness.Check(
+      "class Circle { constructor(public r: double) {} }\nclass Square { constructor(public s: double) {} }\n" +
+      "type Shape = Circle | Square;\nfunction area(s: Shape): double {\n if (s instanceof Circle) return 3 * s.r * s.r;\n return s.s * s.s;\n}\n" +
+      "Console.WriteLine(area(new Circle(2)));\nConsole.WriteLine(area(new Square(3)));", "12\n9\n");
+  }
+  @TestMethod
+  GenericFunctionAndClass(): void {
+    NativeCorpusHarness.Check("function first<T>(xs: T[]): T { return xs[0]; }\nclass Box<T> { constructor(public value: T) {} get(): T { return this.value; } }\nConsole.WriteLine(first([5, 6]));\nConsole.WriteLine(new Box<string>(\"hi\").get());", "5\nhi\n");
+  }
+  @TestMethod
+  Collections(): void {
+    NativeCorpusHarness.Check("const list = new List<int>();\nlist.Add(1); list.Add(2);\nconst d = new Dictionary<string, int>();\nd[\"a\"] = 1;\nConsole.WriteLine(list.Count + d[\"a\"]);\nconst m: int[] = [...list, 9];\nConsole.WriteLine(m.Length);", "3\n3\n");
+  }
+  @TestMethod
+  Destructuring(): void {
+    NativeCorpusHarness.Check("const [a, b] = [1, 2];\nconst t: [int, string] = [1, \"x\"];\nconst [n, s] = t;\nConsole.WriteLine(a + b);\nConsole.WriteLine(`${n}${s}`);", "3\n1x\n");
+  }
+  @TestMethod
+  MethodSpecCacheSeparatesClassAndMethodTypeParameters(): void {
+    NativeCorpusHarness.Check("function id<T>(x: T): T { return x; }\nfunction pick<T>(x: T): T { return id(x); }\nclass Box<T> { constructor(public v: T) {} get(): T { return id(this.v); } }\nConsole.WriteLine(pick(5));\nConsole.WriteLine(new Box<string>(\"s\").get());\nConsole.WriteLine(new Box<int>(7).get());", "5\ns\n7\n");
+  }
+  @TestMethod
+  RefReturnOfConstructedGenericIsDereferenced(): void {
+    NativeCorpusHarness.Check("function first(): int { const sp: Span<int> = [1, 2, 3]; return sp[0]; }\nConsole.WriteLine(first());", "1\n");
+  }
+  @TestMethod
+  CompoundStructMemberWritesMutateFieldsAndArrayElements(): void {
+    NativeCorpusHarness.Check(
+      "import { Vector2 } from \"System.Numerics\";\n" +
+      "class P { private ppos: Vector2 = new Vector2(0, 0); arr: Vector2[] = [new Vector2(0, 0)];\n" +
+      " m(): void { this.ppos.X += 1; this.ppos.X++; this.arr[0].X += 1; this.arr[0].Y = 5; this.arr[0].X++; }\n" +
+      " show(): string { return `${this.ppos.X} ${this.arr[0].X} ${this.arr[0].Y}`; } }\n" +
+      "const p = new P(); p.m(); Console.WriteLine(p.show());\nlet local = new Vector2(0, 0);\n" +
+      "local.X = 3; local.Y += 4;\nConsole.WriteLine(`${local.X} ${local.Y}`);", "2 2 5\n3 4\n");
+  }
+  @TestMethod
+  ExtendedBclCollectionRuns(): void {
+    NativeCorpusHarness.Check("class MyList extends List<int> {}\nconst m = new MyList(); m.Add(1); Console.WriteLine(m.Count);", "1\n");
+  }
+  @TestMethod
+  CamelCasePropertyOverrideRuns(): void {
+    NativeCorpusHarness.Check(
+      "import { Stream, SeekOrigin } from \"System.IO\";\nclass S extends Stream {\n" +
+      " override get canRead(): bool { return true; }\n override get canSeek(): bool { return false; }\n override get canWrite(): bool { return false; }\n" +
+      " override get length(): long { return 0; }\n override get position(): long { return 0; }\n override set position(v: long) {}\n" +
+      " override flush(): void {}\n override read(buffer: byte[], offset: int, count: int): int { return 0; }\n" +
+      " override seek(offset: long, origin: SeekOrigin): long { return 0; }\n override setLength(value: long): void {}\n" +
+      " override write(buffer: byte[], offset: int, count: int): void {}\n}\nConsole.WriteLine(new S().CanRead);", "True\n");
+  }
+  @TestMethod
+  TargetTypedNewInfersTypeArgumentsFromInterface(): void {
+    NativeCorpusHarness.Check("const l: IList<int> = new List();\nl.Add(3);\nconst d: IDictionary<string, int> = new Dictionary();\nd[\"a\"] = 1;\nConsole.WriteLine(l.Count + d.Count);", "2\n");
+  }
+  @TestMethod
+  SpreadOfAnonymousRecord(): void {
+    NativeCorpusHarness.Check("const anon = { name: \"n\", age: 3 };\nconst anon2 = { ...anon, age: 4 };\nconst anon3 = { ...anon };\nConsole.WriteLine(anon2.age);\nConsole.WriteLine(anon2.name);\nConsole.WriteLine(anon.age);\nConsole.WriteLine(anon3.Equals(anon));", "4\nn\n3\nTrue\n");
+  }
+  @TestMethod
+  IntegerPlusEnumIsSymmetric(): void {
+    NativeCorpusHarness.Check("enum Color { Red, Green, Blue }\nconst a = 1 + Color.Red;\nconst b = Color.Red + 1;\nConsole.WriteLine(a);\nConsole.WriteLine(b);\nConsole.WriteLine(a == b);", "Green\nGreen\nTrue\n");
+  }
+  @TestMethod
+  ConstructedGenericReferenceOutsPreservePresentNullAndMissingValues(): void {
+    NativeCorpusHarness.Check(
+      "const values = new Dictionary<string, string?>();\nvalues[\"present\"] = \"value\";\nvalues[\"null\"] = null;\n" +
+      "for (const key of [\"present\", \"null\", \"missing\"]) {\n const [found, value] = values.TryGetValue(key);\n Console.WriteLine(found);\n Console.WriteLine(value ?? \"<null>\");\n}\n" +
+      "const arrays = new Dictionary<string, string[]>();\narrays[\"present\"] = [\"first\", \"second\"];\n" +
+      "const [foundArray, array] = arrays.TryGetValue(\"present\");\nConsole.WriteLine(foundArray);\nConsole.WriteLine(array![1]);",
+      "True\nvalue\nTrue\n<null>\nFalse\n<null>\nTrue\nsecond\n");
+  }
+  @TestMethod
+  ConstructedGenericNullableValueOutsKeepValueTypeAddressing(): void {
+    NativeCorpusHarness.Check(
+      "const values = new Dictionary<string, int?>();\nvalues[\"present\"] = 42;\nvalues[\"null\"] = null;\n" +
+      "for (const key of [\"present\", \"null\", \"missing\"]) {\n const [found, value] = values.TryGetValue(key);\n Console.WriteLine(found);\n Console.WriteLine(value ?? -1);\n}",
+      "True\n42\nTrue\n-1\nFalse\n-1\n");
+  }
+  @TestMethod
+  OpenGenericOutsPreserveReferenceAndValueInstantiations(): void {
+    NativeCorpusHarness.Check(
+      "function show<T>(values: Dictionary<string, T>): void {\n const [found, value] = values.TryGetValue(\"present\");\n Console.WriteLine(found);\n Console.WriteLine(value);\n}\n" +
+      "const strings = new Dictionary<string, string>();\nstrings[\"present\"] = \"generic\";\nshow(strings);\n" +
+      "const numbers = new Dictionary<string, int>();\nnumbers[\"present\"] = 17;\nshow(numbers);", "True\ngeneric\nTrue\n17\n");
+  }
+}

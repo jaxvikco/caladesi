@@ -1,0 +1,15 @@
+import { Dictionary, List } from "System.Collections.Generic";
+import { Symbol } from "../Symbols/Symbol";
+import { LocalSymbol, LabelSymbol } from "../Symbols/MemberSymbols";
+
+export enum BinderScopeKind { Method, Block, Loop, Switch, Lambda, Finally }
+
+export sealed class BinderScope {
+  readonly Symbols: Dictionary<string, Symbol> = new Dictionary<string, Symbol>(StringComparer.Ordinal);
+  readonly Locals: List<LocalSymbol> = new List<LocalSymbol>();
+  BreakLabel: LabelSymbol? = null;
+  ContinueLabel: LabelSymbol? = null;
+  LabelName: string? = null;
+  BreakUsed: bool = false;
+  constructor(public readonly Parent: BinderScope?, public readonly Kind: BinderScopeKind) {}
+}

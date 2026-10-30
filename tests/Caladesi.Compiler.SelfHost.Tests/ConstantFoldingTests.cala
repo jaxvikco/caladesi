@@ -1,0 +1,80 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { ConstantFolding } from "Caladesi.Compiler";
+import { UnaryOperatorKind, BinaryOperatorKind } from "Caladesi.Compiler.Bound";
+import { SpecialType } from "Caladesi.Compiler.Symbols";
+
+@TestClass
+export class ConstantFoldingTests {
+  @TestMethod
+  checkedConversionsTruncateAndRejectOverflow(): void {
+    const truncated = ConstantFolding.ConvertNumeric(1.9, SpecialType.Int32);
+    if (!(truncated instanceof int) || (truncated as int) != 1) {
+      throw new Exception("Checked floating conversion must truncate");
+    }
+    if (ConstantFolding.ConvertNumeric(256, SpecialType.Byte) != null ||
+        ConstantFolding.ConvertNumeric(double.NaN, SpecialType.Int32) != null ||
+        ConstantFolding.ConvertNumeric(true, SpecialType.Int32) != null) {
+      throw new Exception("Invalid numeric conversion must not fold");
+    }
+  }
+
+  @TestMethod
+  uncheckedConversionsWrapIntegralValues(): void {
+    const wrapped = ConstantFolding.ConvertNumeric(256, SpecialType.Byte, true);
+    if (!(wrapped instanceof byte) || (wrapped as byte) != 0) {
+      throw new Exception("Unchecked byte conversion");
+    }
+    const negative = ConstantFolding.ConvertNumeric(-1, SpecialType.UInt32, true);
+    if (!(negative instanceof uint) || (negative as uint) != uint.MaxValue) {
+      throw new Exception("Unchecked unsigned conversion");
+    }
+  }
+
+  @TestMethod
+  integerFoldingWrapsAndMasksShifts(): void {
+    const sum = ConstantFolding.FoldBinary(BinaryOperatorKind.Add, int.MaxValue, 1, SpecialType.Int32);
+    if (!(sum instanceof int) || (sum as int) != int.MinValue) {
+      throw new Exception("Integer arithmetic must wrap");
+    }
+    const shifted = ConstantFolding.FoldBinary(BinaryOperatorKind.UnsignedShiftRight, -1, 33, SpecialType.Int32);
+    if (!(shifted instanceof int) || (shifted as int) != int.MaxValue) {
+      throw new Exception("Unsigned shift must mask its count");
+    }
+    if (ConstantFolding.FoldBinary(BinaryOperatorKind.Divide, 1, 0, SpecialType.Int32) != null ||
+        ConstantFolding.FoldBinary(BinaryOperatorKind.Divide, int.MinValue, -1, SpecialType.Int32) != null) {
+      throw new Exception("Invalid division must not fold");
+    }
+  }
+
+  @TestMethod
+  unaryFoldingPreservesNumericTypes(): void {
+    const negative = ConstantFolding.FoldUnary(UnaryOperatorKind.Minus, int.MinValue, SpecialType.Int32);
+    if (!(negative instanceof int) || (negative as int) != int.MinValue) {
+      throw new Exception("Unary integer negation must wrap");
+    }
+    const inverse = ConstantFolding.FoldUnary(UnaryOperatorKind.BitwiseNot, 0UL, SpecialType.UInt64);
+    if (!(inverse instanceof ulong) || (inverse as ulong) != ulong.MaxValue) {
+      throw new Exception("Unsigned bitwise negation type");
+    }
+    const logical = ConstantFolding.FoldUnary(UnaryOperatorKind.Not, true, SpecialType.Boolean);
+    if (!(logical instanceof bool) || (logical as bool)) {
+      throw new Exception("Boolean negation");
+    }
+  }
+
+  @TestMethod
+  floatingStringAndBooleanFolding(): void {
+    const quotient = ConstantFolding.FoldBinary(BinaryOperatorKind.Divide, 1.0, 0.0, SpecialType.Double);
+    if (!(quotient instanceof double) || !double.IsPositiveInfinity(quotient as double)) {
+      throw new Exception("Floating division preserves infinity");
+    }
+    const text = ConstantFolding.FoldBinary(BinaryOperatorKind.Add, "a", "b", SpecialType.String);
+    if (!(text instanceof string) || (text as string) != "ab") {
+      throw new Exception("String concatenation");
+    }
+    const different = ConstantFolding.FoldBinary(BinaryOperatorKind.Xor, true, false, SpecialType.Boolean);
+    if (!(different instanceof bool) || !(different as bool)) {
+      throw new Exception("Boolean exclusive or");
+    }
+  }
+}

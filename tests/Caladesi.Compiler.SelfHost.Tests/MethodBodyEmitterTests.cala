@@ -1,0 +1,122 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { BlobBuilder, ILOpCode } from "System.Reflection.Metadata";
+import { MethodBodyStreamEncoder } from "System.Reflection.Metadata.Ecma335";
+import { ReferenceSet } from "Caladesi.Compiler.Symbols.Metadata";
+import { MethodBodyEmitter, MetadataEmitter, ILBuilder } from "Caladesi.Compiler.Emit";
+import { SynthesizedNamedType, SynthesizedMethodSymbol } from "Caladesi.Compiler.Symbols.Source";
+import { TypeSymbol, NamedTypeSymbol, SpecialType, TypeKind, Accessibility, MethodKind, ParameterSymbol, LocalSymbol,
+  ConstantValue, NullableTypeSymbol } from "Caladesi.Compiler.Symbols";
+import { BoundBlock, BoundStatement, BoundExpression, BoundParameter, BoundReturn, BoundLiteral, BoundBinary, BinaryOperatorKind,
+  BoundConversion, ConversionKind, BoundTry, BoundCatch, BoundNoOp, BoundArrayCreation, BoundConditionalReceiver,
+  BoundConditionalAccess } from "Caladesi.Compiler.Bound";
+import { ArrayTypeSymbol } from "Caladesi.Compiler.Symbols";
+import { SourceText } from "Caladesi.Compiler.Text";
+
+class MethodEmitterFixture {
+  readonly References: ReferenceSet = ReferenceSet.Create([typeof(object).Assembly.Location]);
+  readonly Metadata: MetadataEmitter;
+  readonly Method: SynthesizedMethodSymbol;
+  readonly Parameter: ParameterSymbol;
+  readonly IL: ILBuilder = new ILBuilder();
+  readonly Emitter: MethodBodyEmitter;
+
+  constructor() {
+    this.Metadata = new MetadataEmitter(special => this.Special(special), name => this.References.FindType(name));
+    const owner = new SynthesizedNamedType("Owner", this.Special(SpecialType.Object), TypeKind.Class);
+    this.Method = new SynthesizedMethodSymbol(owner, "M", MethodKind.Ordinary, Accessibility.Public,
+      true, this.Special(SpecialType.Int32), ImmutableArray<ParameterSymbol>.Empty);
+    this.Parameter = new ParameterSymbol("value", this.Special(SpecialType.Int32), 0, this.Method);
+    this.Method.SetParameters(ImmutableArray.Create<ParameterSymbol>(this.Parameter));
+    this.Emitter = new MethodBodyEmitter(this.Metadata, this.Method, this.IL,
+      special => this.Special(special), name => this.References.FindType(name), (null as (SourceText | null))!);
+  }
+  Special(special: SpecialType): NamedTypeSymbol { return this.References.GetSpecialType(special)!; }
+  Integer(value: int): BoundLiteral { return new BoundLiteral(new ConstantValue(value), this.Special(SpecialType.Int32)); }
+  Block(statement: BoundStatement): BoundBlock {
+    return new BoundBlock(ImmutableArray<LocalSymbol>.Empty, ImmutableArray.Create<BoundStatement>(statement));
+  }
+  CheckBytes(expected: byte[]): void {
+    const actual = this.IL.Code.ToArray();
+    if (expected.Length != actual.Length) throw new Exception("IL byte count");
+    for (let i = 0; i < expected.Length; i++)
+      if (expected[i] != actual[i]) throw new Exception("IL byte mismatch at " + i);
+  }
+}
+
+@TestClass
+export class MethodBodyEmitterTests {
+  @TestMethod
+  arithmeticBodyUsesArgumentAndEndsWithValidFallthrough(): void {
+    const fixture = new MethodEmitterFixture();
+    const expression = new BoundBinary(BinaryOperatorKind.Add, new BoundParameter(fixture.Parameter), fixture.Integer(7),
+      fixture.Special(SpecialType.Int32), fixture.Special(SpecialType.Int32));
+    fixture.Emitter.EmitBody(fixture.Block(new BoundReturn(expression)));
+    fixture.CheckBytes([0x02, 0x1d, 0x58, 0x2a, 0x16, 0x2a]);
+    if (fixture.IL.MaxStack != 6 || fixture.IL.CurrentDepth != 0 || fixture.IL.Locals.Count != 0)
+      throw new Exception("Arithmetic stack and local accounting");
+  }
+
+  @TestMethod
+  unsignedConstantsAndNumericConversionsRemainUnchecked(): void {
+    const fixture = new MethodEmitterFixture();
+    const maximum = new BoundLiteral(new ConstantValue(UInt32.MaxValue), fixture.Special(SpecialType.UInt32));
+    fixture.Emitter.EmitExpression(maximum, true);
+    fixture.Emitter.EmitExpression(new BoundConversion(maximum, ConversionKind.ImplicitNumeric,
+      fixture.Special(SpecialType.Double)), true);
+    fixture.Emitter.EmitExpression(maximum, false);
+    const expected = new ILBuilder();
+    expected.LdcI4(-1); expected.LdcI4(-1); expected.Op(ILOpCode.Conv_r_un, 0); expected.Op(ILOpCode.Conv_r8, 0);
+    fixture.CheckBytes(expected.Code.ToArray());
+    if (fixture.IL.CurrentDepth != 2) throw new Exception("Unused constants must not push");
+  }
+
+  @TestMethod
+  protectedReturnSpillsBeforeLeaveAndEmitsFinallyRegion(): void {
+    const fixture = new MethodEmitterFixture();
+    const region = new BoundTry(fixture.Block(new BoundReturn(new BoundParameter(fixture.Parameter))),
+      ImmutableArray<BoundCatch>.Empty, fixture.Block(new BoundNoOp()));
+    fixture.Emitter.EmitBody(fixture.Block(region));
+    if (fixture.IL.Locals.Count != 1 || fixture.IL.Locals[0].Name != null ||
+        fixture.IL.Locals[0].Type.SpecialType != SpecialType.Int32 || fixture.IL.CurrentDepth != 0)
+      throw new Exception("Protected return slot");
+    const image = new BlobBuilder();
+    const stream = new MethodBodyStreamEncoder(image);
+    stream.AddMethodBody(fixture.IL.Encoder, fixture.IL.MaxStack);
+    const bytes = image.ToArray();
+    if (bytes.Length <= fixture.IL.Code.Count + 12) throw new Exception("Missing exception region table");
+    let leaves = 0;
+    let finallyEnds = 0;
+    for (const instruction of fixture.IL.Code.ToArray()) {
+      if (instruction == (ILOpCode.Leave as byte)) leaves++;
+      if (instruction == (ILOpCode.Endfinally as byte)) finallyEnds++;
+    }
+    if (leaves != 3 || finallyEnds != 1) throw new Exception("Protected control flow");
+  }
+
+  @TestMethod
+  unusedArrayStillEvaluatesAndNullableConditionalAccessUsesRealMembers(): void {
+    const fixture = new MethodEmitterFixture();
+    const integer = fixture.Special(SpecialType.Int32);
+    const values = ImmutableArray.CreateBuilder<BoundExpression>();
+    values.Add(fixture.Integer(4)); values.Add(fixture.Integer(5));
+    fixture.Emitter.EmitExpression(new BoundArrayCreation(new ArrayTypeSymbol(integer, (null as (NamedTypeSymbol | null))!, 1),
+      (null as (BoundExpression | null))!, values.ToImmutable()), false);
+    const expected = new ILBuilder();
+    expected.LdcI4(2); expected.Token(ILOpCode.Newarr, fixture.Metadata.GetTypeEntity(integer), 0);
+    expected.Op(ILOpCode.Dup, 1); expected.LdcI4(0); expected.LdcI4(4); expected.Op(ILOpCode.Stelem_i4, -3);
+    expected.Op(ILOpCode.Dup, 1); expected.LdcI4(1); expected.LdcI4(5); expected.Op(ILOpCode.Stelem_i4, -3);
+    expected.Op(ILOpCode.Pop, -1);
+    fixture.CheckBytes(expected.Code.ToArray());
+    const nullable = new NullableTypeSymbol(integer);
+    const placeholder = new BoundConditionalReceiver(integer);
+    const receiver = new BoundConversion(fixture.Integer(3), ConversionKind.ToNullable, nullable);
+    fixture.Emitter.EmitExpression(new BoundConditionalAccess(receiver, placeholder, placeholder, nullable), false);
+    if (fixture.IL.CurrentDepth != 0 || fixture.IL.Locals.Count != 2 ||
+        fixture.IL.Locals[0].Type.Name != "Nullable") throw new Exception("Nullable receiver storage and result discard");
+    const image = new BlobBuilder();
+    const stream = new MethodBodyStreamEncoder(image);
+    stream.AddMethodBody(fixture.IL.Encoder, fixture.IL.MaxStack);
+    if (image.Count == 0) throw new Exception("Conditional branches must serialize");
+  }
+}

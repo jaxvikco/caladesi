@@ -112,7 +112,11 @@ public sealed partial class Binder
             _ when e.ConstantValue != null => true,
             BoundTypeOf => true,
             BoundArrayCreation ac => ac.Initializers.All(IsAttributeConstant),
-            BoundConversion { Kind: ConversionKind.Boxing or ConversionKind.ImplicitReference or ConversionKind.Identity } c => IsAttributeConstant(c.Operand),
+            BoundConversion
+            {
+                Kind: ConversionKind.Boxing or ConversionKind.ImplicitReference or ConversionKind.Identity or
+                ConversionKind.ToNullable or ConversionKind.TypeOnly
+            } c => IsAttributeConstant(c.Operand),
             BoundLiteral => true,
             _ => false,
         };

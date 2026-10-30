@@ -1,0 +1,195 @@
+import { Dictionary, List, IReadOnlyList } from "System.Collections.Generic";
+import { SyntaxTree } from "../Syntax/SyntaxTree";
+import { SyntaxNode } from "../Syntax/SyntaxElement";
+import { SyntaxToken } from "../Syntax/SyntaxToken";
+import { SyntaxKind } from "../Syntax/SyntaxKind";
+import { SyntaxFacts } from "../Syntax/SyntaxFacts";
+import { SimpleNameSyntax, QualifiedNameSyntax, ImportSpecifierSyntax, ExpressionSyntax, StatementSyntax } from "../Syntax/Nodes.Core";
+import { Symbol } from "../Symbols/Symbol";
+import { NamespaceSymbol } from "../Symbols/NamespaceSymbol";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { TypeSymbol, TypeKind, TypeParameterSymbol } from "../Symbols/TypeSymbols";
+import { MethodSymbol, MethodKind, FieldSymbol, PropertySymbol, ParameterSymbol, LocalSymbol } from "../Symbols/MemberSymbols";
+import { SourceFieldSymbol, SourcePropertySymbol } from "../Symbols/Source/SourceMembers";
+import { SourceModuleClassSymbol } from "../Symbols/Source/SourceModuleClass";
+import { TypeAliasSymbol } from "../Symbols/Source/SourceTypes";
+import { FileModuleSymbol } from "../FileScope";
+import { SemanticCompilationContext, SemanticDeclaration } from "./SemanticCompilationContext";
+import { SymbolAt, SymbolReference } from "./SymbolReferences";
+import { SemanticTokenInfo, SemanticTokenType, SemanticTokenModifiers, CompletionEntry, SignatureHelpInfo, DocumentSymbolInfo } from "./SemanticModelTypes";
+import { SymbolDisplay } from "./SymbolDisplay";
+import { SemanticCompletion } from "./Completion";
+import { DocumentOutline } from "./DocumentSymbols";
+
+export sealed class SemanticModel<TFile> {
+  readonly Declarations: IReadOnlyList<SemanticDeclaration>;
+  private readonly declared = new Dictionary<[Tree: SyntaxTree, Position: int], Symbol>();
+  constructor(public readonly Compilation: SemanticCompilationContext<TFile>, public readonly Tree: SyntaxTree) {
+    ArgumentNullException.ThrowIfNull(Compilation);
+    if (!Compilation.RecordSemanticInfo)
+      throw new ArgumentException("The compilation must be created with RecordSemanticInfo to build a semantic model.", "compilation");
+    Compilation.BindForSemanticModel();
+    this.Declarations = Compilation.GetDeclarationIndex();
+    for (const declaration of this.Declarations) {
+      const key: [Tree: SyntaxTree, Position: int] = [declaration.Tree, declaration.Position];
+      this.declared[key] = declaration.Symbol;
+    }
+  }
+  static NameToken(node: SyntaxNode): SyntaxToken? {
+    if (node instanceof SimpleNameSyntax) return (node as SimpleNameSyntax).Identifier;
+    if (node instanceof QualifiedNameSyntax) return (node as QualifiedNameSyntax).Right.Identifier;
+    if (node instanceof ImportSpecifierSyntax) return (node as ImportSpecifierSyntax).NameToken;
+    return null;
+  }
+  private TokenAt(position: int): SyntaxToken? {
+    const root = this.Tree.Root;
+    const token = root.FindToken(position);
+    if (token != null && (token.Kind == SyntaxKind.IdentifierToken || SyntaxFacts.IsContextualKeyword(token.Kind)) &&
+      position >= token.Start && position <= token.End) return token;
+    if (position > 0) {
+      const previous = root.FindToken(position - 1);
+      if (previous != null && previous.End == position &&
+        (previous.Kind == SyntaxKind.IdentifierToken || SyntaxFacts.IsContextualKeyword(previous.Kind))) return previous;
+    }
+    return null;
+  }
+  GetSymbolAt(position: int): SymbolAt? {
+    const token = this.TokenAt(position);
+    if (token == null || token.IsMissing) return null;
+    const key: [Tree: SyntaxTree, Position: int] = [this.Tree, token.Start];
+    if (this.declared.ContainsKey(key)) return new SymbolAt(this.declared[key], token.Span, true);
+    const recorded = this.Compilation.RecordedSymbols;
+    if (recorded == null) return null;
+    for (let node = token.Parent; node != null; node = node.Parent) {
+      const name = SemanticModel<TFile>.NameToken(node);
+      if (recorded.ContainsKey(node) && name != null && name.Start == token.Start)
+        return new SymbolAt(recorded[node], token.Span, false);
+      if (!(node instanceof SimpleNameSyntax) && !(node instanceof QualifiedNameSyntax)) break;
+    }
+    return null;
+  }
+  GetExpressionTypeAt(position: int): TypeSymbol? {
+    const token = this.TokenAt(position);
+    const recorded = this.Compilation.RecordedTypes;
+    if (token == null || recorded == null) return null;
+    for (let node = token.Parent; node != null; node = node.Parent) {
+      if (node instanceof ExpressionSyntax && recorded.ContainsKey(node)) return recorded[node];
+      if (node instanceof StatementSyntax) break;
+    }
+    return null;
+  }
+  GetHover(position: int): string? {
+    const at = this.GetSymbolAt(position);
+    if (at != null) return SymbolDisplay<TFile>.Describe(at.Symbol);
+    const type = this.GetExpressionTypeAt(position);
+    return type == null || type.IsErrorType ? null : type.ToDisplayString();
+  }
+  static Canonical(symbol: Symbol): Symbol {
+    const original = Symbol.OriginalDefinitionOf(symbol);
+    if (original instanceof MethodSymbol) {
+      const method = original as MethodSymbol;
+      const associated = method.AssociatedSymbol;
+      if ((method.MethodKind == MethodKind.PropertyGet || method.MethodKind == MethodKind.PropertySet) && associated != null)
+        return Symbol.OriginalDefinitionOf(associated);
+    }
+    if (original instanceof SourceFieldSymbol<TFile> && (original as SourceFieldSymbol<TFile>).IsBackingField) {
+      const owner = original.ContainingType;
+      if (owner != null) {
+        for (const member of owner.GetMembers())
+          if (member instanceof SourcePropertySymbol<TFile> &&
+            Object.ReferenceEquals((member as SourcePropertySymbol<TFile>).BackingField, original)) return member;
+      }
+    }
+    return original;
+  }
+  static Same(left: Symbol, right: Symbol): bool {
+    const a = SemanticModel<TFile>.Canonical(left);
+    const b = SemanticModel<TFile>.Canonical(right);
+    return Object.ReferenceEquals(a, b) || a.Equals(b);
+  }
+  GetDefinition(symbol: Symbol): SymbolReference? {
+    ArgumentNullException.ThrowIfNull(symbol);
+    for (const declaration of this.Declarations) {
+      if (!SemanticModel<TFile>.Same(declaration.Symbol, Symbol.OriginalDefinitionOf(symbol))) continue;
+      const token = declaration.Tree.Root.FindToken(declaration.Position);
+      if (token != null) return { Tree: declaration.Tree, Span: token.Span, IsDeclaration: true };
+    }
+    return null;
+  }
+  FindReferences(symbol: Symbol, includeDeclaration: bool = true): IReadOnlyList<SymbolReference> {
+    ArgumentNullException.ThrowIfNull(symbol);
+    const result = new List<SymbolReference>();
+    const target = SemanticModel<TFile>.Canonical(symbol);
+    if (includeDeclaration) {
+      for (const declaration of this.Declarations) {
+        if (!SemanticModel<TFile>.Same(declaration.Symbol, target)) continue;
+        const token = declaration.Tree.Root.FindToken(declaration.Position);
+        if (token != null) result.Add({ Tree: declaration.Tree, Span: token.Span, IsDeclaration: true });
+      }
+    }
+    const recorded = this.Compilation.RecordedSymbols;
+    if (recorded != null) {
+      for (const pair of recorded) {
+        const name = SemanticModel<TFile>.NameToken(pair.Key);
+        const tree = pair.Key.SyntaxTree;
+        if (name == null || name.IsMissing || tree == null || !SemanticModel<TFile>.Same(pair.Value, target)) continue;
+        let duplicate = false;
+        for (const item of result)
+          if (item.Tree == tree && item.Span.Equals(name.Span)) { duplicate = true; break; }
+        if (!duplicate) result.Add({ Tree: tree, Span: name.Span, IsDeclaration: false });
+      }
+    }
+    result.Sort((a, b) => a.Tree == b.Tree ? a.Span.Start.CompareTo(b.Span.Start) : string.CompareOrdinal(a.Tree.FilePath, b.Tree.FilePath));
+    return result;
+  }
+  GetSemanticTokens(): IReadOnlyList<SemanticTokenInfo> {
+    const result = new List<SemanticTokenInfo>();
+    for (const token of this.Tree.Root.DescendantTokens()) {
+      if (token.IsMissing || token.Kind != SyntaxKind.IdentifierToken) continue;
+      const at = this.GetSymbolAt(token.Start);
+      if (at == null) continue;
+      const symbol = at.Symbol;
+      const type = SemanticModel<TFile>.ClassifySymbol(symbol);
+      if (type == null) continue;
+      let modifiers: SemanticTokenModifiers = at.IsDeclaration ? SemanticTokenModifiers.Declaration : SemanticTokenModifiers.None;
+      if ((symbol instanceof LocalSymbol && (symbol as LocalSymbol).IsConst) ||
+        (symbol instanceof FieldSymbol && ((symbol as FieldSymbol).IsConst || (symbol as FieldSymbol).IsReadOnly)) ||
+        (symbol instanceof SourceFieldSymbol<TFile> && (symbol as SourceFieldSymbol<TFile>).IsConstDeclaration))
+        modifiers |= SemanticTokenModifiers.Readonly;
+      if (symbol.IsStatic) modifiers |= SemanticTokenModifiers.Static;
+      result.Add(new SemanticTokenInfo(token.Span, type, modifiers));
+    }
+    return result;
+  }
+  private static ClassifySymbol(symbol: Symbol): SemanticTokenType? {
+    const original = Symbol.OriginalDefinitionOf(symbol);
+    if (original instanceof NamespaceSymbol || original instanceof FileModuleSymbol<TFile>) return SemanticTokenType.Namespace;
+    if (original instanceof NamedTypeSymbol) {
+      const kind = (original as NamedTypeSymbol).TypeKind;
+      if (kind == TypeKind.Interface) return SemanticTokenType.Interface;
+      if (kind == TypeKind.Enum) return SemanticTokenType.Enum;
+      if (kind == TypeKind.Struct) return SemanticTokenType.Struct;
+      return SemanticTokenType.Class;
+    }
+    if (original instanceof TypeAliasSymbol<TFile>) return SemanticTokenType.Type;
+    if (original instanceof TypeParameterSymbol) return SemanticTokenType.TypeParameter;
+    if (original instanceof ParameterSymbol) return SemanticTokenType.Parameter;
+    if (original instanceof LocalSymbol) return SemanticTokenType.Variable;
+    if (original instanceof FieldSymbol) {
+      const field = original as FieldSymbol;
+      return field.IsConst && field.ContainingType != null && field.ContainingType.TypeKind == TypeKind.Enum ?
+        SemanticTokenType.EnumMember : SemanticTokenType.Variable;
+    }
+    if (original instanceof PropertySymbol) return SemanticTokenType.Property;
+    if (original instanceof MethodSymbol) {
+      const method = original as MethodSymbol;
+      if (method.MethodKind == MethodKind.Constructor) return SemanticTokenType.Class;
+      return method.ContainingSymbol instanceof SourceModuleClassSymbol<TFile> || method.ContainingType == null ?
+        SemanticTokenType.Function : SemanticTokenType.Method;
+    }
+    return null;
+  }
+  GetCompletions(position: int): IReadOnlyList<CompletionEntry> { return new SemanticCompletion<TFile>(this).GetCompletions(position); }
+  GetSignatureHelp(position: int): SignatureHelpInfo? { return new SemanticCompletion<TFile>(this).GetSignatureHelp(position); }
+  GetDocumentSymbols(): IReadOnlyList<DocumentSymbolInfo> { return DocumentOutline.Compute(this.Tree); }
+}

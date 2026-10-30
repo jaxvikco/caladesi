@@ -1,0 +1,95 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { Diagnostic, DiagnosticDescriptor, DiagnosticSeverity, DiagnosticBag, Descriptors, FixIt } from "Caladesi.Compiler.Diagnostics";
+import { SourceText, TextSpan } from "Caladesi.Compiler.Text";
+import { BindingFlags } from "System.Reflection";
+
+@TestClass
+export class DiagnosticTests {
+  @TestMethod
+  catalogHas181UniqueDescriptors(): void {
+    const properties = typeof(Descriptors).GetProperties(BindingFlags.Public | BindingFlags.Static);
+    if (properties.Length != 181) throw new Exception("Descriptor catalog count");
+    for (let i = 0; i < properties.Length; i++) {
+      const descriptor = properties[i].GetValue(null) as DiagnosticDescriptor;
+      if (!descriptor.Id.StartsWith("CAL") || descriptor.Id.Length != 7 || descriptor.MessageFormat.Length == 0) throw new Exception("Descriptor contents");
+      for (let j = 0; j < i; j++) {
+        const previous = properties[j].GetValue(null) as DiagnosticDescriptor;
+        if (previous.Id == descriptor.Id) throw new Exception("Duplicate diagnostic ID");
+      }
+    }
+  }
+
+  @TestMethod
+  diagnosticCatalogKnownEntries(): void {
+    if (Descriptors.UnexpectedCharacter.Id != "CAL0001" || Descriptors.UnterminatedString.MessageFormat != "Unterminated string literal." || Descriptors.NestingTooDeep.Id != "CAL0330") throw new Exception("Known catalog entries");
+  }
+
+  @TestMethod
+  diagnosticArguments(): void {
+    const diagnostic = Diagnostic.Create(Descriptors.UnexpectedCharacter, "x.cala", new TextSpan(2, 1), "#");
+    if (diagnostic.Message != "Unexpected character '#'." || diagnostic.EffectiveSeverity != DiagnosticSeverity.Error) throw new Exception("Arguments/default severity");
+  }
+
+  @TestMethod
+  diagnosticFormatWithoutText(): void {
+    const diagnostic = Diagnostic.Create(Descriptors.UnterminatedString, "x.cala", new TextSpan(3, 1));
+    if (diagnostic.Format() != "x.cala: error CAL0002: Unterminated string literal.") throw new Exception("Diagnostic format");
+  }
+
+  @TestMethod
+  diagnosticFormatWithText(): void {
+    const diagnostic = Diagnostic.Create(Descriptors.UnterminatedString, "x.cala", new TextSpan(4, 1));
+    if (diagnostic.Format(SourceText.From("a\r\nbc")) != "x.cala(2,2): error CAL0002: Unterminated string literal.") throw new Exception("Diagnostic location");
+  }
+
+  @TestMethod
+  emptyPathFormatting(): void {
+    const diagnostic = Diagnostic.Create(Descriptors.UnterminatedString, "", new TextSpan(0, 0));
+    if (!diagnostic.Format().StartsWith(": error")) throw new Exception("Empty path");
+  }
+
+  @TestMethod
+  diagnosticCopiesPreserveOriginal(): void {
+    const original = Diagnostic.Create(Descriptors.UnterminatedString, "a.cala", new TextSpan(2, 3));
+    const copy = original.WithSeverity(DiagnosticSeverity.Warning).WithFilePath("b.cala");
+    if (original.FilePath != "a.cala" || original.EffectiveSeverity != DiagnosticSeverity.Error || copy.FilePath != "b.cala" || copy.EffectiveSeverity != DiagnosticSeverity.Warning || copy.Span.Start != 2 || copy.Message != original.Message) throw new Exception("Immutable diagnostic copies");
+  }
+
+  @TestMethod
+  fixItCopies(): void {
+    const fix = new FixIt("Replace", new TextSpan(1, 2), "new");
+    const diagnostic = new Diagnostic(Descriptors.UnterminatedString, "a.cala", new TextSpan(1, 2), [], fix, DiagnosticSeverity.Error);
+    if (diagnostic.WithFilePath("b.cala").FixIt != fix || diagnostic.WithSeverity(DiagnosticSeverity.Info).FixIt != fix || !fix.Equals(new FixIt("Replace", new TextSpan(1, 2), "new")) || fix.Equals(new FixIt("Other", new TextSpan(1, 2), "new"))) throw new Exception("FixIt preservation/equality");
+  }
+
+  @TestMethod
+  bagTracksEffectiveSeverity(): void {
+    const bag = new DiagnosticBag();
+    const diagnostic = Diagnostic.Create(Descriptors.UnterminatedString, "", new TextSpan(0, 0));
+    bag.Add(diagnostic.WithSeverity(DiagnosticSeverity.Warning));
+    if (bag.HasErrors || bag.Count != 1) throw new Exception("Warning bag");
+    bag.Add(diagnostic);
+    if (!bag.HasErrors || bag.Count != 2) throw new Exception("Error bag");
+    bag.TruncateTo(1);
+    if (bag.HasErrors || bag.Count != 1) throw new Exception("Truncated bag");
+  }
+
+  @TestMethod
+  bagSnapshotsAndAddRange(): void {
+    const bag = new DiagnosticBag();
+    bag.Add(Diagnostic.Create(Descriptors.UnterminatedString, "", new TextSpan(0, 0)));
+    const snapshot = bag.ToImmutable();
+    bag.TruncateTo(0);
+    if (snapshot.Length != 1 || bag.Count != 0 || bag.HasErrors) throw new Exception("Bag snapshot");
+    bag.AddRange(snapshot);
+    bag.TruncateTo(100);
+    if (bag.Count != 1 || !bag.HasErrors) throw new Exception("Bag add range");
+  }
+
+  @TestMethod
+  invariantNumberArguments(): void {
+    const descriptor = new DiagnosticDescriptor("CAL9999", DiagnosticSeverity.Info, "Value {0:N2}.");
+    const diagnostic = Diagnostic.Create(descriptor, "", new TextSpan(0, 0), 1234.5);
+    if (diagnostic.Message != "Value 1,234.50." || !diagnostic.Format().Contains(": info CAL9999:")) throw new Exception("Invariant numeric formatting");
+  }
+}

@@ -1,0 +1,149 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { BigInteger } from "System.Numerics";
+import { Symbol, Accessibility } from "../Symbol";
+import { NamedTypeSymbol } from "../NamedTypeSymbol";
+import { TypeSymbol, TypeKind, ArrayTypeSymbol, ErrorTypeSymbol } from "../TypeSymbols";
+import { MethodSymbol, MethodKind, ParameterSymbol, ConstantValue } from "../MemberSymbols";
+import { SpecialType } from "../SpecialType";
+import { SyntaxNode } from "../../Syntax/SyntaxElement";
+import { FunctionDeclarationSyntax, VariableStatementSyntax, VariableDeclaratorSyntax, ImportDeclarationSyntax,
+  TypeAliasDeclarationSyntax, ClassDeclarationSyntax, InterfaceDeclarationSyntax, EnumDeclarationSyntax,
+  EmptyStatementSyntax, AwaitExpressionSyntax, ArrowFunctionSyntax, FunctionExpressionSyntax, ForOfStatementSyntax,
+  VariableDeclarationListSyntax } from "../../Syntax/Nodes.Core";
+import { Diagnostic } from "../../Diagnostics/Diagnostic";
+import { Descriptors } from "../../Diagnostics/Descriptors";
+import { BoundBlock } from "../../Bound/BoundNodes";
+import { SourceTypeContext } from "./SourceTypeContext";
+import { SourceNamedType, MemberFactory } from "./SourceTypes";
+import { SourceMethodSymbol, SourceFieldSymbol } from "./SourceMembers";
+import { ModifierSet, ModifierSets } from "./Modifiers";
+import { SynthesizedBodyKind } from "./SynthesizedBodyKind";
+
+export sealed class SourceModuleClassSymbol<TFile> extends SourceNamedType<TFile> {
+  private entry: SourceMethodSymbol<TFile>? = null;
+  private userMain: SourceMethodSymbol<TFile>? = null;
+  VariableInitializers: ImmutableArray<[Field: SourceFieldSymbol<TFile>, Declarator: VariableDeclaratorSyntax]> =
+    ImmutableArray<[Field: SourceFieldSymbol<TFile>, Declarator: VariableDeclaratorSyntax]>.Empty;
+  constructor(context: SourceTypeContext<TFile>, file: TFile, className: string) {
+    super(context, file, null, className, context.GetNamespace(file), Accessibility.Public);
+  }
+  override get TypeKind(): TypeKind { return TypeKind.Class; }
+  override get IsAbstract(): bool { return true; }
+  override get IsSealed(): bool { return true; }
+  override get IsStatic(): bool { return true; }
+  override get IsStaticClass(): bool { return true; }
+  override get BaseType(): NamedTypeSymbol? { return this.Context.GetSpecialType(SpecialType.Object); }
+  get TopLevelEntry(): SourceMethodSymbol<TFile>? { this.GetMembers(); return this.entry; }
+  get UserMain(): SourceMethodSymbol<TFile>? { this.GetMembers(); return this.userMain; }
+  get HasExtensionMethods(): bool {
+    for (const member of this.GetMembers())
+      if (member instanceof MethodSymbol && (member as MethodSymbol).IsExtensionMethod) return true;
+    return false;
+  }
+  protected override BuildMembers(): ImmutableArray<Symbol> {
+    const builder = ImmutableArray.CreateBuilder<Symbol>();
+    const variables = ImmutableArray.CreateBuilder<[Field: SourceFieldSymbol<TFile>, Declarator: VariableDeclaratorSyntax]>();
+    let hasStatements = false;
+    let hasInitializers = false;
+    for (const statement of this.Context.GetTree(this.File).Root.Statements) {
+      if (statement instanceof FunctionDeclarationSyntax && !(statement as FunctionDeclarationSyntax).Identifier.IsMissing) {
+        const syntax = statement as FunctionDeclarationSyntax;
+        const mods = ModifierSets.Create(syntax.Modifiers);
+        const method = new SourceMethodSymbol<TFile>(this.Context, this.File, this, syntax.Identifier.Text, MethodKind.Ordinary,
+          mods, syntax, mods.IsExport ? Accessibility.Public : Accessibility.Internal);
+        method.IsStaticFlag = true;
+        method.ParameterList = syntax.Parameters;
+        method.TypeParameterList = syntax.TypeParameters;
+        method.ReturnAnnotation = syntax.ReturnType;
+        method.BodySyntax = syntax.Body;
+        method.IsGeneratorSyntax = syntax.AsteriskToken != null;
+        builder.Add(method);
+        if (syntax.Identifier.Text == "main" && this.Context.IsConsoleApplication && this.userMain == null) this.userMain = method;
+      } else if (statement instanceof VariableStatementSyntax) {
+        const syntax = statement as VariableStatementSyntax;
+        const mods = ModifierSets.Create(syntax.Modifiers);
+        const declaration = syntax.Declaration;
+        if (declaration.IsUsing) { hasStatements = true; continue; }
+        for (const declarator of declaration.Declarators) {
+          const identifier = declarator.Identifier;
+          if (identifier == null || identifier.IsMissing) { hasStatements = true; continue; }
+          const binding = new SourceModuleVariableBinding<TFile>(this, declarator);
+          const field = new SourceFieldSymbol<TFile>(this.Context, this.File, this, identifier.Text,
+            mods.IsExport ? Accessibility.Public : Accessibility.Internal, true, false, false, declarator, null, binding.BindType);
+          field.IsModuleVariable = true;
+          field.Declarator = declarator;
+          field.IsConstDeclaration = declaration.IsConst;
+          if (declaration.IsConst) field.ConstantFactory = binding.EvaluateConstant;
+          field.InitializerSyntax = declarator.Initializer == null ? null : declarator.Initializer.Value;
+          builder.Add(field);
+          variables.Add([field, declarator]);
+          if (declarator.Initializer != null) hasInitializers = true;
+        }
+      } else if (!(statement instanceof ImportDeclarationSyntax) && !(statement instanceof TypeAliasDeclarationSyntax) &&
+        !(statement instanceof ClassDeclarationSyntax) && !(statement instanceof InterfaceDeclarationSyntax) &&
+        !(statement instanceof EnumDeclarationSyntax) && !(statement instanceof EmptyStatementSyntax)) hasStatements = true;
+    }
+    this.VariableInitializers = variables.ToImmutable();
+    if (hasStatements || this.Context.HasTopLevelStatements(this.File)) {
+      const isAsync = TopLevelAwaitScanner.Contains(this.Context.GetTree(this.File).Root);
+      this.entry = MemberFactory<TFile>.Method(this, "<Main>$", MethodKind.Ordinary, SynthesizedBodyKind.Custom,
+        ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("args",
+          new ArrayTypeSymbol(this.Context.GetSpecialType(SpecialType.String), this.Context.GetSpecialType(SpecialType.Array)), 0, null)),
+        this.Context.GetSpecialType(isAsync ? SpecialType.Task : SpecialType.Void), Accessibility.Private, true);
+      this.entry.ForceAsync = isAsync;
+      const binding = new SourceTopLevelBodyBinding<TFile>(this);
+      this.entry!.SyntheticBodyFactory = binding.Bind;
+      builder.Add(this.entry!);
+    } else if (variables.Count > 0 && hasInitializers) {
+      builder.Add(MemberFactory<TFile>.Method(this, ".cctor", MethodKind.StaticConstructor, SynthesizedBodyKind.StaticConstructor,
+        ImmutableArray<ParameterSymbol>.Empty, null, Accessibility.Private, true));
+    }
+    return builder.ToImmutable();
+  }
+}
+
+export sealed class TopLevelAwaitScanner {
+  static Contains(node: SyntaxNode): bool {
+    for (const child of node.ChildNodes()) {
+      if (child instanceof AwaitExpressionSyntax) return true;
+      if (child instanceof FunctionDeclarationSyntax || child instanceof ClassDeclarationSyntax ||
+        child instanceof InterfaceDeclarationSyntax || child instanceof ArrowFunctionSyntax || child instanceof FunctionExpressionSyntax) continue;
+      if (child instanceof ForOfStatementSyntax && (child as ForOfStatementSyntax).AwaitKeyword != null) return true;
+      if (child instanceof VariableDeclarationListSyntax && (child as VariableDeclarationListSyntax).AwaitKeyword != null) return true;
+      if (TopLevelAwaitScanner.Contains(child)) return true;
+    }
+    return false;
+  }
+}
+
+export sealed class SourceModuleVariables<TFile> {
+  static BindType(container: SourceNamedType<TFile>, field: SourceFieldSymbol<TFile>, declarator: VariableDeclaratorSyntax): TypeSymbol {
+    if (declarator.TypeAnnotation != null)
+      return container.Context.BindType(container.File, container, declarator.TypeAnnotation.Type, false);
+    if (declarator.Initializer != null)
+      return container.Context.InferVariableType(container.File, container, declarator.Initializer.Value, true);
+    container.Context.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.TypeAnnotationRequired,
+      container.Context.GetFilePath(container.File), declarator.Span));
+    return ErrorTypeSymbol.Instance;
+  }
+  static EvaluateConstant(container: SourceNamedType<TFile>, field: SourceFieldSymbol<TFile>,
+    declarator: VariableDeclaratorSyntax): ConstantValue? {
+    if (declarator.Initializer == null) return null;
+    const value = container.Context.TryEvaluateConstant(container.File, container, declarator.Initializer.Value, field.Type);
+    if (value != null && (value.Value instanceof decimal || value.Value instanceof BigInteger)) return null;
+    return value;
+  }
+}
+sealed class SourceModuleVariableBinding<TFile> {
+  constructor(private readonly container: SourceNamedType<TFile>, private readonly declarator: VariableDeclaratorSyntax) {}
+  BindType(field: SourceFieldSymbol<TFile>): TypeSymbol { return SourceModuleVariables<TFile>.BindType(this.container, field, this.declarator); }
+  EvaluateConstant(field: SourceFieldSymbol<TFile>): ConstantValue? {
+    return SourceModuleVariables<TFile>.EvaluateConstant(this.container, field, this.declarator);
+  }
+}
+sealed class SourceTopLevelBodyBinding<TFile> {
+  constructor(private readonly module: SourceModuleClassSymbol<TFile>) {}
+  Bind(method: SourceMethodSymbol<TFile>): BoundBlock? {
+    return this.module.Context.BindTopLevelStatements(this.module.File, method, this.module);
+  }
+}

@@ -1,0 +1,115 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { List, IReadOnlyList, Dictionary } from "System.Collections.Generic";
+import { Symbol, Accessibility } from "../Symbol";
+import { TypeSymbol, TypeParameterSymbol, TypeKind } from "../TypeSymbols";
+import { NamedTypeSymbol } from "../NamedTypeSymbol";
+import { FieldSymbol, MethodSymbol, MethodKind, ParameterSymbol, ImmutableArrayExtensions } from "../MemberSymbols";
+import { LambdaSymbol } from "../../Bound/UnboundInfo";
+import { SynthesizedBodyKind } from "./SynthesizedBodyKind";
+
+export sealed class SynthesizedFieldSymbol extends FieldSymbol {
+  constructor(private readonly container: Symbol, private readonly name: string, private type: TypeSymbol,
+    private readonly isStatic: bool = false, private readonly accessibility: Accessibility = Accessibility.Public,
+    private readonly isReadOnly: bool = false) { super(); }
+  override get Name(): string { return this.name; }
+  override get ContainingSymbol(): Symbol? { return this.container; }
+  override get Type(): TypeSymbol { return this.type; }
+  SetType(type: TypeSymbol): void { this.type = type; }
+  override get IsStatic(): bool { return this.isStatic; }
+  override get IsReadOnly(): bool { return this.isReadOnly; }
+  override get DeclaredAccessibility(): Accessibility { return this.accessibility; }
+  override get IsFromSource(): bool { return true; }
+}
+
+export sealed class SynthesizedMethodSymbol extends MethodSymbol {
+  private typeParameters: ImmutableArray<TypeParameterSymbol> = ImmutableArray<TypeParameterSymbol>.Empty;
+  SourceMethod: MethodSymbol? = null;
+  SynthesizedKind: SynthesizedBodyKind = SynthesizedBodyKind.None;
+  LambdaOrigin: LambdaSymbol? = null;
+  IsAsyncMethod: bool = false;
+  IsIteratorMethod: bool = false;
+  Associated: Symbol? = null;
+  Overrides: ImmutableArray<MethodSymbol> = ImmutableArray<MethodSymbol>.Empty;
+  constructor(private readonly container: Symbol, private readonly name: string, private readonly kind: MethodKind,
+    private readonly accessibility: Accessibility, private readonly isStatic: bool, private returnType: TypeSymbol,
+    private parameters: ImmutableArray<ParameterSymbol>, private readonly isVirtual: bool = false,
+    private readonly isOverride: bool = false, private readonly isFinal: bool = false,
+    private readonly isAbstract: bool = false) { super(); }
+  override get Name(): string { return this.name; }
+  override get ContainingSymbol(): Symbol? { return this.container; }
+  override get MethodKind(): MethodKind { return this.kind; }
+  override get ReturnType(): TypeSymbol { return this.returnType; }
+  override get Parameters(): ImmutableArray<ParameterSymbol> { return this.parameters; }
+  override get TypeParameters(): ImmutableArray<TypeParameterSymbol> { return this.typeParameters; }
+  override get IsStatic(): bool { return this.isStatic; }
+  override get IsVirtual(): bool { return this.isVirtual; }
+  override get IsOverride(): bool { return this.isOverride; }
+  override get IsSealed(): bool { return this.isFinal; }
+  override get IsAbstract(): bool { return this.isAbstract; }
+  override get DeclaredAccessibility(): Accessibility { return this.accessibility; }
+  override get IsFromSource(): bool { return true; }
+  override get ExplicitInterfaceImplementations(): ImmutableArray<MethodSymbol> { return this.Overrides; }
+  override get IsAsync(): bool { return this.IsAsyncMethod; }
+  override get IsIterator(): bool { return this.IsIteratorMethod; }
+  override get AssociatedSymbol(): Symbol? { return this.Associated; }
+  SetReturnType(type: TypeSymbol): void { this.returnType = type; }
+  SetParameters(parameters: ImmutableArray<ParameterSymbol>): void { this.parameters = parameters; }
+  SetTypeParameters(parameters: ImmutableArray<TypeParameterSymbol>): void { this.typeParameters = parameters; }
+}
+
+export sealed class SynthesizedNamedType extends NamedTypeSymbol {
+  private readonly members: List<Symbol> = new List<Symbol>();
+  private interfaces: ImmutableArray<NamedTypeSymbol> = ImmutableArray<NamedTypeSymbol>.Empty;
+  private typeParameters: ImmutableArray<TypeParameterSymbol> = ImmutableArray<TypeParameterSymbol>.Empty;
+  private baseType: NamedTypeSymbol? = null;
+  OwnArityValue: int = -1;
+  MethodTypeParameterMap: Dictionary<TypeParameterSymbol, int>? = null;
+  IsSealedFlag: bool = true;
+  IsAbstractFlag: bool = false;
+  IsStaticFlag: bool = false;
+  constructor(private readonly name: string, private readonly container: Symbol?, private readonly kind: TypeKind,
+    private readonly accessibility: Accessibility = Accessibility.Private) { super(); }
+  constructor(name: string, container: Symbol?, kind: TypeKind, accessibility: Accessibility, baseType: NamedTypeSymbol?) {
+    super();
+    this.name = name;
+    this.container = container;
+    this.kind = kind;
+    this.accessibility = accessibility;
+    this.baseType = baseType;
+  }
+  constructor(name: string, container: Symbol?, kind: TypeKind, accessibility: Accessibility,
+    baseType: NamedTypeSymbol?, typeParameters: ImmutableArray<TypeParameterSymbol>) {
+    super();
+    this.name = name;
+    this.container = container;
+    this.kind = kind;
+    this.accessibility = accessibility;
+    this.baseType = baseType;
+    this.typeParameters = typeParameters.IsDefault ? ImmutableArray<TypeParameterSymbol>.Empty : typeParameters;
+  }
+  SetTypeParameters(parameters: ImmutableArray<TypeParameterSymbol>): void { this.typeParameters = parameters; }
+  get IsCompilerGenerated(): bool { return true; }
+  get Members(): IReadOnlyList<Symbol> { return this.members; }
+  override get Name(): string { return this.name; }
+  override get ContainingSymbol(): Symbol? { return this.container; }
+  override get TypeKind(): TypeKind { return this.kind; }
+  override get DeclaredAccessibility(): Accessibility { return this.accessibility; }
+  override get IsSealed(): bool { return this.IsSealedFlag; }
+  override get IsAbstract(): bool { return this.IsAbstractFlag; }
+  override get IsStatic(): bool { return this.IsStaticFlag; }
+  override get IsStaticClass(): bool { return this.IsStaticFlag; }
+  override get IsFromSource(): bool { return true; }
+  override get BaseType(): NamedTypeSymbol? { return this.baseType; }
+  override get Interfaces(): ImmutableArray<NamedTypeSymbol> { return this.interfaces; }
+  override get TypeParameters(): ImmutableArray<TypeParameterSymbol> { return this.typeParameters; }
+  override get TypeArguments(): ImmutableArray<TypeSymbol> { return ImmutableArrayExtensions.ToTypes(this.typeParameters); }
+  override get OwnArity(): int { return this.OwnArityValue >= 0 ? this.OwnArityValue : this.typeParameters.Length; }
+  AddMember(member: Symbol): void { this.members.Add(member); }
+  AddInterface(type: NamedTypeSymbol): void { this.interfaces = this.interfaces.Add(type); }
+  SetBase(type: NamedTypeSymbol): void { this.baseType = type; }
+  override GetMembers(): ImmutableArray<Symbol> {
+    const builder = ImmutableArray.CreateBuilder<Symbol>();
+    builder.AddRange(this.members);
+    return builder.ToImmutable();
+  }
+}

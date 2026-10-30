@@ -1,0 +1,24 @@
+import { List, Dictionary, IEnumerable } from "System.Collections.Generic";
+import { BoundBlock } from "../Bound/BoundNodes";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { Symbol } from "../Symbols/Symbol";
+import { MethodSymbol } from "../Symbols/MemberSymbols";
+import { TypeParameterSymbol } from "../Symbols/TypeSymbols";
+
+// Keep source-file associations typed while the Compilation layer is migrated separately.
+export sealed class LoweredProgram<TSourceFile> {
+  readonly Types: List<NamedTypeSymbol> = new List<NamedTypeSymbol>();
+  readonly Bodies: Dictionary<MethodSymbol, BoundBlock> = new Dictionary<MethodSymbol, BoundBlock>();
+  readonly ExtraMembers: Dictionary<NamedTypeSymbol, List<Symbol>> = new Dictionary<NamedTypeSymbol, List<Symbol>>();
+  EntryPoint: MethodSymbol? = null;
+  readonly ClassTypeParameterMaps: Dictionary<MethodSymbol, Dictionary<TypeParameterSymbol, int>> =
+    new Dictionary<MethodSymbol, Dictionary<TypeParameterSymbol, int>>();
+  readonly MethodFiles: Dictionary<MethodSymbol, TSourceFile> = new Dictionary<MethodSymbol, TSourceFile>();
+
+  *MembersOf(type: NamedTypeSymbol): IEnumerable<Symbol> {
+    for (const member of type.GetMembers()) yield member;
+    if (this.ExtraMembers.ContainsKey(type)) {
+      for (const member of this.ExtraMembers[type]) yield member;
+    }
+  }
+}

@@ -1,0 +1,69 @@
+import { Dictionary, List } from "System.Collections.Generic";
+import { MemoryStream, Path, File } from "System.IO";
+import { AssemblyNameInfo, PEReaderExtensions } from "System.Reflection.Metadata";
+import { PEReader } from "System.Reflection.PortableExecutable";
+import { IResolver, Verifier, VerifierOptions } from "ILVerify";
+import { Compilation } from "Caladesi.Compiler";
+
+class NativeCorpusILResolver implements IResolver, IDisposable {
+  private readonly cache: Dictionary<string, PEReader?> = new Dictionary<string, PEReader?>();
+  constructor(private readonly selfName: string, private readonly image: byte[]) {}
+
+  ResolveAssembly(name: AssemblyNameInfo): PEReader? {
+    const key = name.Name ?? "";
+    if (this.cache.ContainsKey(key)) return this.cache[key];
+    const reader = this.Load(key);
+    this.cache[key] = reader;
+    return reader;
+  }
+
+  private Load(name: string): PEReader? {
+    if (name == this.selfName) return new PEReader(new MemoryStream(this.image));
+    let path = Path.Combine(Path.GetDirectoryName(typeof(object).Assembly.Location)!, name + ".dll");
+    if (!File.Exists(path)) {
+      path = Path.Combine(Path.GetDirectoryName(typeof(Compilation).Assembly.Location)!, name + ".dll");
+      if (!File.Exists(path)) {
+        path = Path.Combine(AppContext.BaseDirectory, name + ".dll");
+        if (!File.Exists(path)) return null;
+      }
+    }
+    return new PEReader(File.OpenRead(path));
+  }
+
+  ResolveModule(referencingAssembly: AssemblyNameInfo, fileName: string): PEReader? {
+    return null;
+  }
+
+  Dispose(): void {
+    for (const reader of this.cache.Values) if (reader != null) reader.Dispose();
+    this.cache.Clear();
+  }
+}
+
+export class NativeCorpusILVerifier {
+  static Verify(assemblyName: string, image: byte[]): void {
+    const resolver = new NativeCorpusILResolver(assemblyName, image);
+    const reader = new PEReader(new MemoryStream(image));
+    try {
+      const options = new VerifierOptions();
+      options.IncludeMetadataTokensInErrorMessages = true;
+      const verifier = new Verifier(resolver, options);
+      verifier.SetSystemModuleName(new AssemblyNameInfo("System.Private.CoreLib"));
+      const metadata = PEReaderExtensions.GetMetadataReader(reader);
+      const errors = new List<string>();
+      for (const result of verifier.Verify(reader)) {
+        let location = "<module>";
+        if (!result.Method.IsNil) {
+          const method = metadata.GetMethodDefinition(result.Method);
+          location = metadata.GetString(metadata.GetTypeDefinition(method.GetDeclaringType()).Name) +
+            "." + metadata.GetString(method.Name);
+        }
+        let message = result.Message + " [" + location + "] (" + result.Code + ")";
+        if (result.ErrorArguments != null)
+          for (const argument of result.ErrorArguments) message += " " + argument.Name + "=" + argument.Value;
+        errors.Add(message);
+      }
+      if (errors.Count != 0) throw new Exception("IL verification failed:\n" + string.Join("\n", errors));
+    } finally { reader.Dispose(); resolver.Dispose(); }
+  }
+}

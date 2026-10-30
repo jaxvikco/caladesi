@@ -20,6 +20,7 @@ public sealed record CompilationOptions
     public ImmutableArray<string> Defines { get; init; } = [];
     public ImmutableArray<string> GlobalImports { get; init; } = DefaultGlobalImports;
     public Version AssemblyVersion { get; init; } = new(1, 0, 0, 0);
+    public string? InformationalVersion { get; init; }
     public string? TargetFramework { get; init; } = ".NETCoreApp,Version=v10.0";
     public string? TargetFrameworkDisplayName { get; init; }
     /// <summary>When true, the compiler generates a Microsoft.Testing.Platform entry point for MSTest projects.</summary>

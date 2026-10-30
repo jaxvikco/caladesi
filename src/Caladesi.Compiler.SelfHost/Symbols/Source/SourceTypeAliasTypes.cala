@@ -1,0 +1,322 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { List, HashSet } from "System.Collections.Generic";
+import { StringBuilder } from "System.Text";
+import { Symbol, Accessibility, RefKind } from "../Symbol";
+import { NamedTypeSymbol } from "../NamedTypeSymbol";
+import { TypeSymbol, TypeKind, NullableTypeSymbol } from "../TypeSymbols";
+import { ParameterSymbol, MethodKind, ConstantValue } from "../MemberSymbols";
+import { SpecialType } from "../SpecialType";
+import { SyntaxToken } from "../../Syntax/SyntaxToken";
+import { SyntaxKind } from "../../Syntax/SyntaxKind";
+import { TypeSyntax, TypeAliasDeclarationSyntax, ObjectTypeSyntax, UnionTypeSyntax, LiteralTypeSyntax,
+  LiteralExpressionSyntax, ParenthesizedTypeSyntax, PropertyDeclarationSyntax, TypeParameterListSyntax,
+  DecoratorSyntax } from "../../Syntax/Nodes.Core";
+import { Diagnostic } from "../../Diagnostics/Diagnostic";
+import { Descriptors } from "../../Diagnostics/Descriptors";
+import { SourceTypeContext } from "./SourceTypeContext";
+import { SourceNamedType, TypeAliasSymbol, MemberFactory, SourceMemberTypeBinding, SourceBackingTypeBinding } from "./SourceTypes";
+import { SourceMethodSymbol, SourceFieldSymbol, SourcePropertySymbol } from "./SourceMembers";
+import { ModifierSets } from "./Modifiers";
+import { SynthesizedBodyKind } from "./SynthesizedBodyKind";
+
+export sealed class AliasCreation<TFile> {
+  constructor(public readonly Type: SourceNamedType<TFile>?, public readonly Alias: TypeAliasSymbol<TFile>?) {}
+}
+export sealed class TypeAliasDeclarations<TFile> {
+  static Create(context: SourceTypeContext<TFile>, file: TFile, alias: TypeAliasDeclarationSyntax): AliasCreation<TFile> {
+    let rhs = alias.Type;
+    while (rhs instanceof ParenthesizedTypeSyntax) rhs = (rhs as ParenthesizedTypeSyntax).Type;
+    const mods = ModifierSets.Create(alias.Modifiers);
+    if (rhs instanceof ObjectTypeSyntax)
+      return new AliasCreation<TFile>(new SourceRecordSymbol<TFile>(context, file, alias, rhs as ObjectTypeSyntax,
+        mods.IsStruct, context.GetNamespace(file)), null);
+    if (rhs instanceof UnionTypeSyntax) {
+      const union = rhs as UnionTypeSyntax;
+      let allStrings = union.Types.Count > 0;
+      const nonNull = new List<TypeSyntax>();
+      for (const member of union.Types) {
+        if (!(member instanceof LiteralTypeSyntax) ||
+          (member as LiteralTypeSyntax).Literal.Kind != SyntaxKind.StringLiteralExpression) allStrings = false;
+        if (!(member instanceof LiteralTypeSyntax) ||
+          (member as LiteralTypeSyntax).Literal.Kind != SyntaxKind.NullLiteralExpression) nonNull.Add(member);
+      }
+      if (allStrings)
+        return new AliasCreation<TFile>(new SourceLiteralEnumSymbol<TFile>(context, file, alias, union, context.GetNamespace(file)), null);
+      if (nonNull.Count >= 2)
+        return new AliasCreation<TFile>(new SourceUnionSymbol<TFile>(context, file, alias, nonNull,
+          nonNull.Count != union.Types.Count, context.GetNamespace(file)), null);
+    }
+    if (mods.IsStruct) context.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.StructOnlyForObjectTypes,
+      context.GetFilePath(file), alias.Identifier.Span));
+    return new AliasCreation<TFile>(null, new TypeAliasSymbol<TFile>(context, file, alias));
+  }
+}
+
+export sealed class SourceRecordSymbol<TFile> extends SourceNamedType<TFile> {
+  private interfaces: ImmutableArray<NamedTypeSymbol>;
+  constructor(context: SourceTypeContext<TFile>, file: TFile, public readonly Alias: TypeAliasDeclarationSyntax,
+    private readonly syntax: ObjectTypeSyntax, private readonly isStruct: bool, container: Symbol) {
+    super(context, file, Alias, Alias.Identifier.Text, container, ModifierSets.TypeAccessibility(ModifierSets.Create(Alias.Modifiers)));
+  }
+  protected override get TypeParameterListSyntax(): TypeParameterListSyntax? { return this.Alias.TypeParameters; }
+  override get IdentifierToken(): SyntaxToken? { return this.Alias.Identifier; }
+  override get DecoratorSyntaxes(): ImmutableArray<DecoratorSyntax> { return SourceNamedType<TFile>.CollectDecorators(this.Alias.Decorators); }
+  override get TypeKind(): TypeKind { return this.isStruct ? TypeKind.Struct : TypeKind.Class; }
+  override get IsRecord(): bool { return true; }
+  override get IsSealed(): bool { return true; }
+  override get IsReadOnlyStruct(): bool { return this.isStruct; }
+  override get BaseType(): NamedTypeSymbol? { return this.Context.GetSpecialType(this.isStruct ? SpecialType.ValueType : SpecialType.Object); }
+  override get Interfaces(): ImmutableArray<NamedTypeSymbol> {
+    if (this.interfaces.IsDefault) this.interfaces = RecordMemberFactory<TFile>.Equatable(this);
+    return this.interfaces;
+  }
+  get Properties(): ImmutableArray<SourcePropertySymbol<TFile>> {
+    const builder = ImmutableArray.CreateBuilder<SourcePropertySymbol<TFile>>();
+    for (const member of this.GetMembers())
+      if (member instanceof SourcePropertySymbol<TFile> && (member as SourcePropertySymbol<TFile>).BackingField != null)
+        builder.Add(member as SourcePropertySymbol<TFile>);
+    return builder.ToImmutable();
+  }
+  get PrimaryConstructor(): SourceMethodSymbol<TFile>? {
+    for (const member of this.GetMembers()) if (member instanceof SourceMethodSymbol<TFile>) {
+      const method = member as SourceMethodSymbol<TFile>;
+      if (method.MethodKind == MethodKind.Constructor && method.SynthesizedKind == SynthesizedBodyKind.RecordConstructor) return method;
+    }
+    return null;
+  }
+  protected override BuildMembers(): ImmutableArray<Symbol> {
+    const members = new List<Symbol>();
+    const properties = new List<SourcePropertySymbol<TFile>>();
+    const self = this.IsGenericType ? this.Construct(this.TypeArguments) : this;
+    for (const member of this.syntax.Members) {
+      if (!(member instanceof PropertyDeclarationSyntax)) {
+        this.Context.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.ObjectTypeMemberNotProperty,
+          this.Context.GetFilePath(this.File), member.Span));
+        continue;
+      }
+      const syntax = member as PropertyDeclarationSyntax;
+      if (syntax.Identifier.IsMissing) continue;
+      const binding = new SourceMemberTypeBinding<TFile>(this, syntax.TypeAnnotation, syntax.QuestionToken != null, null);
+      const property = new SourcePropertySymbol<TFile>(this.Context, this.File, this, syntax.Identifier.Text,
+        Accessibility.Public, false, syntax, binding.Property);
+      property.IsAutoProperty = true;
+      property.IsInitOnlyProperty = true;
+      property.IsOptionalMember = syntax.QuestionToken != null;
+      property.Getter = MemberFactory<TFile>.Accessor(this.Context, this.File, this, property, true, Accessibility.Public,
+        false, false, false, false, false, SynthesizedBodyKind.AutoGetter);
+      property.Setter = MemberFactory<TFile>.Accessor(this.Context, this.File, this, property, false, Accessibility.Public,
+        false, false, false, false, false, SynthesizedBodyKind.AutoSetter);
+      const backingBinding = new SourceBackingTypeBinding<TFile>(property);
+      const backing = new SourceFieldSymbol<TFile>(this.Context, this.File, this, "<" + property.Name + ">k__BackingField",
+        Accessibility.Private, false, true, false, syntax, null, backingBinding.Bind);
+      backing.IsBackingField = true;
+      property.BackingField = backing;
+      let duplicate = false;
+      for (const previous of properties) if (previous.Name == property.Name) { duplicate = true; break; }
+      if (duplicate) {
+        this.Context.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.DuplicateMember, this.Context.GetFilePath(this.File),
+          syntax.Identifier.Span, property.Name, this.Name));
+        continue;
+      }
+      properties.Add(property);
+      members.Add(backing);
+      members.Add(property);
+      members.Add(property.Getter!);
+      members.Add(property.Setter!);
+    }
+    const parameters = ImmutableArray.CreateBuilder<ParameterSymbol>();
+    for (let i = 0; i < properties.Count; i++) {
+      const property = properties[i];
+      const parameter = new ParameterSymbol(property.Name, property.Type, i, null, RefKind.None, false,
+        property.IsOptionalMember ? ConstantValue.Null : null, property.IsOptionalMember);
+      parameters.Add(parameter.WithType(parameter.Type, null));
+    }
+    members.Add(MemberFactory<TFile>.Method(this, ".ctor", MethodKind.Constructor, SynthesizedBodyKind.RecordConstructor,
+      parameters.ToImmutable(), null));
+    if (!this.isStruct) {
+      members.Add(MemberFactory<TFile>.Method(this, ".ctor", MethodKind.Constructor, SynthesizedBodyKind.RecordCopyConstructor,
+        ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("original", self, 0, null)), null, Accessibility.Protected));
+      members.Add(MemberFactory<TFile>.Method(this, "<Clone>$", MethodKind.Ordinary, SynthesizedBodyKind.RecordClone,
+        ImmutableArray<ParameterSymbol>.Empty, self, Accessibility.Public, false, false, true));
+      const type = this.Context.GetSpecialType(SpecialType.Type);
+      const contract = new SourcePropertySymbol<TFile>(this.Context, this.File, this, "EqualityContract",
+        Accessibility.Protected, false, null, null, type);
+      contract.IsVirtualFlag = true;
+      contract.Getter = MemberFactory<TFile>.Method(this, "get_EqualityContract", MethodKind.PropertyGet,
+        SynthesizedBodyKind.RecordEqualityContract, ImmutableArray<ParameterSymbol>.Empty, type, Accessibility.Protected, false, false, true);
+      contract.Getter.AssociatedProperty = contract;
+      members.Add(contract);
+      members.Add(contract.Getter);
+    }
+    RecordMemberFactory<TFile>.AddEquality(this, members, self, this.isStruct, true);
+    return ImmutableArray.CreateRange<Symbol>(members);
+  }
+}
+
+export sealed class RecordMemberFactory<TFile> {
+  static Equatable(owner: SourceNamedType<TFile>): ImmutableArray<NamedTypeSymbol> {
+    const definition = owner.Context.GetWellKnownType("System.IEquatable`1");
+    const self = owner.IsGenericType ? owner.Construct(owner.TypeArguments) : owner;
+    return definition == null ? ImmutableArray<NamedTypeSymbol>.Empty :
+      ImmutableArray.Create<NamedTypeSymbol>(definition.Construct(ImmutableArray.Create<TypeSymbol>(self)));
+  }
+  static AddEquality(owner: SourceNamedType<TFile>, members: List<Symbol>, self: NamedTypeSymbol,
+    isStruct: bool, operators: bool): void {
+    const boolType = owner.Context.GetSpecialType(SpecialType.Boolean);
+    const objectType = owner.Context.GetSpecialType(SpecialType.Object);
+    const intType = owner.Context.GetSpecialType(SpecialType.Int32);
+    const stringType = owner.Context.GetSpecialType(SpecialType.String);
+    const otherType: TypeSymbol = isStruct ? self : new NullableTypeSymbol(self);
+    members.Add(MemberFactory<TFile>.Method(owner, "Equals", MethodKind.Ordinary, SynthesizedBodyKind.RecordEquals,
+      ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("other", otherType, 0, null)), boolType,
+      Accessibility.Public, false, false, !isStruct));
+    members.Add(MemberFactory<TFile>.Method(owner, "Equals", MethodKind.Ordinary, SynthesizedBodyKind.RecordEqualsObject,
+      ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("obj", new NullableTypeSymbol(objectType), 0, null)), boolType,
+      Accessibility.Public, false, true));
+    members.Add(MemberFactory<TFile>.Method(owner, "GetHashCode", MethodKind.Ordinary, SynthesizedBodyKind.RecordGetHashCode,
+      ImmutableArray<ParameterSymbol>.Empty, intType, Accessibility.Public, false, true));
+    members.Add(MemberFactory<TFile>.Method(owner, "ToString", MethodKind.Ordinary, SynthesizedBodyKind.RecordToString,
+      ImmutableArray<ParameterSymbol>.Empty, stringType, Accessibility.Public, false, true));
+    if (operators) {
+      members.Add(MemberFactory<TFile>.Method(owner, "op_Equality", MethodKind.UserDefinedOperator,
+        SynthesizedBodyKind.RecordEqualsOperator, RecordMemberFactory<TFile>.Operands(otherType), boolType, Accessibility.Public, true));
+      members.Add(MemberFactory<TFile>.Method(owner, "op_Inequality", MethodKind.UserDefinedOperator,
+        SynthesizedBodyKind.RecordNotEqualsOperator, RecordMemberFactory<TFile>.Operands(otherType), boolType, Accessibility.Public, true));
+    }
+  }
+  static Operands(type: TypeSymbol): ImmutableArray<ParameterSymbol> {
+    return ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("left", type, 0, null), new ParameterSymbol("right", type, 1, null));
+  }
+}
+
+export sealed class SourceLiteralEnumSymbol<TFile> extends SourceNamedType<TFile> {
+  constructor(context: SourceTypeContext<TFile>, file: TFile, private readonly alias: TypeAliasDeclarationSyntax,
+    private readonly syntax: UnionTypeSyntax, container: Symbol) {
+    super(context, file, alias, alias.Identifier.Text, container, ModifierSets.TypeAccessibility(ModifierSets.Create(alias.Modifiers)));
+  }
+  override get IdentifierToken(): SyntaxToken? { return this.alias.Identifier; }
+  override get DecoratorSyntaxes(): ImmutableArray<DecoratorSyntax> { return SourceNamedType<TFile>.CollectDecorators(this.alias.Decorators); }
+  override get TypeKind(): TypeKind { return TypeKind.Enum; }
+  override get IsSealed(): bool { return true; }
+  override get BaseType(): NamedTypeSymbol? { return this.Context.GetSpecialType(SpecialType.Enum); }
+  override get EnumUnderlyingType(): NamedTypeSymbol? { return this.Context.GetSpecialType(SpecialType.Int32); }
+  get IsLiteralEnum(): bool { return true; }
+  FindMember(literal: string): SourceFieldSymbol<TFile>? {
+    for (const member of this.GetMembers())
+      if (member instanceof SourceFieldSymbol<TFile> && (member as SourceFieldSymbol<TFile>).LiteralText == literal)
+        return member as SourceFieldSymbol<TFile>;
+    return null;
+  }
+  static SanitizeName(literal: string): string {
+    ArgumentNullException.ThrowIfNull(literal);
+    const builder = new StringBuilder();
+    for (const character of literal) builder.Append(char.IsLetterOrDigit(character) || character == '_' ? character : '_');
+    if (builder.Length == 0 || char.IsDigit(builder[0])) builder.Insert(0, '_');
+    return builder.ToString();
+  }
+  protected override BuildMembers(): ImmutableArray<Symbol> {
+    const builder = ImmutableArray.CreateBuilder<Symbol>();
+    const seen = new HashSet<string>();
+    let value = 0;
+    for (const syntax of this.syntax.Types) {
+      const literal = syntax as LiteralTypeSyntax;
+      let text = "";
+      if (literal.Literal instanceof LiteralExpressionSyntax)
+        text = ((literal.Literal as LiteralExpressionSyntax).Token.Value as string) ?? "";
+      const name = SourceLiteralEnumSymbol<TFile>.SanitizeName(text);
+      if (!seen.Add(name)) {
+        this.Context.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.DuplicateMember,
+          this.Context.GetFilePath(this.File), syntax.Span, name, this.Name));
+        continue;
+      }
+      const binding = new SourceLiteralConstantBinding<TFile>(value);
+      value++;
+      const field = new SourceFieldSymbol<TFile>(this.Context, this.File, this, name, Accessibility.Public, true, true, true, syntax, this);
+      field.IsEnumMember = true;
+      field.LiteralText = text;
+      field.ConstantFactory = binding.Bind;
+      builder.Add(field);
+    }
+    return builder.ToImmutable();
+  }
+}
+sealed class SourceLiteralConstantBinding<TFile> {
+  constructor(private readonly value: int) {}
+  Bind(field: SourceFieldSymbol<TFile>): ConstantValue? { return new ConstantValue(this.value); }
+}
+
+export sealed class SourceUnionSymbol<TFile> extends SourceNamedType<TFile> {
+  private cases: ImmutableArray<TypeSymbol>;
+  private casesBuilding: bool = false;
+  constructor(context: SourceTypeContext<TFile>, file: TFile, private readonly alias: TypeAliasDeclarationSyntax,
+    private readonly caseSyntax: List<TypeSyntax>, public readonly IncludesNull: bool, container: Symbol) {
+    super(context, file, alias, alias.Identifier.Text, container, ModifierSets.TypeAccessibility(ModifierSets.Create(alias.Modifiers)));
+  }
+  protected override get TypeParameterListSyntax(): TypeParameterListSyntax? { return this.alias.TypeParameters; }
+  override get IdentifierToken(): SyntaxToken? { return this.alias.Identifier; }
+  override get TypeKind(): TypeKind { return TypeKind.Struct; }
+  override get IsSealed(): bool { return true; }
+  override get IsReadOnlyStruct(): bool { return true; }
+  override get IsUnionType(): bool { return true; }
+  override get BaseType(): NamedTypeSymbol? { return this.Context.GetSpecialType(SpecialType.ValueType); }
+  override get Interfaces(): ImmutableArray<NamedTypeSymbol> { return RecordMemberFactory<TFile>.Equatable(this); }
+  override get UnionCases(): ImmutableArray<TypeSymbol> {
+    if (!this.cases.IsDefault) return this.cases;
+    if (this.casesBuilding) return ImmutableArray<TypeSymbol>.Empty;
+    this.casesBuilding = true;
+    const builder = new List<TypeSymbol>();
+    for (const syntax of this.caseSyntax) {
+      const type = this.Context.BindType(this.File, this, syntax, false);
+      if (type.IsErrorType || type.IsVoid) continue;
+      const candidates = type instanceof NamedTypeSymbol && (type as NamedTypeSymbol).IsUnionType && !Object.ReferenceEquals(type, this) ?
+        (type as NamedTypeSymbol).UnionCases : ImmutableArray.Create<TypeSymbol>(type);
+      for (const candidate of candidates) {
+        let duplicate = false;
+        for (const previous of builder) if (previous.Equals(candidate)) { duplicate = true; break; }
+        if (duplicate) this.Context.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.DuplicateUnionCase,
+          this.Context.GetFilePath(this.File), syntax.Span, candidate.ToDisplayString()));
+        else builder.Add(candidate);
+      }
+    }
+    this.casesBuilding = false;
+    this.cases = ImmutableArray.CreateRange<TypeSymbol>(builder);
+    return this.cases;
+  }
+  protected override BuildMembers(): ImmutableArray<Symbol> {
+    const builder = ImmutableArray.CreateBuilder<Symbol>();
+    const self = this.IsGenericType ? this.Construct(this.TypeArguments) : this;
+    const intType = this.Context.GetSpecialType(SpecialType.Int32);
+    const objectType = this.Context.GetSpecialType(SpecialType.Object);
+    const boolType = this.Context.GetSpecialType(SpecialType.Boolean);
+    const stringType = this.Context.GetSpecialType(SpecialType.String);
+    builder.Add(new SourceFieldSymbol<TFile>(this.Context, this.File, this, "Tag", Accessibility.Public, false, true, false, null, intType));
+    builder.Add(new SourceFieldSymbol<TFile>(this.Context, this.File, this, "Value", Accessibility.Public, false, true, false, null,
+      new NullableTypeSymbol(objectType)));
+    const cases = this.UnionCases;
+    for (let i = 0; i < cases.Length; i++) {
+      const constructor = MemberFactory<TFile>.Method(this, ".ctor", MethodKind.Constructor,
+        SynthesizedBodyKind.UnionConstructor, ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("value", cases[i], 0, null)), null);
+      constructor.UnionCaseIndex = i;
+      builder.Add(constructor);
+      const conversion = MemberFactory<TFile>.Method(this, "op_Implicit", MethodKind.Conversion,
+        SynthesizedBodyKind.UnionImplicit, ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("value", cases[i], 0, null)),
+        self, Accessibility.Public, true);
+      conversion.UnionCaseIndex = i;
+      builder.Add(conversion);
+    }
+    builder.Add(MemberFactory<TFile>.Method(this, "ToString", MethodKind.Ordinary, SynthesizedBodyKind.UnionToString,
+      ImmutableArray<ParameterSymbol>.Empty, stringType, Accessibility.Public, false, true));
+    builder.Add(MemberFactory<TFile>.Method(this, "Equals", MethodKind.Ordinary, SynthesizedBodyKind.UnionEqualsObject,
+      ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("obj", new NullableTypeSymbol(objectType), 0, null)),
+      boolType, Accessibility.Public, false, true));
+    builder.Add(MemberFactory<TFile>.Method(this, "Equals", MethodKind.Ordinary, SynthesizedBodyKind.UnionEquals,
+      ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("other", self, 0, null)), boolType));
+    builder.Add(MemberFactory<TFile>.Method(this, "op_Equality", MethodKind.UserDefinedOperator,
+      SynthesizedBodyKind.UnionEqualsOperator, RecordMemberFactory<TFile>.Operands(self), boolType, Accessibility.Public, true));
+    builder.Add(MemberFactory<TFile>.Method(this, "op_Inequality", MethodKind.UserDefinedOperator,
+      SynthesizedBodyKind.UnionNotEqualsOperator, RecordMemberFactory<TFile>.Operands(self), boolType, Accessibility.Public, true));
+    builder.Add(MemberFactory<TFile>.Method(this, "GetHashCode", MethodKind.Ordinary, SynthesizedBodyKind.UnionGetHashCode,
+      ImmutableArray<ParameterSymbol>.Empty, intType, Accessibility.Public, false, true));
+    return builder.ToImmutable();
+  }
+}

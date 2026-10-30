@@ -1,0 +1,87 @@
+import { List, IEnumerable } from "System.Collections.Generic";
+import { Diagnostic } from "./Diagnostics/Diagnostic";
+import { Descriptors } from "./Diagnostics/Descriptors";
+import { TextSpan } from "./Text/TextSpan";
+import { CompilationOptions, OutputKind } from "./CompilationOptions";
+import { SpecialType } from "./Symbols/SpecialType";
+import { ArrayTypeSymbol } from "./Symbols/TypeSymbols";
+import { NamedTypeSymbol } from "./Symbols/NamedTypeSymbol";
+import { SourceMethodSymbol } from "./Symbols/Source/SourceMembers";
+import { StatementSyntax, FunctionDeclarationSyntax, ClassDeclarationSyntax, InterfaceDeclarationSyntax,
+  EnumDeclarationSyntax, TypeAliasDeclarationSyntax, ImportDeclarationSyntax, VariableStatementSyntax,
+  EmptyStatementSyntax } from "./Syntax/Nodes.Core";
+import { DeclarationValidationContext } from "./DeclarationValidationContext";
+
+export sealed class EntryPointChecker<TFile> {
+  constructor(private readonly context: DeclarationValidationContext<TFile>) {}
+
+  Check(): IEnumerable<Diagnostic> {
+    const diagnostics = new List<Diagnostic>();
+    const methods = new List<SourceMethodSymbol<TFile>>();
+    const files = new List<TFile>();
+    for (const file of this.context.SourceFiles) {
+      const module = this.context.GetModuleClass(file);
+      if (module == null) continue;
+      if (module.TopLevelEntry != null) { methods.Add(module.TopLevelEntry); files.Add(file); }
+      if (module.UserMain != null) { methods.Add(module.UserMain); files.Add(file); }
+    }
+    if (this.context.Options.OutputKind == OutputKind.DynamicallyLinkedLibrary) {
+      for (let i = 0; i < methods.Count; i++) {
+        if (methods[i].Name == "<Main>$")
+          diagnostics.Add(Diagnostic.Create(Descriptors.EntryPointInLibrary, this.context.GetFilePath(files[i]),
+            this.FirstStatementSpan(files[i], true)));
+      }
+      return diagnostics;
+    }
+    if (methods.Count > 1) {
+      for (let i = 1; i < methods.Count; i++) {
+        const method = methods[i];
+        const topLevel = method.Name == "<Main>$";
+        diagnostics.Add(Diagnostic.Create(topLevel ? Descriptors.TopLevelStatementsNotAllowed : Descriptors.MultipleEntryPoints,
+          this.context.GetFilePath(files[i]), topLevel ? this.FirstStatementSpan(files[i], false) :
+            (method.Locations.Length == 0 ? new TextSpan() : method.Locations[0].Span)));
+      }
+    } else if (methods.Count == 0 && !this.context.Options.GenerateTestEntryPoint) {
+      diagnostics.Add(Diagnostic.Create(Descriptors.NoEntryPoint, null, new TextSpan()));
+    }
+    if (methods.Count > 0 && methods[0].Name == "main") {
+      const main = methods[0];
+      let parametersOk = main.Parameters.Length == 0;
+      if (main.Parameters.Length == 1 && main.Parameters[0].Type instanceof ArrayTypeSymbol)
+        parametersOk = (main.Parameters[0].Type as ArrayTypeSymbol).ElementType.SpecialType == SpecialType.String;
+      const returnType = main.ReturnType;
+      let returnOk = returnType.IsVoid || returnType.SpecialType == SpecialType.Int32 || returnType.SpecialType == SpecialType.Task;
+      if (returnType instanceof NamedTypeSymbol) {
+        const named = returnType as NamedTypeSymbol;
+        if (named.OriginalDefinition.SpecialType == SpecialType.TaskT && named.TypeArguments.Length > 0 &&
+          named.TypeArguments[0].SpecialType == SpecialType.Int32) returnOk = true;
+      }
+      if (!parametersOk || !returnOk)
+        diagnostics.Add(Diagnostic.Create(Descriptors.InvalidMainSignature, this.context.GetFilePath(files[0]),
+          main.Locations.Length == 0 ? new TextSpan() : main.Locations[0].Span));
+    }
+    return diagnostics;
+  }
+
+  FindEntryPoint(): SourceMethodSymbol<TFile>? {
+    for (const file of this.context.SourceFiles) {
+      const module = this.context.GetModuleClass(file);
+      if (module == null) continue;
+      if (module.TopLevelEntry != null) return module.TopLevelEntry;
+      if (module.UserMain != null) return module.UserMain;
+    }
+    return null;
+  }
+
+  private FirstStatementSpan(file: TFile, library: bool): TextSpan {
+    const statements = this.context.GetTree(file).Root.Statements;
+    for (const statement of statements) {
+      if (statement instanceof FunctionDeclarationSyntax || statement instanceof ClassDeclarationSyntax ||
+        statement instanceof InterfaceDeclarationSyntax || statement instanceof EnumDeclarationSyntax ||
+        statement instanceof TypeAliasDeclarationSyntax || statement instanceof ImportDeclarationSyntax) continue;
+      if (library && (statement instanceof VariableStatementSyntax || statement instanceof EmptyStatementSyntax)) continue;
+      return statement.Span;
+    }
+    return library && statements.Count > 0 ? statements.Get(0).Span : new TextSpan();
+  }
+}

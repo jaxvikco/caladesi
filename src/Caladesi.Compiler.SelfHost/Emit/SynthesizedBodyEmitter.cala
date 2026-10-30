@@ -1,0 +1,300 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { ILOpCode } from "System.Reflection.Metadata";
+import { MetadataEmitter } from "./MetadataEmitter";
+import { ILBuilder, LocalSlot } from "./ILBuilder";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { TypeSymbol, TypeParameterSymbol, ArrayTypeSymbol, TypeKind } from "../Symbols/TypeSymbols";
+import { SpecialType } from "../Symbols/SpecialType";
+import { MethodSymbol, FieldSymbol } from "../Symbols/MemberSymbols";
+import { SourceMethodSymbol, SourcePropertySymbol, SourceFieldSymbol } from "../Symbols/Source/SourceMembers";
+import { SynthesizedMethodSymbol } from "../Symbols/Source/Synthesized";
+import { SynthesizedBodyKind } from "../Symbols/Source/SynthesizedBodyKind";
+
+export sealed class SynthesizedBodyEmitter<TSourceFile> {
+  private readonly kind: SynthesizedBodyKind;
+  private readonly type: NamedTypeSymbol;
+  constructor(private readonly metadata: MetadataEmitter, private readonly method: MethodSymbol,
+    private readonly il: ILBuilder, private readonly getSpecialType: Func<SpecialType, NamedTypeSymbol>,
+    private readonly getWellKnownType: Func<string, NamedTypeSymbol?>) {
+    this.kind = method instanceof SourceMethodSymbol<TSourceFile> ? (method as SourceMethodSymbol<TSourceFile>).SynthesizedKind :
+      method instanceof SynthesizedMethodSymbol ? (method as SynthesizedMethodSymbol).SynthesizedKind : SynthesizedBodyKind.None;
+    this.type = method.ContainingSymbol as NamedTypeSymbol;
+  }
+  private get IsStruct(): bool { return this.type.TypeKind == TypeKind.Struct; }
+  private get Self(): NamedTypeSymbol { return this.type.IsGenericType ? this.type.Construct(this.type.TypeArguments) : this.type; }
+  private get Props(): ImmutableArray<SourcePropertySymbol<TSourceFile>> {
+    const result = ImmutableArray.CreateBuilder<SourcePropertySymbol<TSourceFile>>();
+    for (const member of this.type.GetMembers())
+      if (member instanceof SourcePropertySymbol<TSourceFile> && (member as SourcePropertySymbol<TSourceFile>).BackingField != null)
+        result.Add(member as SourcePropertySymbol<TSourceFile>);
+    return result.ToImmutable();
+  }
+  Emit(): void {
+    switch (this.kind) {
+      case SynthesizedBodyKind.AutoGetter: this.AutoGetter(); break;
+      case SynthesizedBodyKind.AutoSetter: this.AutoSetter(); break;
+      case SynthesizedBodyKind.RecordConstructor: this.RecordCtor(); break;
+      case SynthesizedBodyKind.RecordCopyConstructor: this.RecordCopyCtor(); break;
+      case SynthesizedBodyKind.RecordClone: this.RecordClone(); break;
+      case SynthesizedBodyKind.RecordEqualityContract: this.EqualityContract(); break;
+      case SynthesizedBodyKind.RecordEquals: this.RecordEquals(); break;
+      case SynthesizedBodyKind.RecordEqualsObject: this.RecordEqualsObject(); break;
+      case SynthesizedBodyKind.RecordGetHashCode: this.RecordHash(); break;
+      case SynthesizedBodyKind.RecordToString: this.RecordToString(); break;
+      case SynthesizedBodyKind.RecordEqualsOperator: this.RecordOpEquals(); break;
+      case SynthesizedBodyKind.RecordNotEqualsOperator: this.RecordOpNotEquals(); break;
+      case SynthesizedBodyKind.UnionConstructor: this.UnionCtor(); break;
+      case SynthesizedBodyKind.UnionImplicit: this.UnionImplicit(); break;
+      case SynthesizedBodyKind.UnionToString: this.UnionToString(); break;
+      case SynthesizedBodyKind.UnionEquals: this.UnionEquals(); break;
+      case SynthesizedBodyKind.UnionEqualsOperator: this.RecordOpEquals(); break;
+      case SynthesizedBodyKind.UnionNotEqualsOperator: this.RecordOpNotEquals(); break;
+      case SynthesizedBodyKind.UnionEqualsObject: this.RecordEqualsObject(); break;
+      case SynthesizedBodyKind.UnionGetHashCode: this.UnionHash(); break;
+      default: this.il.Op(ILOpCode.Ldnull, 1); this.il.Op(ILOpCode.Throw, -1); break;
+    }
+  }
+  private static Find(type: NamedTypeSymbol, name: string, count: int, isStatic: bool): MethodSymbol {
+    for (const member of type.GetMembers(name))
+      if (member instanceof MethodSymbol) {
+        const method = member as MethodSymbol;
+        if (method.Parameters.Length == count && method.IsStatic == isStatic) return method;
+      }
+    throw new InvalidOperationException("Sequence contains no matching element");
+  }
+  private FirstMethod(type: NamedTypeSymbol, name: string, count: int = -1): MethodSymbol {
+    for (const member of type.GetMembers(name))
+      if (member instanceof MethodSymbol && (count < 0 || (member as MethodSymbol).Parameters.Length == count))
+        return member as MethodSymbol;
+    throw new InvalidOperationException(count < 0 ? "Sequence contains no elements" : "Sequence contains no matching element");
+  }
+  private CallBaseCtor(): void {
+    if (this.IsStruct) return;
+    this.il.Ldarg(0);
+    for (const ctor of this.type.BaseType!.InstanceConstructors)
+      if (ctor.Parameters.Length == 0) {
+        this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(ctor), 1, 0); return;
+      }
+    throw new InvalidOperationException("Sequence contains no matching element");
+  }
+  private static Backing(property: SourcePropertySymbol<TSourceFile>): SourceFieldSymbol<TSourceFile> { return property.BackingField!; }
+  private LoadField(field: FieldSymbol): void { this.il.Token(ILOpCode.Ldfld, this.metadata.GetFieldEntity(field), 0); }
+  private FieldClr(property: SourcePropertySymbol<TSourceFile>): TypeSymbol { return this.metadata.ClrType(property.Type); }
+  private EqComparer(type: TypeSymbol): NamedTypeSymbol {
+    return this.getWellKnownType("System.Collections.Generic.EqualityComparer`1")!.Construct(ImmutableArray.Create<TypeSymbol>(type));
+  }
+  private EmitEqualsOfType(type: TypeSymbol, a: LocalSlot, b: LocalSlot): void {
+    const comparer = this.EqComparer(type);
+    this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(this.FirstMethod(comparer, "get_Default")), 0, 1);
+    this.il.Ldloc(a.Index); this.il.Ldloc(b.Index);
+    this.il.Call(ILOpCode.Callvirt, this.metadata.GetMethodEntity(this.FirstMethod(comparer, "Equals", 2)), 3, 1);
+  }
+  private get AssocProp(): SourcePropertySymbol<TSourceFile>? {
+    if (!(this.method instanceof SourceMethodSymbol<TSourceFile>)) return null;
+    const property = (this.method as SourceMethodSymbol<TSourceFile>).AssociatedProperty;
+    return property instanceof SourcePropertySymbol<TSourceFile> ? property as SourcePropertySymbol<TSourceFile> : null;
+  }
+  private AutoGetter(): void {
+    const field = SynthesizedBodyEmitter<TSourceFile>.Backing(this.AssocProp!);
+    if (field.IsStatic) this.il.Token(ILOpCode.Ldsfld, this.metadata.GetFieldEntity(field), 1);
+    else { this.il.Ldarg(0); this.LoadField(field); }
+    this.il.Op(ILOpCode.Ret, 0);
+  }
+  private AutoSetter(): void {
+    const field = SynthesizedBodyEmitter<TSourceFile>.Backing(this.AssocProp!);
+    if (field.IsStatic) { this.il.Ldarg(0); this.il.Token(ILOpCode.Stsfld, this.metadata.GetFieldEntity(field), -1); }
+    else { this.il.Ldarg(0); this.il.Ldarg(1); this.il.Token(ILOpCode.Stfld, this.metadata.GetFieldEntity(field), -2); }
+    this.il.Op(ILOpCode.Ret, 0);
+  }
+  private RecordCtor(): void {
+    this.CallBaseCtor();
+    const props = this.Props;
+    for (let i = 0; i < props.Length; i++) {
+      this.il.Ldarg(0); this.il.Ldarg(i + 1);
+      this.il.Token(ILOpCode.Stfld, this.metadata.GetFieldEntity(SynthesizedBodyEmitter<TSourceFile>.Backing(props[i])), -2);
+    }
+    this.il.Op(ILOpCode.Ret, 0);
+  }
+  private RecordCopyCtor(): void {
+    this.CallBaseCtor();
+    for (const property of this.Props) {
+      this.il.Ldarg(0); this.il.Ldarg(1); this.LoadField(SynthesizedBodyEmitter<TSourceFile>.Backing(property));
+      this.il.Token(ILOpCode.Stfld, this.metadata.GetFieldEntity(SynthesizedBodyEmitter<TSourceFile>.Backing(property)), -2);
+    }
+    this.il.Op(ILOpCode.Ret, 0);
+  }
+  private RecordClone(): void {
+    this.il.Ldarg(0);
+    for (const ctor of this.type.InstanceConstructors)
+      if (ctor instanceof SourceMethodSymbol<TSourceFile> &&
+          (ctor as SourceMethodSymbol<TSourceFile>).SynthesizedKind == SynthesizedBodyKind.RecordCopyConstructor) {
+        this.il.Call(ILOpCode.Newobj, this.metadata.GetMethodEntity(ctor), 1, 1);
+        this.il.Op(ILOpCode.Ret, 0); return;
+      }
+    throw new InvalidOperationException("Sequence contains no matching element");
+  }
+  private EqualityContract(): void {
+    this.il.Token(ILOpCode.Ldtoken, this.metadata.GetTypeEntity(this.Self), 1);
+    this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(SynthesizedBodyEmitter<TSourceFile>.Find(
+      this.getSpecialType(SpecialType.Type), "GetTypeFromHandle", 1, true)), 1, 1);
+    this.il.Op(ILOpCode.Ret, 0);
+  }
+  private RecordEquals(): void {
+    const props = this.Props;
+    const fail = this.il.NewLabel();
+    if (!this.IsStruct) { this.il.Ldarg(1); this.il.Branch(ILOpCode.Brfalse, fail); }
+    this.il.NewLocal(this.metadata.ClrType(this.getSpecialType(SpecialType.Object)));
+    for (const property of props) {
+      const type = this.FieldClr(property);
+      const a = this.il.NewLocal(type); const b = this.il.NewLocal(type);
+      this.il.Ldarg(0); this.LoadField(SynthesizedBodyEmitter<TSourceFile>.Backing(property)); this.il.Stloc(a.Index);
+      this.il.Ldarg(1); this.LoadField(SynthesizedBodyEmitter<TSourceFile>.Backing(property)); this.il.Stloc(b.Index);
+      this.EmitEqualsOfType(type, a, b);
+      this.il.Branch(ILOpCode.Brfalse, fail);
+    }
+    this.il.LdcI4(1); this.il.Op(ILOpCode.Ret, -1);
+    this.il.Mark(fail); this.il.ResetDepth(); this.il.LdcI4(0); this.il.Op(ILOpCode.Ret, -1);
+  }
+  private TypedEquals(): SourceMethodSymbol<TSourceFile> {
+    for (const member of this.type.GetMembers("Equals"))
+      if (member instanceof SourceMethodSymbol<TSourceFile>) {
+        const method = member as SourceMethodSymbol<TSourceFile>;
+        if (method.SynthesizedKind == SynthesizedBodyKind.RecordEquals || method.SynthesizedKind == SynthesizedBodyKind.UnionEquals)
+          return method;
+      }
+    throw new InvalidOperationException("Sequence contains no matching element");
+  }
+  private RecordEqualsObject(): void {
+    const fail = this.il.NewLabel(); const self = this.metadata.GetTypeEntity(this.Self);
+    if (this.IsStruct) {
+      this.il.Ldarg(1); this.il.Token(ILOpCode.Isinst, self, 0); this.il.Branch(ILOpCode.Brfalse, fail);
+      this.il.Ldarg(0); this.il.Ldarg(1); this.il.Token(ILOpCode.Unbox_any, self, 0);
+      this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(this.TypedEquals()), 2, 1);
+    } else {
+      this.il.Ldarg(0); this.il.Ldarg(1); this.il.Token(ILOpCode.Isinst, self, 0);
+      this.il.Call(ILOpCode.Callvirt, this.metadata.GetMethodEntity(this.TypedEquals()), 2, 1);
+    }
+    this.il.Op(ILOpCode.Ret, 0); this.il.Mark(fail); this.il.ResetDepth();
+    this.il.LdcI4(0); this.il.Op(ILOpCode.Ret, -1);
+  }
+  private RecordHash(): void {
+    const hash = this.il.NewLocal(this.getSpecialType(SpecialType.Int32));
+    this.il.LdcI4(0); this.il.Stloc(hash.Index);
+    for (const property of this.Props) {
+      const comparer = this.EqComparer(this.FieldClr(property));
+      this.il.Ldloc(hash.Index); this.il.LdcI4(-1521134295); this.il.Op(ILOpCode.Mul, -1);
+      this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(this.FirstMethod(comparer, "get_Default")), 0, 1);
+      this.il.Ldarg(0); this.LoadField(SynthesizedBodyEmitter<TSourceFile>.Backing(property));
+      this.il.Call(ILOpCode.Callvirt, this.metadata.GetMethodEntity(this.FirstMethod(comparer, "GetHashCode", 1)), 2, 1);
+      this.il.Op(ILOpCode.Add, -1); this.il.Stloc(hash.Index);
+    }
+    this.il.Ldloc(hash.Index); this.il.Op(ILOpCode.Ret, -1);
+  }
+  private StoreString(text: string, index: int): void {
+    this.il.Op(ILOpCode.Dup, 1); this.il.LdcI4(index);
+    this.il.LdStr(this.metadata.Metadata.GetOrAddUserString(text)); this.il.Op(ILOpCode.Stelem_ref, -3);
+  }
+  private RecordToString(): void {
+    const props = this.Props; const text = this.getSpecialType(SpecialType.String);
+    if (props.Length == 0) {
+      this.il.LdStr(this.metadata.Metadata.GetOrAddUserString(this.type.Name + " { }"));
+      this.il.Op(ILOpCode.Ret, -1); return;
+    }
+    const obj = this.getSpecialType(SpecialType.Object);
+    this.il.LdcI4((props.Length * 2) + 1); this.il.Token(ILOpCode.Newarr, this.metadata.GetTypeEntity(obj), 0);
+    let index = 0;
+    for (let i = 0; i < props.Length; i++) {
+      this.StoreString((i == 0 ? this.type.Name + " { " : ", ") + props[i].Name + " = ", index++);
+      this.il.Op(ILOpCode.Dup, 1); this.il.LdcI4(index++); this.il.Ldarg(0);
+      this.LoadField(SynthesizedBodyEmitter<TSourceFile>.Backing(props[i]));
+      const type = this.FieldClr(props[i]);
+      if (!(type.IsReferenceType && !(type instanceof TypeParameterSymbol)))
+        this.il.Token(ILOpCode.Box, this.metadata.GetTypeEntity(type), 0);
+      this.il.Op(ILOpCode.Stelem_ref, -3);
+    }
+    this.StoreString(" }", index++);
+    for (const member of text.GetMembers("Concat"))
+      if (member instanceof MethodSymbol) {
+        const method = member as MethodSymbol;
+        if (method.IsStatic && method.Parameters.Length == 1 && method.Parameters[0].Type instanceof ArrayTypeSymbol) {
+          this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(method), 1, 1); this.il.Op(ILOpCode.Ret, 0); return;
+        }
+      }
+    throw new InvalidOperationException("Sequence contains no matching element");
+  }
+  private RecordOpEquals(): void {
+    const self = this.Self;
+    if (this.IsStruct) {
+      this.il.Ldarga(0); this.il.Ldarg(1); this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(this.TypedEquals()), 2, 1);
+      this.il.Op(ILOpCode.Ret, 0); return;
+    }
+    const yes = this.il.NewLabel(); const no = this.il.NewLabel();
+    this.il.Ldarg(0); this.il.Ldarg(1); this.il.Branch(ILOpCode.Beq, yes);
+    this.il.Ldarg(0); this.il.Branch(ILOpCode.Brfalse, no);
+    this.il.Ldarg(0); this.il.Ldarg(1); this.il.Call(ILOpCode.Callvirt, this.metadata.GetMethodEntity(this.TypedEquals()), 2, 1);
+    this.il.Op(ILOpCode.Ret, 0);
+    this.il.Mark(yes); this.il.ResetDepth(); this.il.LdcI4(1); this.il.Op(ILOpCode.Ret, -1);
+    this.il.Mark(no); this.il.ResetDepth(); this.il.LdcI4(0); this.il.Op(ILOpCode.Ret, -1);
+  }
+  private RecordOpNotEquals(): void {
+    const equals = this.FirstMethod(this.type, "op_Equality");
+    this.il.Ldarg(0); this.il.Ldarg(1); this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(equals), 2, 1);
+    this.il.LdcI4(0); this.il.Op(ILOpCode.Ceq, -1); this.il.Op(ILOpCode.Ret, 0);
+  }
+  private FindField(name: string): FieldSymbol {
+    for (const member of this.type.GetMembers(name)) if (member instanceof FieldSymbol) return member as FieldSymbol;
+    throw new InvalidOperationException("Sequence contains no elements");
+  }
+  private get Tag(): FieldSymbol { return this.FindField("Tag"); }
+  private get Value(): FieldSymbol { return this.FindField("Value"); }
+  private UnionCtor(): void {
+    const index = (this.method as SourceMethodSymbol<TSourceFile>).UnionCaseIndex;
+    this.il.Ldarg(0); this.il.LdcI4(index + 1); this.il.Token(ILOpCode.Stfld, this.metadata.GetFieldEntity(this.Tag), -2);
+    this.il.Ldarg(0); this.il.Ldarg(1);
+    const type = this.metadata.ClrType(this.method.Parameters[0].Type);
+    if (!(type.IsReferenceType && !(type instanceof TypeParameterSymbol))) this.il.Token(ILOpCode.Box, this.metadata.GetTypeEntity(type), 0);
+    this.il.Token(ILOpCode.Stfld, this.metadata.GetFieldEntity(this.Value), -2); this.il.Op(ILOpCode.Ret, 0);
+  }
+  private UnionImplicit(): void {
+    for (const ctor of this.type.InstanceConstructors)
+      if (ctor instanceof SourceMethodSymbol<TSourceFile> &&
+          (ctor as SourceMethodSymbol<TSourceFile>).UnionCaseIndex == (this.method as SourceMethodSymbol<TSourceFile>).UnionCaseIndex) {
+        this.il.Ldarg(0); this.il.Call(ILOpCode.Newobj, this.metadata.GetMethodEntity(ctor), 1, 1);
+        this.il.Op(ILOpCode.Ret, 0); return;
+      }
+    throw new InvalidOperationException("Sequence contains no matching element");
+  }
+  private UnionToString(): void {
+    const obj = this.getSpecialType(SpecialType.Object); const notNull = this.il.NewLabel();
+    this.il.Ldarg(0); this.LoadField(this.Value); this.il.Op(ILOpCode.Dup, 1); this.il.Branch(ILOpCode.Brtrue, notNull);
+    this.il.Op(ILOpCode.Pop, -1); this.il.LdStr(this.metadata.Metadata.GetOrAddUserString("")); this.il.Op(ILOpCode.Ret, -1);
+    this.il.Mark(notNull); this.il.ResetDepth(1);
+    this.il.Call(ILOpCode.Callvirt, this.metadata.GetMethodEntity(SynthesizedBodyEmitter<TSourceFile>.Find(obj, "ToString", 0, false)), 1, 1);
+    this.il.Op(ILOpCode.Dup, 1); const hasText = this.il.NewLabel(); this.il.Branch(ILOpCode.Brtrue, hasText);
+    this.il.Op(ILOpCode.Pop, -1); this.il.LdStr(this.metadata.Metadata.GetOrAddUserString(""));
+    this.il.Mark(hasText); this.il.Op(ILOpCode.Ret, 0);
+  }
+  private UnionEquals(): void {
+    const no = this.il.NewLabel(); const obj = this.getSpecialType(SpecialType.Object);
+    this.il.Ldarg(0); this.LoadField(this.Tag); this.il.Ldarga(1); this.LoadField(this.Tag); this.il.Branch(ILOpCode.Bne_un, no);
+    const a = this.il.NewLocal(obj); const b = this.il.NewLocal(obj);
+    this.il.Ldarg(0); this.LoadField(this.Value); this.il.Stloc(a.Index);
+    this.il.Ldarga(1); this.LoadField(this.Value); this.il.Stloc(b.Index);
+    this.EmitEqualsOfType(obj, a, b); this.il.Op(ILOpCode.Ret, 0);
+    this.il.Mark(no); this.il.ResetDepth(); this.il.LdcI4(0); this.il.Op(ILOpCode.Ret, -1);
+  }
+  private UnionHash(): void {
+    const obj = this.getSpecialType(SpecialType.Object);
+    this.il.Ldarg(0); this.LoadField(this.Tag); this.il.Ldarg(0); this.LoadField(this.Value);
+    for (const member of this.getWellKnownType("System.HashCode")!.GetMembers("Combine"))
+      if (member instanceof MethodSymbol) {
+        const method = member as MethodSymbol;
+        if (method.Arity == 2 && method.Parameters.Length == 2) {
+          const args = ImmutableArray.Create<TypeSymbol>(this.getSpecialType(SpecialType.Int32), obj);
+          this.il.Call(ILOpCode.Call, this.metadata.GetMethodEntity(method.Construct(args)), 2, 1);
+          this.il.Op(ILOpCode.Ret, 0); return;
+        }
+      }
+    throw new InvalidOperationException("Sequence contains no matching element");
+  }
+}
