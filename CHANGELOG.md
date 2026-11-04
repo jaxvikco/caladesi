@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/jaxvikco/caladesi/compare/v1.0.1...v1.1.0) (2026-11-04)
+
+
+### Features
+
+* **tooling:** port tooling to Caladesi ([#19](https://github.com/jaxvikco/caladesi/issues/19)) ([8862e1f](https://github.com/jaxvikco/caladesi/commit/8862e1f61269465f0387f0519e26a0ee1d916152))
+
 ## [1.0.1](https://github.com/jaxvikco/caladesi/compare/v1.0.0...v1.0.1) (2026-10-27)
 
 
