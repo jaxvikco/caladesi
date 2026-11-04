@@ -63,6 +63,7 @@ public sealed class BinderIntegrationParityTests
     [DataRow("export function bad(value: Missing): void {}")]
     [DataRow("export function bad(value: void): void {}")]
     [DataRow("export function bad(): void { const x: int = 1; x.missing(); }")]
+    [DataRow("export function bad(s: string | null): int { if (s != null) { function clear(): void { s = null; } clear(); return s.Length; } return 0; }")]
     public void BinderDiagnosticsMatchOracleWhileRecovering(string source)
     {
         var oracle = CreateOracle(source).GetDiagnostics().Where(d =>

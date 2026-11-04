@@ -24,6 +24,11 @@ internal static class Nullability
 
         TypeSymbol Decode(TypeSymbol current)
         {
+            if (current is NullableTypeSymbol nullable)
+            {
+                return new NullableTypeSymbol(Decode(nullable.Underlying));
+            }
+
             byte flag = fallback;
             if (current.IsReferenceType || current is TypeParameterSymbol || current is NamedTypeSymbol { TypeArguments.Length: > 0 })
             {

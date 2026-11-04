@@ -375,6 +375,7 @@ export sealed class BinderStatementMethods<TFile> {
       const local = new LocalSymbol(syntax.Identifier.Text, delegateType, true, this.statements.LocalOwner, syntax);
       this.binder.DeclareSymbol(local.Name, local, syntax.Identifier);
       this.binder.Record(syntax, local);
+      if (!delegateType.IsErrorType) this.binder.Flow.NoteLambdaAssignments(syntax.Body!);
       declarations.Add(syntax);
       locals.Add(local);
     }

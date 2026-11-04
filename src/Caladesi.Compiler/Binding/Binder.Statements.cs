@@ -87,9 +87,13 @@ public sealed partial class Binder
                 continue;
             }
 
-            TypeSymbol? delegateType = TryGetLocalFunctionType(f, out _);
+            TypeSymbol? delegateType = TryGetLocalFunctionType(f, out bool fullyAnnotated);
             LocalSymbol local = new(f.Identifier.Text, delegateType ?? ErrorType, true, LocalOwner, f);
             DeclareSymbol(f.Identifier.Text, local, f.Identifier);
+            if (fullyAnnotated)
+            {
+                NoteLambdaAssignments(f.Body);
+            }
             funcs.Add((f, local));
         }
         // bind bodies after all names are declared so the functions can reference each other

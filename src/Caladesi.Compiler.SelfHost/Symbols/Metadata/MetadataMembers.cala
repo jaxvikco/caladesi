@@ -31,6 +31,9 @@ sealed class NullableSignatureDecoder {
   private position: int = 0;
   constructor(private readonly flags: byte[], private readonly fallback: byte) {}
   Decode(type: TypeSymbol): TypeSymbol {
+    if (type instanceof NullableTypeSymbol) {
+      return new NullableTypeSymbol(this.Decode((type as NullableTypeSymbol).Underlying));
+    }
     let flag = this.fallback;
     if (type.IsReferenceType || type instanceof TypeParameterSymbol ||
         (type instanceof NamedTypeSymbol && (type as NamedTypeSymbol).TypeArguments.Length > 0)) {
