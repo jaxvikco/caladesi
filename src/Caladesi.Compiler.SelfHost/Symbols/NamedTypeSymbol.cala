@@ -1,0 +1,189 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { StringBuilder } from "System.Text";
+import { RuntimeHelpers } from "System.Runtime.CompilerServices";
+import { Symbol, SymbolKind, Accessibility, AttributeData, SourceLocation } from "./Symbol";
+import { TypeSymbol, TypeParameterSymbol, TypeKind } from "./TypeSymbols";
+import { SpecialType } from "./SpecialType";
+import { MethodSymbol, MethodKind, FieldSymbol, PropertySymbol, SubstitutedMethodSymbol, SubstitutedFieldSymbol, SubstitutedPropertySymbol } from "./MemberSymbols";
+import { TypeMap } from "./TypeMap";
+
+export abstract class NamedTypeSymbol extends TypeSymbol {
+  override get Kind(): SymbolKind { return SymbolKind.NamedType; }
+  abstract get TypeParameters(): ImmutableArray<TypeParameterSymbol>;
+  abstract get TypeArguments(): ImmutableArray<TypeSymbol>;
+  get Arity(): int { return this.TypeParameters.Length; }
+  get IsGenericType(): bool { return this.Arity > 0; }
+  get OwnArity(): int { return Math.Max(0, this.Arity - (this.ContainingType == null ? 0 : this.ContainingType.Arity)); }
+  get OwnTypeArguments(): ImmutableArray<TypeSymbol> {
+    const skip = this.Arity - this.OwnArity;
+    return skip == 0 ? this.TypeArguments : this.TypeArguments.RemoveRange(0, skip);
+  }
+  get IsDefinition(): bool { return Object.ReferenceEquals(this.OriginalDefinition, this); }
+  get OriginalDefinition(): NamedTypeSymbol { return this; }
+  override get OriginalSymbolDefinition(): Symbol { return this.OriginalDefinition; }
+  get ConstructedFrom(): NamedTypeSymbol { return this; }
+  get IsRecord(): bool { return false; }
+  get IsUnionType(): bool { return false; }
+  get IsAnonymousUnion(): bool { return false; }
+  get UnionCases(): ImmutableArray<TypeSymbol> { return ImmutableArray<TypeSymbol>.Empty; }
+  get IsTuple(): bool { return false; }
+  get TupleElementNames(): ImmutableArray<string?> { return new ImmutableArray<string?>(); }
+  get EnumUnderlyingType(): NamedTypeSymbol? { return null; }
+  get IsStaticClass(): bool { return false; }
+  get IsReadOnlyStruct(): bool { return false; }
+  get DelegateInvokeMethod(): MethodSymbol? { return null; }
+  override get IsReferenceType(): bool {
+    return this.TypeKind == TypeKind.Class || this.TypeKind == TypeKind.Interface || this.TypeKind == TypeKind.Delegate || this.TypeKind == TypeKind.Error;
+  }
+  override get IsValueType(): bool { return this.TypeKind == TypeKind.Struct || this.TypeKind == TypeKind.Enum; }
+  GetTypeMembers(): ImmutableArray<NamedTypeSymbol> {
+    const builder = ImmutableArray.CreateBuilder<NamedTypeSymbol>();
+    for (const member of this.GetMembers()) if (member instanceof NamedTypeSymbol) builder.Add(member as NamedTypeSymbol);
+    return builder.ToImmutable();
+  }
+  private Constructors(kind: MethodKind): ImmutableArray<MethodSymbol> {
+    const builder = ImmutableArray.CreateBuilder<MethodSymbol>();
+    for (const member of this.GetMembers())
+      if (member instanceof MethodSymbol && (member as MethodSymbol).MethodKind == kind) builder.Add(member as MethodSymbol);
+    return builder.ToImmutable();
+  }
+  get InstanceConstructors(): ImmutableArray<MethodSymbol> { return this.Constructors(MethodKind.Constructor); }
+  get StaticConstructors(): ImmutableArray<MethodSymbol> { return this.Constructors(MethodKind.StaticConstructor); }
+  Construct(typeArguments: ImmutableArray<TypeSymbol>): NamedTypeSymbol {
+    if (typeArguments.Length != this.Arity) throw new ArgumentException("wrong number of type arguments");
+    const definition = this.OriginalDefinition;
+    let same = true;
+    for (let i = 0; i < typeArguments.Length; i++)
+      if (!Object.ReferenceEquals(typeArguments[i], definition.TypeParameters[i])) { same = false; break; }
+    return same ? definition : new ConstructedNamedType(definition, typeArguments);
+  }
+  Construct(typeArguments: TypeSymbol[]): NamedTypeSymbol {
+    const builder = ImmutableArray.CreateBuilder<TypeSymbol>();
+    builder.AddRange(typeArguments);
+    return this.Construct(builder.ToImmutable());
+  }
+  override ToMetadataString(): string {
+    const builder = new StringBuilder();
+    NamedTypeSymbol.AppendMetadataName(builder, this.OriginalDefinition);
+    return builder.ToString();
+  }
+  private static AppendMetadataName(builder: StringBuilder, type: NamedTypeSymbol): void {
+    if (type.ContainingType != null) {
+      NamedTypeSymbol.AppendMetadataName(builder, type.ContainingType.OriginalDefinition);
+      builder.Append('+');
+    } else {
+      const ns = type.ContainingNamespace;
+      if (ns != null && !ns.IsGlobalNamespace) builder.Append(ns.ToDisplayString()).Append('.');
+    }
+    builder.Append(type.MetadataName);
+  }
+  override get MetadataName(): string { return this.OwnArity > 0 ? this.Name + "`" + this.OwnArity : this.Name; }
+  get QualifiedName(): string {
+    if (this.ContainingType != null) return this.ContainingType.QualifiedName + "." + this.Name;
+    const ns = this.ContainingNamespace;
+    return ns != null && !ns.IsGlobalNamespace ? ns.ToDisplayString() + "." + this.Name : this.Name;
+  }
+  override Equals(other: TypeSymbol?): bool {
+    if (Object.ReferenceEquals(this, other)) return true;
+    if (!(other instanceof NamedTypeSymbol)) return false;
+    const named = other as NamedTypeSymbol;
+    if (this.IsDefinition && named.IsDefinition) return false;
+    if (!Object.ReferenceEquals(this.OriginalDefinition, named.OriginalDefinition)) return false;
+    const left = this.TypeArguments;
+    const right = named.TypeArguments;
+    if (left.Length != right.Length) return false;
+    for (let i = 0; i < left.Length; i++) if (!left[i].Equals(right[i])) return false;
+    return true;
+  }
+  override GetHashCode(): int {
+    let hash = RuntimeHelpers.GetHashCode(this.OriginalDefinition);
+    for (const argument of this.TypeArguments) hash = hash * 31 + argument.GetHashCode();
+    return hash;
+  }
+}
+
+export sealed class ConstructedNamedType extends NamedTypeSymbol {
+  private members: ImmutableArray<Symbol>;
+  private baseType: NamedTypeSymbol? = null;
+  private baseResolved: bool = false;
+  private interfaces: ImmutableArray<NamedTypeSymbol>;
+  readonly Map: TypeMap;
+  constructor(private readonly definition: NamedTypeSymbol, private readonly typeArguments: ImmutableArray<TypeSymbol>,
+    private readonly tupleNames: ImmutableArray<string?>) {
+    super();
+    this.Map = new TypeMap(definition.TypeParameters, typeArguments);
+  }
+  constructor(definition: NamedTypeSymbol, typeArguments: ImmutableArray<TypeSymbol>) {
+    super();
+    this.definition = definition;
+    this.typeArguments = typeArguments;
+    this.tupleNames = new ImmutableArray<string?>();
+    this.Map = new TypeMap(definition.TypeParameters, typeArguments);
+  }
+  override get OriginalDefinition(): NamedTypeSymbol { return this.definition; }
+  override get ContainingSymbol(): Symbol? { return this.definition.ContainingSymbol; }
+  override get Name(): string { return this.definition.Name; }
+  override get MetadataName(): string { return this.definition.MetadataName; }
+  override get OwnArity(): int { return this.definition.OwnArity; }
+  override get TypeParameters(): ImmutableArray<TypeParameterSymbol> { return this.definition.TypeParameters; }
+  override get TypeArguments(): ImmutableArray<TypeSymbol> { return this.typeArguments; }
+  override get TypeKind(): TypeKind { return this.definition.TypeKind; }
+  override get SpecialType(): SpecialType { return this.definition.SpecialType; }
+  override get DeclaredAccessibility(): Accessibility { return this.definition.DeclaredAccessibility; }
+  override get IsAbstract(): bool { return this.definition.IsAbstract; }
+  override get IsSealed(): bool { return this.definition.IsSealed; }
+  override get IsStatic(): bool { return this.definition.IsStatic; }
+  override get IsRecord(): bool { return this.definition.IsRecord; }
+  override get IsReadOnlyStruct(): bool { return this.definition.IsReadOnlyStruct; }
+  override get IsUnionType(): bool { return this.definition.IsUnionType; }
+  override get IsAnonymousUnion(): bool { return this.definition.IsAnonymousUnion; }
+  override get IsFromSource(): bool { return this.definition.IsFromSource; }
+  override get IsTuple(): bool {
+    return !this.tupleNames.IsDefault || this.definition.SpecialType == SpecialType.ValueTuple ||
+      this.definition.ToMetadataString().StartsWith("System.ValueTuple`", StringComparison.Ordinal);
+  }
+  override get TupleElementNames(): ImmutableArray<string?> { return this.tupleNames; }
+  override GetAttributes(): ImmutableArray<AttributeData> { return this.definition.GetAttributes(); }
+  override get Locations(): ImmutableArray<SourceLocation> { return this.definition.Locations; }
+  override get UnionCases(): ImmutableArray<TypeSymbol> {
+    const builder = ImmutableArray.CreateBuilder<TypeSymbol>();
+    if (this.definition.IsUnionType) for (const type of this.definition.UnionCases) builder.Add(this.Map.Substitute(type));
+    return builder.ToImmutable();
+  }
+  override get EnumUnderlyingType(): NamedTypeSymbol? { return this.definition.EnumUnderlyingType; }
+  override get BaseType(): NamedTypeSymbol? {
+    if (!this.baseResolved) {
+      const original = this.definition.BaseType;
+      this.baseType = original == null ? null : this.Map.Substitute(original) as NamedTypeSymbol;
+      this.baseResolved = true;
+    }
+    return this.baseType;
+  }
+  override get Interfaces(): ImmutableArray<NamedTypeSymbol> {
+    if (this.interfaces.IsDefault) {
+      const builder = ImmutableArray.CreateBuilder<NamedTypeSymbol>();
+      for (const type of this.definition.Interfaces) builder.Add(this.Map.Substitute(type) as NamedTypeSymbol);
+      this.interfaces = builder.ToImmutable();
+    }
+    return this.interfaces;
+  }
+  override get DelegateInvokeMethod(): MethodSymbol? {
+    if (this.definition.DelegateInvokeMethod == null) return null;
+    for (const member of this.GetMembers("Invoke")) if (member instanceof MethodSymbol) return member as MethodSymbol;
+    return null;
+  }
+  override GetMembers(): ImmutableArray<Symbol> {
+    if (this.members.IsDefault) {
+      const builder = ImmutableArray.CreateBuilder<Symbol>();
+      for (const member of this.definition.GetMembers()) {
+        if (member instanceof MethodSymbol) builder.Add(new SubstitutedMethodSymbol(this, member as MethodSymbol, this.Map));
+        else if (member instanceof FieldSymbol) builder.Add(new SubstitutedFieldSymbol(this, member as FieldSymbol, this.Map));
+        else if (member instanceof PropertySymbol) builder.Add(new SubstitutedPropertySymbol(this, member as PropertySymbol, this.Map));
+        else builder.Add(member);
+      }
+      this.members = builder.ToImmutable();
+      for (const member of this.members) if (member instanceof SubstitutedPropertySymbol) (member as SubstitutedPropertySymbol).Link(this.members);
+    }
+    return this.members;
+  }
+}

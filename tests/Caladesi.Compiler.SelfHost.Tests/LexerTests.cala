@@ -1,0 +1,134 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { Lexer, SyntaxToken, SyntaxKind } from "Caladesi.Compiler.Syntax";
+import { DiagnosticBag } from "Caladesi.Compiler.Diagnostics";
+import { SourceText } from "Caladesi.Compiler.Text";
+import { List } from "System.Collections.Generic";
+import { StringBuilder } from "System.Text";
+
+@TestClass
+export class LexerTests {
+  private static lex(source: string): List<SyntaxToken> {
+    return new Lexer(SourceText.From(source), "lexer.cala", new DiagnosticBag()).LexAll();
+  }
+
+  private static roundtrip(source: string): void {
+    const tokens = LexerTests.lex(source);
+    const builder = new StringBuilder();
+    let position = 0;
+    for (const token of tokens) {
+      if (token.FullStart != position || token.FullWidth != token.ToFullString().Length || token.Start > token.End || token.IsMissing) throw new Exception("Token position invariant");
+      builder.Append(token.ToFullString());
+      position = token.FullEnd;
+    }
+    if (builder.ToString() != source || position != source.Length || tokens[tokens.Count - 1].Kind != SyntaxKind.EndOfFileToken) throw new Exception("Lexer full fidelity");
+  }
+
+  @TestMethod
+  emptyInput(): void {
+    const tokens = LexerTests.lex("");
+    if (tokens.Count != 1 || tokens[0].Kind != SyntaxKind.EndOfFileToken || tokens[0].Width != 0) throw new Exception("Empty lexer");
+  }
+
+  @TestMethod
+  identifiersAndKeywords(): void {
+    const tokens = LexerTests.lex("let café = true;");
+    if (tokens.Count != 6 || tokens[0].Kind != SyntaxKind.LetKeyword || tokens[1].Kind != SyntaxKind.IdentifierToken || tokens[1].Text != "café" || tokens[3].Kind != SyntaxKind.TrueKeyword) throw new Exception("Identifiers/keywords");
+  }
+
+  @TestMethod
+  operatorMaximalMunch(): void {
+    const tokens = LexerTests.lex("??= **= ...");
+    if (tokens.Count != 4 || tokens[0].Kind != SyntaxKind.QuestionQuestionEqualsToken || tokens[1].Kind != SyntaxKind.AsteriskAsteriskEqualsToken || tokens[2].Kind != SyntaxKind.DotDotDotToken) throw new Exception("Maximal munch");
+  }
+
+  @TestMethod
+  rightAngleTokensRemainSplitForGenericParsing(): void {
+    const tokens = LexerTests.lex(">>>=");
+    if (tokens.Count != 5 || tokens[0].Kind != SyntaxKind.GreaterThanToken || tokens[1].Kind != SyntaxKind.GreaterThanToken || tokens[2].Kind != SyntaxKind.GreaterThanToken || tokens[3].Kind != SyntaxKind.EqualsToken) throw new Exception("Split right angle tokens");
+  }
+
+  @TestMethod
+  integerValues(): void {
+    const tokens = LexerTests.lex("123 0xFF 0b101 1_000");
+    if (!object.Equals(tokens[0].Value, 123) || !object.Equals(tokens[1].Value, 255) || !object.Equals(tokens[2].Value, 5) || !object.Equals(tokens[3].Value, 1000)) throw new Exception("Integer values");
+  }
+
+  @TestMethod
+  floatingValues(): void {
+    const tokens = LexerTests.lex(".5 1.5 1e2");
+    if (!object.Equals(tokens[0].Value, 0.5) || !object.Equals(tokens[1].Value, 1.5) || !object.Equals(tokens[2].Value, 100.0)) throw new Exception("Floating values");
+  }
+
+  @TestMethod
+  numericRuntimeTypes(): void {
+    const tokens = LexerTests.lex("1 2147483648 1u 1ul 1f 1d 1m");
+    const expected: string[] = ["System.Int32", "System.Int64", "System.UInt32", "System.UInt64", "System.Single", "System.Double", "System.Decimal"];
+    for (let i = 0; i < expected.Length; i++) {
+      if (tokens[i].Value!.GetType().FullName != expected[i]) throw new Exception("Numeric type at " + i);
+    }
+  }
+
+  @TestMethod
+  stringEscapeValues(): void {
+    const tokens = LexerTests.lex("'a\\n\\t' '\\x41\\u0042\\u{1F600}'");
+    if (tokens[0].ValueText != "a\n\t" || tokens[1].ValueText != "AB😀") throw new Exception("String escape decoding");
+  }
+
+  @TestMethod
+  stringLineContinuation(): void {
+    const tokens = LexerTests.lex("'a\\\r\nb'");
+    if (tokens[0].ValueText != "ab") throw new Exception("String continuation");
+  }
+
+  @TestMethod
+  malformedStringsReportDiagnostics(): void {
+    const diagnostics = new DiagnosticBag();
+    new Lexer(SourceText.From("'unterminated"), "bad.cala", diagnostics).LexAll();
+    if (diagnostics.Count != 1 || diagnostics.Items[0].Id != "CAL0002" || diagnostics.Items[0].FilePath != "bad.cala") throw new Exception("Unterminated string diagnostic");
+  }
+
+  @TestMethod
+  invalidEscapeDiagnostic(): void {
+    const diagnostics = new DiagnosticBag();
+    new Lexer(SourceText.From("'\\z'"), "", diagnostics).LexAll();
+    if (diagnostics.Count != 1 || diagnostics.Items[0].Id != "CAL0005") throw new Exception("Invalid escape diagnostic");
+  }
+
+  @TestMethod
+  unterminatedCommentDiagnostic(): void {
+    const diagnostics = new DiagnosticBag();
+    new Lexer(SourceText.From("/* unterminated"), "", diagnostics).LexAll();
+    if (diagnostics.Count != 1 || diagnostics.Items[0].Id != "CAL0003") throw new Exception("Unterminated comment");
+  }
+
+  @TestMethod
+  triviaAndShebangRoundtrip(): void {
+    LexerTests.roundtrip("#!/usr/bin/env calac\r\nlet x = 1; // comment\r\n");
+    LexerTests.roundtrip("a /* same line */ b /* next\nline */ c // end\n d");
+    LexerTests.roundtrip(" \t\r\n// only trivia\n/* end */");
+  }
+
+  @TestMethod
+  templateRoundtrip(): void {
+    LexerTests.roundtrip("`a\r\nb${a + { x: 1 }.x}z${`nested${b}`}`");
+    LexerTests.roundtrip("`unterminated${{a: `x${y}`}.a}z");
+  }
+
+  @TestMethod
+  numericCorpusRoundtrip(): void {
+    const literals: string[] = ["0", "2147483647", "2147483648", "4294967296", "18446744073709551616", "1l", "1u", "1ul", "1lu", "0xffffffffffffffff", "0x10000000000000000", "0b102", "0x", "0b_", "1_2_3", "1e", "1e+", "1e9999", "1.5n", "1bad", "1uu", "0x123g"];
+    for (const literal of literals) LexerTests.roundtrip("a " + literal + "; // value\nb");
+  }
+
+  @TestMethod
+  deterministicMalformedRoundtrip(): void {
+    const random = new Random(51738);
+    const alphabet = "abcXYZ09_ $'\"`{}[]()/\\*+-.?=;:\r\n\t\u2028\u0085α😀";
+    for (let sample = 0; sample < 500; sample++) {
+      const builder = new StringBuilder();
+      const length = random.Next(100);
+      for (let i = 0; i < length; i++) builder.Append(alphabet[random.Next(alphabet.Length)]);
+      LexerTests.roundtrip(builder.ToString());
+    }
+  }
+}

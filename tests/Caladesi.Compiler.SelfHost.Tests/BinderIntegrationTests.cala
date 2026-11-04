@@ -1,0 +1,134 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { MemoryStream } from "System.IO";
+import { AssemblyLoadContext } from "System.Runtime.Loader";
+import { BindingFlags } from "System.Reflection";
+import { Compilation, CompilationOptions, OutputKind } from "Caladesi.Compiler";
+import { SyntaxTree } from "Caladesi.Compiler.Syntax";
+import { ReferenceSet } from "Caladesi.Compiler.Symbols.Metadata";
+import { DiagnosticSeverity } from "Caladesi.Compiler.Diagnostics";
+import { SpecialType, MethodSymbol, TypeParameterSymbol } from "Caladesi.Compiler.Symbols";
+import { SourceMethodSymbol } from "Caladesi.Compiler.Symbols.Source";
+import { BoundBlock, BoundReturn, BoundFor, BoundLambda, BoundLocalDeclaration,
+  BoundExpressionStatement } from "Caladesi.Compiler.Bound";
+
+@TestClass
+export class BinderIntegrationTests {
+  private static Create(source: string): Compilation {
+    const options = new CompilationOptions();
+    options.OutputKind = OutputKind.DynamicallyLinkedLibrary;
+    options.AssemblyName = "BinderNative_" + Guid.NewGuid().ToString("N");
+    options.RecordSemanticInfo = true;
+    return Compilation.Create(options, [SyntaxTree.ParseText(source, "binder.cala")],
+      ReferenceSet.Create([typeof(object).Assembly.Location]));
+  }
+  private static Check(compilation: Compilation): void {
+    for (const diagnostic of compilation.GetDiagnostics())
+      if (diagnostic.EffectiveSeverity == DiagnosticSeverity.Error)
+        throw new Exception(diagnostic.Id + ": " + diagnostic.Message);
+  }
+  private static Execute(source: string): int {
+    const compilation = BinderIntegrationTests.Create(source);
+    BinderIntegrationTests.Check(compilation);
+    const stream = new MemoryStream();
+    const loader = new AssemblyLoadContext("BinderNative_" + Guid.NewGuid().ToString("N"), true);
+    try {
+      if (!compilation.Emit(stream).Success) throw new Exception("Native binder emission failed");
+      stream.Position = 0;
+      const assembly = loader.LoadFromStream(stream);
+      for (const type of assembly.GetTypes()) {
+        const method = type.GetMethod("evaluate", BindingFlags.Public | BindingFlags.Static);
+        if (method != null) return method.Invoke(null, []) as int;
+      }
+      throw new Exception("Native binder did not emit evaluate");
+    } finally { loader.Unload(); stream.Dispose(); }
+  }
+
+  @TestMethod
+  scopesShadowWithoutLosingSemanticIdentity(): void {
+    const source = "export function evaluate(): int { let x = 3; { let x = 7; x += 2; } return x; }";
+    const compilation = BinderIntegrationTests.Create(source);
+    BinderIntegrationTests.Check(compilation);
+    const model = compilation.GetSemanticModel(compilation.SyntaxTrees[0]);
+    const outer = model.GetSymbolAt(source.IndexOf("let x", StringComparison.Ordinal) + 4);
+    const last = model.GetSymbolAt(source.LastIndexOf("x", StringComparison.Ordinal));
+    if (outer == null || last == null || !Object.ReferenceEquals(outer.Symbol, last.Symbol))
+      throw new Exception("Block scope must restore the outer symbol");
+    if (BinderIntegrationTests.Execute(source) != 3) throw new Exception("Block scope evaluation");
+  }
+
+  @TestMethod
+  genericConstraintAndParameterTypesBelongToTheirDeclarations(): void {
+    const compilation = BinderIntegrationTests.Create(
+      "export function identity<T extends class & new()>(value: T): T { return value; }");
+    BinderIntegrationTests.Check(compilation);
+    const module = compilation.GetFile(compilation.SyntaxTrees[0]).ModuleClass!;
+    let found = false;
+    for (const member of module.GetMembers()) if (member instanceof MethodSymbol && member.Name == "identity") {
+      const method = member as MethodSymbol;
+      const parameter = method.TypeParameters[0];
+      if (!parameter.HasReferenceTypeConstraint || !parameter.HasConstructorConstraint ||
+        !Object.ReferenceEquals(parameter, method.Parameters[0].Type) || !Object.ReferenceEquals(parameter, method.ReturnType))
+        throw new Exception("Constraint/type parameter ownership");
+      found = true;
+    }
+    if (!found) throw new Exception("Missing bound generic method");
+  }
+
+  @TestMethod
+  operatorsCallsAndAssignmentUseNativeConversionsAndOverloads(): void {
+    const result = BinderIntegrationTests.Execute(
+      "export function identity<T>(value: T): T { return value; } " +
+      "export function evaluate(): int { let value: long = identity<int>(4); value += 3; " +
+      "return (value as int) * 2 + (true ? 1 : 0); }");
+    if (result != 15) throw new Exception("Operators/conversions/generic overloads");
+  }
+
+  @TestMethod
+  nullEqualityPreservesConditionalOperandSideEffects(): void {
+    const result = BinderIntegrationTests.Execute(
+      "export function evaluate(): int { let calls = 0; " +
+      "function next(): bool { calls++; return true; } " +
+      "const equal = (next() ? null : null) == null; " +
+      "const unequal = null != (next() ? null : null); " +
+      "return calls * 10 + (equal ? 1 : 0) + (unequal ? 2 : 0); }");
+    if (result != 21) throw new Exception("Null equality must evaluate nonliteral operands");
+  }
+
+  @TestMethod
+  collectionsDestructuringAndForeachProduceExecutableBoundTrees(): void {
+    const result = BinderIntegrationTests.Execute(
+      "export function evaluate(): int { const [first, second] = [2, 5]; let sum = first; " +
+      "for (const value of [second, 3]) sum += value; return sum; }");
+    if (result != 10) throw new Exception("Destructuring and collection iteration");
+  }
+
+  @TestMethod
+  contextualLambdaAndLocalFunctionBodiesBindCapturedVariables(): void {
+    const result = BinderIntegrationTests.Execute(
+      "export function evaluate(): int { let offset = 4; " +
+      "const add: (value: int) => int = value => value + offset; " +
+      "function twice(value: int): int { return add(value) * 2; } return twice(3); }");
+    if (result != 14) throw new Exception("Lambda/local function capture");
+  }
+
+  @TestMethod
+  switchBreakContinueAndFinallyPreserveControlFlow(): void {
+    const result = BinderIntegrationTests.Execute(
+      "export function evaluate(): int { let result = 0; " +
+      "for (let i = 0; i < 5; i++) { if (i == 1) continue; " +
+      "switch (i) { case 0: result += 2; break; case 2: result += 3; break; default: result += i; break; } } " +
+      "try { return result; } finally { result = 99; } }");
+    if (result != 12) throw new Exception("Loop/switch/finally control flow");
+  }
+
+  @TestMethod
+  invalidNamesAssignmentsAndReturnsAreRealDiagnostics(): void {
+    const compilation = BinderIntegrationTests.Create(
+      "export function bad(): int { const value = 2; value = 3; return missing; }");
+    if (!compilation.HasErrors) throw new Exception("Missing binder diagnostics");
+    let count = 0;
+    for (const diagnostic of compilation.GetDiagnostics())
+      if (diagnostic.EffectiveSeverity == DiagnosticSeverity.Error) count++;
+    if (count < 2) throw new Exception("Binding must recover after an invalid assignment");
+  }
+}

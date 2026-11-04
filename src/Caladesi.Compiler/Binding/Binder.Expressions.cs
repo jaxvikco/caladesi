@@ -25,7 +25,7 @@ public sealed partial class Binder
             }
         }
         if (e.Syntax == null && e is not BoundUnbound) { }
-        BoundMap?[syntax] = e;
+        _ = (BoundMap?[syntax] = e);
         if (TypeMap != null && e.Type != null)
         {
             TypeMap[syntax] = e.Type;
@@ -445,7 +445,7 @@ public sealed partial class Binder
         {
             if (a is BoundUnbound && b.Type != null)
             {
-                return Build(ConvertImplicit(a, b.Type, c.WhenTrue), b);
+                return Build(ConvertImplicit(a, b.Type, c.WhenTrue), ConvertImplicit(b, b.Type, c.WhenFalse));
             }
 
             if (b is BoundUnbound && a.Type != null)

@@ -1,0 +1,46 @@
+import { IReadOnlyList } from "System.Collections.Generic";
+import { TextSpan } from "../Text/TextSpan";
+
+export enum DocumentSymbolKind { Module, Namespace, Class, Interface, Enum, EnumMember, Struct, Function, Method, Constructor, Property, Field, Variable, Constant, TypeAlias, TypeParameter }
+export sealed class DocumentSymbolInfo {
+  constructor(public readonly Name: string, public readonly Detail: string?, public readonly Kind: DocumentSymbolKind,
+    public readonly Span: TextSpan, public readonly SelectionSpan: TextSpan, public readonly Children: IReadOnlyList<DocumentSymbolInfo>) {}
+  override Equals(other: object?): bool {
+    if (!(other instanceof DocumentSymbolInfo)) return false;
+    const symbol = other as DocumentSymbolInfo;
+    return this.Name == symbol.Name && this.Detail == symbol.Detail && this.Kind == symbol.Kind &&
+      this.Span.Equals(symbol.Span) && this.SelectionSpan.Equals(symbol.SelectionSpan) && object.Equals(this.Children, symbol.Children);
+  }
+  override GetHashCode(): int { return HashCode.Combine(this.Name, this.Detail, this.Kind, this.Span, this.SelectionSpan, this.Children); }
+}
+export enum CompletionKind { Keyword, Variable, Constant, Function, Method, Property, Field, Class, Interface, Enum, EnumMember, Struct, Module, Namespace, TypeParameter, TypeAlias, Snippet }
+export sealed class CompletionEntry {
+  constructor(public readonly Label: string, public readonly Kind: CompletionKind, public readonly Detail: string?, public readonly InsertText?: string) {}
+  override Equals(other: object?): bool {
+    if (!(other instanceof CompletionEntry)) return false;
+    const entry = other as CompletionEntry;
+    return this.Label == entry.Label && this.Kind == entry.Kind && this.Detail == entry.Detail && this.InsertText == entry.InsertText;
+  }
+  override GetHashCode(): int { return HashCode.Combine(this.Label, this.Kind, this.Detail, this.InsertText); }
+}
+export sealed class SignatureEntry {
+  constructor(public readonly Label: string, public readonly Parameters: IReadOnlyList<string>) {}
+  override Equals(other: object?): bool {
+    return other instanceof SignatureEntry && this.Label == (other as SignatureEntry).Label &&
+      object.Equals(this.Parameters, (other as SignatureEntry).Parameters);
+  }
+  override GetHashCode(): int { return HashCode.Combine(this.Label, this.Parameters); }
+}
+export sealed class SignatureHelpInfo {
+  constructor(public readonly Signatures: IReadOnlyList<SignatureEntry>, public readonly ActiveSignature: int, public readonly ActiveParameter: int) {}
+  override Equals(other: object?): bool {
+    if (!(other instanceof SignatureHelpInfo)) return false;
+    const help = other as SignatureHelpInfo;
+    return object.Equals(this.Signatures, help.Signatures) && this.ActiveSignature == help.ActiveSignature && this.ActiveParameter == help.ActiveParameter;
+  }
+  override GetHashCode(): int { return HashCode.Combine(this.Signatures, this.ActiveSignature, this.ActiveParameter); }
+}
+export enum SemanticTokenType { Namespace, Type, Class, Enum, Interface, Struct, TypeParameter, Parameter, Variable, Property, EnumMember, Function, Method, Decorator }
+@FlagsAttribute
+export enum SemanticTokenModifiers { None = 0, Declaration = 1, Readonly = 2, Static = 4 }
+export struct type SemanticTokenInfo = { readonly Span: TextSpan; readonly Type: SemanticTokenType; readonly Modifiers: SemanticTokenModifiers };

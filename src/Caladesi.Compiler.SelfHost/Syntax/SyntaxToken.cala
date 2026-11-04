@@ -1,0 +1,51 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { StringBuilder } from "System.Text";
+import { SyntaxKind } from "./SyntaxKind";
+import { SyntaxElement } from "./SyntaxElement";
+
+export struct type SyntaxTrivia = { readonly Kind: SyntaxKind; readonly Text: string };
+
+export sealed class SyntaxToken extends SyntaxElement {
+  readonly LeadingTrivia: ImmutableArray<SyntaxTrivia>;
+  readonly TrailingTrivia: ImmutableArray<SyntaxTrivia>;
+  readonly LeadingWidth: int;
+  readonly TrailingWidthValue: int;
+
+  constructor(kind: SyntaxKind, public readonly Text: string,
+    private readonly fullStart: int, leading: ImmutableArray<SyntaxTrivia>,
+    trailing: ImmutableArray<SyntaxTrivia>, public readonly Value: object?,
+    public readonly IsMissingToken: bool = false) {
+    super(kind);
+    this.LeadingTrivia = leading.IsDefault ? ImmutableArray<SyntaxTrivia>.Empty : leading;
+    this.TrailingTrivia = trailing.IsDefault ? ImmutableArray<SyntaxTrivia>.Empty : trailing;
+    let leadingWidth = 0;
+    for (const trivia of this.LeadingTrivia) leadingWidth += trivia.Text.Length;
+    let trailingWidth = 0;
+    for (const trivia of this.TrailingTrivia) trailingWidth += trivia.Text.Length;
+    this.LeadingWidth = leadingWidth;
+    this.TrailingWidthValue = trailingWidth;
+  }
+
+  override get IsMissing(): bool { return this.IsMissingToken; }
+  override get FullStart(): int { return this.fullStart; }
+  override get Start(): int { return this.FullStart + this.LeadingWidth; }
+  override get FullWidth(): int { return this.LeadingWidth + this.Text.Length + this.TrailingWidthValue; }
+  override get TrailingWidth(): int { return this.TrailingWidthValue; }
+  get ValueText(): string {
+    if (this.Value instanceof string) return this.Value as string;
+    return this.Text;
+  }
+  override WriteTo(builder: StringBuilder): void {
+    for (const trivia of this.LeadingTrivia) builder.Append(trivia.Text);
+    builder.Append(this.Text);
+    for (const trivia of this.TrailingTrivia) builder.Append(trivia.Text);
+  }
+  WithLeadingTrivia(leading: ImmutableArray<SyntaxTrivia>): SyntaxToken {
+    return new SyntaxToken(this.Kind, this.Text, this.FullStart, leading, this.TrailingTrivia, this.Value, this.IsMissing);
+  }
+  WithKind(kind: SyntaxKind): SyntaxToken {
+    return new SyntaxToken(kind, this.Text, this.FullStart, this.LeadingTrivia, this.TrailingTrivia, this.Value, this.IsMissing);
+  }
+  IsKind(kind: SyntaxKind): bool { return this.Kind == kind; }
+  override ToString(): string { return this.Text; }
+}

@@ -1,0 +1,178 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { MemoryStream } from "System.IO";
+import { AssemblyLoadContext } from "System.Runtime.Loader";
+import { BindingFlags } from "System.Reflection";
+import { Compilation, CompilationOptions, OutputKind, SourceFile } from "Caladesi.Compiler";
+import { SyntaxTree } from "Caladesi.Compiler.Syntax";
+import { ReferenceSet } from "Caladesi.Compiler.Symbols.Metadata";
+import { SpecialType, MethodSymbol, FieldSymbol } from "Caladesi.Compiler.Symbols";
+import { DiagnosticSeverity } from "Caladesi.Compiler.Diagnostics";
+
+@TestClass
+export class CompilationIntegrationTests {
+  private static Create(source: string, record: bool = false): Compilation {
+    const options = new CompilationOptions();
+    options.OutputKind = OutputKind.DynamicallyLinkedLibrary;
+    options.AssemblyName = "NativeCompilationIntegration";
+    options.RecordSemanticInfo = record;
+    return Compilation.Create(options, [SyntaxTree.ParseText(source, "main.cala")],
+      ReferenceSet.Create([typeof(object).Assembly.Location]));
+  }
+  private static Check(compilation: Compilation): void {
+    for (const diagnostic of compilation.GetDiagnostics())
+      if (diagnostic.EffectiveSeverity == DiagnosticSeverity.Error)
+        throw new Exception(diagnostic.Id + ": " + diagnostic.Message);
+  }
+  private static Execute(compilation: Compilation, methodName: string, input: int): int {
+    const image = new MemoryStream();
+    const context = new AssemblyLoadContext("NativeCompilation_" + Guid.NewGuid().ToString("N"), true);
+    try {
+      const result = compilation.Emit(image);
+      if (!result.Success) {
+        CompilationIntegrationTests.Check(compilation);
+        throw new Exception("Emission failed");
+      }
+      image.Position = 0;
+      const assembly = context.LoadFromStream(image);
+      for (const type of assembly.GetTypes()) {
+        const method = type.GetMethod(methodName, BindingFlags.Public | BindingFlags.Static);
+        if (method != null) return method.Invoke(null, [input]) as int;
+      }
+      throw new Exception("Missing emitted function " + methodName);
+    } finally { context.Unload(); image.Dispose(); }
+  }
+
+  @TestMethod
+  realCompilationBindsAndExecutesGenericCallsAndLoops(): void {
+    const compilation = CompilationIntegrationTests.Create(
+      "export function identity<T>(value: T): T { return value; } " +
+      "export function evaluate(value: int): int { let sum = 0; " +
+      "for (let i = 0; i < identity<int>(value); i++) sum += i; return sum; }");
+    CompilationIntegrationTests.Check(compilation);
+    if (CompilationIntegrationTests.Execute(compilation, "evaluate", 6) != 15)
+      throw new Exception("Real generic calls and loop execution");
+  }
+
+  @TestMethod
+  importsResolveOwnedFilesAndRecordSymbolsBeforeBodyBinding(): void {
+    const options = new CompilationOptions();
+    options.OutputKind = OutputKind.DynamicallyLinkedLibrary;
+    options.RecordSemanticInfo = true;
+    options.RootNamespace = "Native";
+    options.ProjectDirectory = "/project";
+    const source = "import { identity } from './helper'; " +
+      "export function evaluate(value: int): int { return identity<int>(value) + 2; }";
+    const compilation = Compilation.Create(options, [
+      SyntaxTree.ParseText("export function identity<T>(value: T): T { return value; }", "/project/helper.cala"),
+      SyntaxTree.ParseText(source, "/project/main.cala")
+    ], ReferenceSet.Create([typeof(object).Assembly.Location]));
+    CompilationIntegrationTests.Check(compilation);
+    const main = compilation.GetFile(compilation.SyntaxTrees[1]);
+    if (!Object.ReferenceEquals(compilation.GetFile(compilation.SyntaxTrees[0]),
+      compilation.FindSourceFile(main, "./helper"))) throw new Exception("Relative source ownership");
+    const model = compilation.GetSemanticModel(compilation.SyntaxTrees[1]);
+    const importSymbol = model.GetSymbolAt(source.IndexOf("identity", StringComparison.Ordinal));
+    const invocationSymbol = model.GetSymbolAt(source.LastIndexOf("identity", StringComparison.Ordinal));
+    if (importSymbol == null || invocationSymbol == null ||
+      !Object.ReferenceEquals(importSymbol.Symbol.OriginalSymbolDefinition, invocationSymbol.Symbol.OriginalSymbolDefinition))
+      throw new Exception("Import semantic recording");
+    if (CompilationIntegrationTests.Execute(compilation, "evaluate", 8) != 10)
+      throw new Exception("Imported generic function execution");
+  }
+
+  @TestMethod
+  classesConstructorsPropertiesAndCallsReachActualEmission(): void {
+    const compilation = CompilationIntegrationTests.Create(
+      "export class Counter { value: int; constructor(value: int) { this.value = value; } " +
+      "add(amount: int): int { this.value += amount; return this.value; } } " +
+      "export function evaluate(value: int): int { const counter = new Counter(value); return counter.add(7); }");
+    CompilationIntegrationTests.Check(compilation);
+    if (CompilationIntegrationTests.Execute(compilation, "evaluate", 5) != 12)
+      throw new Exception("Real constructor and instance call execution");
+  }
+
+  @TestMethod
+  enumInitializersAndConstantsUsePreviousMembers(): void {
+    const compilation = CompilationIntegrationTests.Create(
+      "export enum Values { First = 4, Second = First + 3, Third } " +
+      "export const offset: int = 2; " +
+      "export function evaluate(value: int): int { return value + (Values.Third as int) + offset; }");
+    CompilationIntegrationTests.Check(compilation);
+    const file = compilation.GetFile(compilation.SyntaxTrees[0]);
+    let fields = 0;
+    for (const member of file.Types[0].GetMembers()) {
+      if (!(member instanceof FieldSymbol)) continue;
+      const field = member as FieldSymbol;
+      const expected = fields == 0 ? 4 : fields == 1 ? 7 : 8;
+      if ((field.ConstantValue!.Value as int) != expected) throw new Exception("Enum constant binding: " + field.Name + " = " + (Convert.ToString(field.ConstantValue!.Value) ?? "null") + ", expected " + expected);
+      fields++;
+    }
+    if (fields != 3 || CompilationIntegrationTests.Execute(compilation, "evaluate", 1) != 11)
+      throw new Exception("Enum and module constant execution");
+  }
+
+  @TestMethod
+  diagnosticFailuresAreCachedAndNeverWriteOutputs(): void {
+    const compilation = CompilationIntegrationTests.Create("export function bad(): int { return missingName; }");
+    if (!compilation.HasErrors) throw new Exception("Binder error missing");
+    const first = compilation.GetDiagnostics();
+    const second = compilation.GetDiagnostics();
+    if (first.Length == 0 || first.Length != second.Length || !Object.ReferenceEquals(first[0], second[0]))
+      throw new Exception("Diagnostic caching");
+    const image = new MemoryStream();
+    const pdb = new MemoryStream();
+    try {
+      const result = compilation.Emit(image, pdb);
+      if (result.Success || image.Length != 0 || pdb.Length != 0)
+        throw new Exception("Error emission must not write PE or PDB");
+    } finally { image.Dispose(); pdb.Dispose(); }
+  }
+
+  @TestMethod
+  portableDebugInformationAndRepeatEmissionAreReal(): void {
+    const compilation = CompilationIntegrationTests.Create(
+      "export function evaluate(value: int): int { return value * 2; }");
+    const first = new MemoryStream();
+    const second = new MemoryStream();
+    const pdb = new MemoryStream();
+    try {
+      if (!compilation.Emit(first, pdb, "native.pdb").Success || first.Length == 0 || pdb.Length == 0)
+        throw new Exception("Missing PE or portable PDB");
+      if (!compilation.Emit(second).Success || second.Length == 0)
+        throw new Exception("A new emitter must be used for repeat emission");
+    } finally { first.Dispose(); second.Dispose(); pdb.Dispose(); }
+  }
+
+  @TestMethod
+  semanticModelRecordsParametersLocalsAndReferences(): void {
+    const source = "export function evaluate(value: int): int { const result = value + 1; return result; }";
+    const compilation = CompilationIntegrationTests.Create(source, true);
+    const model = compilation.GetSemanticModel(compilation.SyntaxTrees[0]);
+    const declaration = model.GetSymbolAt(source.IndexOf("value", StringComparison.Ordinal));
+    const reference = model.GetSymbolAt(source.LastIndexOf("value", StringComparison.Ordinal));
+    const local = model.GetSymbolAt(source.IndexOf("result", StringComparison.Ordinal));
+    const localReference = model.GetSymbolAt(source.LastIndexOf("result", StringComparison.Ordinal));
+    if (declaration == null || reference == null || local == null || localReference == null ||
+      !Object.ReferenceEquals(declaration.Symbol, reference.Symbol) ||
+      !Object.ReferenceEquals(local.Symbol, localReference.Symbol))
+      throw new Exception("Recorded symbol identity");
+    const type = model.GetExpressionTypeAt(source.LastIndexOf("value", StringComparison.Ordinal));
+    if (type == null || type.SpecialType != SpecialType.Int32) throw new Exception("Recorded expression type");
+  }
+
+  @TestMethod
+  declarationsReferencesAndImmutableUpdatesKeepOwnership(): void {
+    const compilation = CompilationIntegrationTests.Create("export class Original {}");
+    const file = compilation.GetFile(compilation.SyntaxTrees[0]);
+    if (!Object.ReferenceEquals(file.Compilation, compilation)) throw new Exception("Source file ownership");
+    const integer = compilation.GetSpecialType(SpecialType.Int32);
+    if (!Object.ReferenceEquals(integer, compilation.GetSpecialType(SpecialType.Int32)) ||
+      !Object.ReferenceEquals(integer, compilation.GetWellKnownType("System.Int32")))
+      throw new Exception("Special and well-known type caches");
+    const changed = compilation.WithSyntaxTrees([SyntaxTree.ParseText("export class Changed {}", "changed.cala")]);
+    if (!Object.ReferenceEquals(changed.References, compilation.References) ||
+      Object.ReferenceEquals(changed.SourceAssembly, compilation.SourceAssembly) ||
+      changed.GetFile(changed.SyntaxTrees[0]).Types[0].Name != "Changed" || file.Types[0].Name != "Original")
+      throw new Exception("Immutable compilation ownership");
+  }
+}

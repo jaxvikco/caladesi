@@ -1,0 +1,517 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { Conversion, Conversions } from "Caladesi.Compiler";
+import { ConversionClassifier } from "Caladesi.Compiler.Binding";
+import { BoundExpression, BoundLiteral, ConversionKind } from "Caladesi.Compiler.Bound";
+import { Symbol, TypeSymbol, NamedTypeSymbol, TypeParameterSymbol, TypeKind, SpecialType,
+  NullableTypeSymbol, NullTypeSymbol, NeverTypeSymbol, ErrorTypeSymbol, ArrayTypeSymbol,
+  ConstantValue, FieldSymbol, MethodSymbol, MethodKind, ParameterSymbol, Accessibility, VarianceKind } from "Caladesi.Compiler.Symbols";
+import { SynthesizedMethodSymbol } from "Caladesi.Compiler.Symbols.Source";
+
+@TestClass
+export class ConversionClassifierTests {
+  // Metadata signatures currently lose nullable annotations at this assembly boundary.
+  private static readonly NoExpression: BoundExpression = (null as (BoundExpression | null))!;
+  private static readonly NoArrayBase: NamedTypeSymbol = (null as (NamedTypeSymbol | null))!;
+  @TestMethod
+  identityErrorNeverVoidAndNullOrdering(): void {
+    const c = new ConversionClassifier();
+    const integer = ConversionClassifierTests.Numeric(SpecialType.Int32);
+    const obj = new ConversionClassifierNativeType("object", TypeKind.Class, SpecialType.Object);
+    const nothing = new ConversionClassifierNativeType("void", TypeKind.Void, SpecialType.Void);
+    ConversionClassifierTests.Identity(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, integer, integer));
+    ConversionClassifierTests.Identity(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, nothing, nothing));
+    ConversionClassifierTests.Identity(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, NullTypeSymbol.Instance, NullTypeSymbol.Instance));
+    ConversionClassifierTests.Identity(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, ErrorTypeSymbol.Instance, nothing));
+    ConversionClassifierTests.Identity(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, nothing, ErrorTypeSymbol.Instance));
+    ConversionClassifierTests.Check(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, NeverTypeSymbol.Instance, nothing), ConversionKind.TypeOnly, true);
+    ConversionClassifierTests.Check(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, NeverTypeSymbol.Instance, integer), ConversionKind.TypeOnly, true);
+    ConversionClassifierTests.None(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, integer, nothing));
+    ConversionClassifierTests.None(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, nothing, integer));
+    ConversionClassifierTests.None(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, NullTypeSymbol.Instance, obj));
+    ConversionClassifierTests.None(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, NullTypeSymbol.Instance, integer));
+    ConversionClassifierTests.Check(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, NullTypeSymbol.Instance, new NullableTypeSymbol(integer)),
+      ConversionKind.NullLiteral, true);
+    ConversionClassifierTests.Check(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, NullTypeSymbol.Instance, new NullableTypeSymbol(obj)),
+      ConversionKind.NullLiteral, true);
+  }
+
+  @TestMethod
+  constantsRetainEveryBoxedIntegralTypeAndRejectNonIntegralBoxes(): void {
+    const c = new ConversionClassifier();
+    const integer = ConversionClassifierTests.Numeric(SpecialType.Int32);
+    const tiny = ConversionClassifierTests.Numeric(SpecialType.Byte);
+    const values: object[] = [Convert.ToSByte(7), Convert.ToByte(7), Convert.ToInt16(7), Convert.ToUInt16(7),
+      7, Convert.ToUInt32(7), Convert.ToInt64(7), Convert.ToUInt64(7)];
+    for (const value of values) {
+      const folded = c.ClassifyImplicit(new BoundLiteral(new ConstantValue(value), integer), integer, tiny);
+      ConversionClassifierTests.Check(folded, ConversionKind.ImplicitNumeric, true);
+      if (folded.Constant == null || !(folded.Constant.Value instanceof byte) ||
+          (folded.Constant.Value as byte) != 7) throw new Exception("Integral boxes fold to target CLR type");
+    }
+    const invalid: object[] = [7.0, Convert.ToSingle(7), Convert.ToDecimal(7), true, '7', "7"];
+    for (const value of invalid)
+      ConversionClassifierTests.None(c.ClassifyImplicit(new BoundLiteral(new ConstantValue(value), integer), integer, tiny));
+    ConversionClassifierTests.None(c.ClassifyImplicit(new BoundLiteral(ConstantValue.Null, integer), integer, tiny));
+    const same = c.ClassifyImplicit(new BoundLiteral(new ConstantValue(7), integer), integer, integer);
+    ConversionClassifierTests.Identity(same);
+    if (same.Constant != null) throw new Exception("Identity precedes constant folding");
+    ConversionClassifierTests.None(c.ClassifyImplicit(new BoundLiteral(new ConstantValue(7.0),
+      ConversionClassifierTests.Numeric(SpecialType.Double)), ConversionClassifierTests.Numeric(SpecialType.Double), tiny));
+  }
+
+  @TestMethod
+  constantBoundsIncludeSignedUnsignedAndFixedWidthNativeInts(): void {
+    ConversionClassifierTests.Bounds(SpecialType.SByte, -128L, 127L, -129L, 128L, "System.SByte");
+    ConversionClassifierTests.Bounds(SpecialType.Byte, 0L, 255L, -1L, 256L, "System.Byte");
+    ConversionClassifierTests.Bounds(SpecialType.Int16, -32768L, 32767L, -32769L, 32768L, "System.Int16");
+    ConversionClassifierTests.Bounds(SpecialType.UInt16, 0L, 65535L, -1L, 65536L, "System.UInt16");
+    ConversionClassifierTests.Bounds(SpecialType.Int32, -2147483648L, 2147483647L, -2147483649L, 2147483648L, "System.Int32");
+    ConversionClassifierTests.Bounds(SpecialType.UInt32, 0L, 4294967295L, -1L, 4294967296L, "System.UInt32");
+    ConversionClassifierTests.Bounds(SpecialType.IntPtr, -2147483648L, 2147483647L, -2147483649L, 2147483648L, "System.Int64");
+    ConversionClassifierTests.Bounds(SpecialType.UIntPtr, 0L, 4294967295L, -1L, 4294967296L, "System.UInt64");
+    const c = new ConversionClassifier();
+    const unsigned = ConversionClassifierTests.Numeric(SpecialType.UInt64);
+    const signed = ConversionClassifierTests.Numeric(SpecialType.Int64);
+    const maximum = c.ClassifyImplicit(new BoundLiteral(new ConstantValue(Convert.ToUInt64(long.MaxValue)), unsigned), unsigned, signed);
+    ConversionClassifierTests.Check(maximum, ConversionKind.ImplicitNumeric, true);
+    if (maximum.Constant == null || !(maximum.Constant.Value instanceof long) ||
+        (maximum.Constant.Value as long) != long.MaxValue) throw new Exception("Signed 64-bit upper bound");
+    ConversionClassifierTests.None(c.ClassifyImplicit(new BoundLiteral(new ConstantValue(ulong.MaxValue), unsigned), unsigned, signed));
+    const toUnsigned = c.ClassifyImplicit(new BoundLiteral(new ConstantValue(long.MaxValue), signed), signed, unsigned);
+    if (toUnsigned.Constant == null || !(toUnsigned.Constant.Value instanceof ulong))
+      throw new Exception("Unsigned 64-bit constant payload");
+    ConversionClassifierTests.None(c.ClassifyImplicit(new BoundLiteral(new ConstantValue(-1L), signed), signed, unsigned));
+    const character = ConversionClassifierTests.Numeric(SpecialType.Char);
+    ConversionClassifierTests.None(c.ClassifyImplicit(new BoundLiteral(new ConstantValue(65), signed), signed, character));
+  }
+
+  @TestMethod
+  oneCharacterStringsFoldButEmptyLongAndSurrogatePairsDoNot(): void {
+    const c = new ConversionClassifier();
+    const text = new ConversionClassifierNativeType("string", TypeKind.Class, SpecialType.String);
+    const character = ConversionClassifierTests.Numeric(SpecialType.Char);
+    const folded = c.ClassifyImplicit(new BoundLiteral(new ConstantValue("x"), text), text, character);
+    ConversionClassifierTests.Check(folded, ConversionKind.ImplicitNumeric, true);
+    if (folded.Constant == null || !(folded.Constant.Value instanceof char) ||
+        (folded.Constant.Value as char) != 'x') throw new Exception("String-to-char payload");
+    for (const value of ["", "xy", "😀"])
+      ConversionClassifierTests.None(c.ClassifyImplicit(new BoundLiteral(new ConstantValue(value), text), text, character));
+    const wrapped = c.ClassifyImplicit(new BoundLiteral(new ConstantValue("x"), text), text, new NullableTypeSymbol(character));
+    if (!wrapped.WrapNullable || wrapped.Constant == null || !(wrapped.Constant.Value instanceof char))
+      throw new Exception("String-to-nullable-char preserves folded box");
+  }
+
+  @TestMethod
+  nullableWrapLiftAndUnwrapKeepDistinctFlags(): void {
+    const c = new ConversionClassifier();
+    const integer = ConversionClassifierTests.Numeric(SpecialType.Int32);
+    const wide = ConversionClassifierTests.Numeric(SpecialType.Int64);
+    const ni = new NullableTypeSymbol(integer);
+    const nw = new NullableTypeSymbol(wide);
+    ConversionClassifierTests.Identity(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, ni, new NullableTypeSymbol(integer)));
+    const direct = c.ClassifyImplicit(ConversionClassifierTests.NoExpression, integer, ni);
+    ConversionClassifierTests.Check(direct, ConversionKind.ToNullable, true);
+    if (direct.WrapNullable) throw new Exception("ToNullable does not duplicate nullable wrap flag");
+    const wrapped = c.ClassifyImplicit(ConversionClassifierTests.NoExpression, integer, nw);
+    ConversionClassifierTests.Check(wrapped, ConversionKind.ImplicitNumeric, true);
+    if (!wrapped.WrapNullable) throw new Exception("Numeric conversion followed by nullable wrap");
+    const lifted = c.ClassifyImplicit(ConversionClassifierTests.NoExpression, ni, nw);
+    ConversionClassifierTests.Check(lifted, ConversionKind.LiftedNumeric, true);
+    if (lifted.WrapNullable) throw new Exception("Lifted conversion is not an extra wrap");
+    ConversionClassifierTests.None(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, ni, integer));
+    ConversionClassifierTests.None(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, nw, ni));
+    ConversionClassifierTests.Check(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, nw, ni), ConversionKind.LiftedNumeric, false);
+    ConversionClassifierTests.Check(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, ni, integer), ConversionKind.FromNullable, false);
+    ConversionClassifierTests.Check(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, nw, integer), ConversionKind.FromNullable, false);
+    const explicitWrap = c.ClassifyExplicit(ConversionClassifierTests.NoExpression, wide, ni);
+    ConversionClassifierTests.Check(explicitWrap, ConversionKind.ExplicitNumeric, false);
+    if (!explicitWrap.WrapNullable) throw new Exception("Explicit nullable target wrapping");
+    const tiny = ConversionClassifierTests.Numeric(SpecialType.Byte);
+    ConversionClassifierTests.Check(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, ni, tiny), ConversionKind.FromNullable, false);
+    const constantWrap = c.ClassifyImplicit(new BoundLiteral(new ConstantValue(42), integer), integer, new NullableTypeSymbol(tiny));
+    if (!constantWrap.WrapNullable || constantWrap.Constant == null || !(constantWrap.Constant.Value instanceof byte))
+      throw new Exception("Constant payload survives nullable target recursion");
+    ConversionClassifierTests.None(c.ClassifyImplicit(new BoundLiteral(new ConstantValue(42), ni), ni, new NullableTypeSymbol(tiny)));
+  }
+
+  @TestMethod
+  nullableReferencesAndBoxingHaveTheirOwnLiftRules(): void {
+    const c = new ConversionClassifier();
+    const obj = new ConversionClassifierNativeType("object", TypeKind.Class, SpecialType.Object);
+    const text = new ConversionClassifierNativeType("string", TypeKind.Class, SpecialType.String);
+    text.Parent = obj;
+    const integer = ConversionClassifierTests.Numeric(SpecialType.Int32);
+    ConversionClassifierTests.Check(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, new NullableTypeSymbol(text), new NullableTypeSymbol(obj)),
+      ConversionKind.TypeOnly, true);
+    ConversionClassifierTests.Check(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, new NullableTypeSymbol(integer), new NullableTypeSymbol(obj)),
+      ConversionKind.Boxing, true);
+    ConversionClassifierTests.None(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, new NullableTypeSymbol(integer), obj));
+    ConversionClassifierTests.None(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, new NullableTypeSymbol(text), obj));
+    const boxed = c.ClassifyImplicit(ConversionClassifierTests.NoExpression, integer, new NullableTypeSymbol(obj));
+    ConversionClassifierTests.Check(boxed, ConversionKind.Boxing, true);
+    if (!boxed.WrapNullable) throw new Exception("Nonnullable boxing plus nullable reference wrap");
+    ConversionClassifierTests.Check(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, new NullableTypeSymbol(obj), new NullableTypeSymbol(text)),
+      ConversionKind.ExplicitReference, false);
+  }
+
+  @TestMethod
+  numericReferenceEnumAndBoxingClassification(): void {
+    const c = new ConversionClassifier();
+    const integer = ConversionClassifierTests.Numeric(SpecialType.Int32);
+    const wide = ConversionClassifierTests.Numeric(SpecialType.Int64);
+    ConversionClassifierTests.Check(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, integer, wide), ConversionKind.ImplicitNumeric, true);
+    ConversionClassifierTests.Check(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, integer, wide), ConversionKind.ImplicitNumeric, true);
+    ConversionClassifierTests.Check(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, wide, integer), ConversionKind.ExplicitNumeric, false);
+    const obj = new ConversionClassifierNativeType("object", TypeKind.Class, SpecialType.Object);
+    const baseType = new ConversionClassifierNativeType("Base", TypeKind.Class);
+    baseType.Parent = obj;
+    const child = new ConversionClassifierNativeType("Child", TypeKind.Class);
+    child.Parent = baseType;
+    ConversionClassifierTests.Check(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, child, baseType), ConversionKind.ImplicitReference, true);
+    ConversionClassifierTests.Check(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, baseType, child), ConversionKind.ExplicitReference, false);
+    ConversionClassifierTests.Check(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, integer, obj), ConversionKind.Boxing, true);
+    ConversionClassifierTests.Check(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, obj, integer), ConversionKind.Unboxing, false);
+    const iface = new ConversionClassifierNativeType("IMarker", TypeKind.Interface);
+    integer.AddInterface(iface);
+    ConversionClassifierTests.Check(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, integer, iface), ConversionKind.Boxing, true);
+    ConversionClassifierTests.Check(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, iface, integer), ConversionKind.Unboxing, false);
+    const enumeration = new ConversionClassifierNativeType("E", TypeKind.Enum);
+    const otherEnum = new ConversionClassifierNativeType("F", TypeKind.Enum);
+    ConversionClassifierTests.None(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, integer, enumeration));
+    ConversionClassifierTests.Check(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, integer, enumeration), ConversionKind.EnumNumeric, false);
+    ConversionClassifierTests.Check(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, enumeration, integer), ConversionKind.EnumNumeric, false);
+    ConversionClassifierTests.Check(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, enumeration, otherEnum), ConversionKind.EnumNumeric, false);
+    const parameter = new TypeParameterSymbol("T", 0, obj, VarianceKind.None);
+    ConversionClassifierTests.Check(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, parameter, obj), ConversionKind.Boxing, true);
+    ConversionClassifierTests.Check(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, obj, parameter), ConversionKind.Unboxing, false);
+    ConversionClassifierTests.Check(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, parameter, child), ConversionKind.ExplicitReference, false);
+  }
+
+  @TestMethod
+  explicitReferencesHonorSealedClassesInterfacesAndArrayRank(): void {
+    const c = new ConversionClassifier();
+    const iface = new ConversionClassifierNativeType("I", TypeKind.Interface);
+    const other = new ConversionClassifierNativeType("J", TypeKind.Interface);
+    const open = new ConversionClassifierNativeType("Open", TypeKind.Class);
+    const closed = new ConversionClassifierNativeType("Closed", TypeKind.Class);
+    closed.Sealed = true;
+    ConversionClassifierTests.Check(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, open, iface), ConversionKind.ExplicitReference, false);
+    ConversionClassifierTests.Check(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, iface, open), ConversionKind.ExplicitReference, false);
+    ConversionClassifierTests.Check(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, iface, other), ConversionKind.ExplicitReference, false);
+    ConversionClassifierTests.None(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, closed, iface));
+    ConversionClassifierTests.None(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, iface, closed));
+    const implementation = new ConversionClassifierNativeType("Implementation", TypeKind.Class);
+    implementation.Sealed = true;
+    implementation.AddInterface(iface);
+    ConversionClassifierTests.Check(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, iface, implementation), ConversionKind.ExplicitReference, false);
+    ConversionClassifierTests.Check(c.ClassifyExplicit(ConversionClassifierTests.NoExpression,
+      new ArrayTypeSymbol(iface, ConversionClassifierTests.NoArrayBase), new ArrayTypeSymbol(other, ConversionClassifierTests.NoArrayBase)),
+      ConversionKind.ExplicitReference, false);
+    ConversionClassifierTests.None(c.ClassifyExplicit(ConversionClassifierTests.NoExpression,
+      new ArrayTypeSymbol(iface, ConversionClassifierTests.NoArrayBase), new ArrayTypeSymbol(other, ConversionClassifierTests.NoArrayBase, 2)));
+    ConversionClassifierTests.None(c.ClassifyExplicit(ConversionClassifierTests.NoExpression,
+      new ArrayTypeSymbol(ConversionClassifierTests.Numeric(SpecialType.Int32), ConversionClassifierTests.NoArrayBase),
+      new ArrayTypeSymbol(ConversionClassifierTests.Numeric(SpecialType.Int64), ConversionClassifierTests.NoArrayBase)));
+  }
+
+  @TestMethod
+  unionWrappingPrefersExactThenSmallerNumericAndKeepsFirstTies(): void {
+    const c = new ConversionClassifier();
+    const integer = ConversionClassifierTests.Numeric(SpecialType.Int32);
+    const wide = ConversionClassifierTests.Numeric(SpecialType.Int64);
+    const floating = ConversionClassifierTests.Numeric(SpecialType.Double);
+    const tiny = ConversionClassifierTests.Numeric(SpecialType.Byte);
+    const exact = ConversionClassifierTests.Union("Exact", [floating, integer, wide]);
+    ConversionClassifierTests.Index(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, integer, exact), ConversionKind.UnionWrap, true, 1);
+    const numeric = ConversionClassifierTests.Union("Numeric", [floating, wide]);
+    ConversionClassifierTests.Index(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, integer, numeric), ConversionKind.UnionWrap, true, 1);
+    const reverse = ConversionClassifierTests.Union("Reverse", [wide, floating]);
+    ConversionClassifierTests.Index(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, integer, reverse), ConversionKind.UnionWrap, true, 0);
+    const ties = ConversionClassifierTests.Union("Ties", [wide, wide]);
+    ConversionClassifierTests.Index(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, integer, ties), ConversionKind.UnionWrap, true, 0);
+    const constant = ConversionClassifierTests.Union("Constant", [wide, tiny]);
+    ConversionClassifierTests.Index(c.ClassifyImplicit(new BoundLiteral(new ConstantValue(7), integer), integer, constant),
+      ConversionKind.UnionWrap, true, 1);
+    ConversionClassifierTests.Index(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, integer, constant), ConversionKind.UnionWrap, true, 0);
+    const unrelated = new ConversionClassifierNativeType("Unrelated", TypeKind.Struct);
+    ConversionClassifierTests.None(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, unrelated, numeric));
+    ConversionClassifierTests.Identity(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, numeric, numeric));
+  }
+
+  @TestMethod
+  unionWideningRequiresEveryCaseAndExtractionIsExactBeforeReference(): void {
+    const c = new ConversionClassifier();
+    const integer = ConversionClassifierTests.Numeric(SpecialType.Int32);
+    const wide = ConversionClassifierTests.Numeric(SpecialType.Int64);
+    const text = new ConversionClassifierNativeType("Text", TypeKind.Class);
+    const obj = new ConversionClassifierNativeType("object", TypeKind.Class, SpecialType.Object);
+    text.Parent = obj;
+    const source = ConversionClassifierTests.Union("Source", [integer, text]);
+    const target = ConversionClassifierTests.Union("Target", [wide, obj]);
+    ConversionClassifierTests.Index(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, source, target), ConversionKind.UnionWrap, true, -3);
+    ConversionClassifierTests.None(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, source, ConversionClassifierTests.Union("Missing", [wide])));
+    ConversionClassifierTests.None(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, target, source));
+    const references = ConversionClassifierTests.Union("References", [obj, text]);
+    ConversionClassifierTests.Index(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, references, text), ConversionKind.UnionExtract, false, 1);
+    const child = new ConversionClassifierNativeType("Child", TypeKind.Class);
+    child.Parent = text;
+    ConversionClassifierTests.Index(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, references, child), ConversionKind.UnionExtract, false, 0);
+    ConversionClassifierTests.Index(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, source, integer), ConversionKind.UnionExtract, false, 0);
+    ConversionClassifierTests.None(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, source, wide));
+  }
+
+  @TestMethod
+  tupleElementwiseConversionsUseMinusTwoAndRequireMatchingArity(): void {
+    const c = new ConversionClassifier();
+    const integer = ConversionClassifierTests.Numeric(SpecialType.Int32);
+    const wide = ConversionClassifierTests.Numeric(SpecialType.Int64);
+    const source = ConversionClassifierTests.Tuple("Source", [integer, integer]);
+    const target = ConversionClassifierTests.Tuple("Target", [wide, integer]);
+    ConversionClassifierTests.Index(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, source, target), ConversionKind.TypeOnly, true, -2);
+    ConversionClassifierTests.None(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, target, source));
+    ConversionClassifierTests.None(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, source, ConversionClassifierTests.Tuple("Short", [wide])));
+    ConversionClassifierTests.None(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, target, source));
+    ConversionClassifierTests.Identity(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, source, source));
+  }
+
+  @TestMethod
+  userDefinedCandidatesKeepMethodIdentityAndBestScore(): void {
+    const c = new ConversionClassifier();
+    const source = new ConversionClassifierNativeType("Source", TypeKind.Struct);
+    const target = new ConversionClassifierNativeType("Target", TypeKind.Class);
+    const obj = new ConversionClassifierNativeType("object", TypeKind.Class, SpecialType.Object);
+    target.Parent = obj;
+    ConversionClassifierTests.Operator(source, "op_Implicit", obj, target);
+    ConversionClassifierTests.Operator(source, "op_Implicit", source, obj);
+    const best = ConversionClassifierTests.Operator(target, "op_Implicit", source, target);
+    const tied = ConversionClassifierTests.Operator(target, "op_Implicit", source, target);
+    ConversionClassifierTests.Method(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, source, target), best, true);
+    if (Object.ReferenceEquals(best, tied)) throw new Exception("Distinct method fixture identity");
+    ConversionClassifierTests.None(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, source, target, false));
+    ConversionClassifierTests.Method(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, source, target), best, true);
+    const tieSource = new ConversionClassifierNativeType("TieSource", TypeKind.Struct);
+    const tieTarget = new ConversionClassifierNativeType("TieTarget", TypeKind.Struct);
+    const first = ConversionClassifierTests.Operator(tieSource, "op_Implicit", tieSource, tieTarget);
+    ConversionClassifierTests.Operator(tieTarget, "op_Implicit", tieSource, tieTarget);
+    ConversionClassifierTests.Method(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, tieSource, tieTarget), first, true);
+  }
+
+  @TestMethod
+  userDefinedSearchTraversesBasesButStopsBeforeObject(): void {
+    const c = new ConversionClassifier();
+    const source = new ConversionClassifierNativeType("Source", TypeKind.Class);
+    const parent = new ConversionClassifierNativeType("Parent", TypeKind.Class);
+    const obj = new ConversionClassifierNativeType("object", TypeKind.Class, SpecialType.Object);
+    const target = new ConversionClassifierNativeType("Target", TypeKind.Struct);
+    source.Parent = parent;
+    parent.Parent = obj;
+    const inherited = ConversionClassifierTests.Operator(parent, "op_Implicit", parent, target);
+    ConversionClassifierTests.Method(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, source, target), inherited, true);
+    const absent = new ConversionClassifierNativeType("Absent", TypeKind.Struct);
+    ConversionClassifierTests.Operator(obj, "op_Implicit", source, absent);
+    ConversionClassifierTests.None(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, source, absent));
+    const targetBase = new ConversionClassifierNativeType("TargetBase", TypeKind.Class);
+    const targetChild = new ConversionClassifierNativeType("TargetChild", TypeKind.Class);
+    targetChild.Parent = targetBase;
+    const fromTargetBase = ConversionClassifierTests.Operator(targetBase, "op_Implicit", source, targetChild);
+    ConversionClassifierTests.Method(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, source, targetChild), fromTargetBase, true);
+  }
+
+  @TestMethod
+  userDefinedFiltersRejectWrongNamesKindsStaticnessAndArity(): void {
+    const c = new ConversionClassifier();
+    const source = new ConversionClassifierNativeType("Source", TypeKind.Struct);
+    const target = new ConversionClassifierNativeType("Target", TypeKind.Struct);
+    const ordinary = ConversionClassifierTests.RawMethod(source, "op_Implicit", MethodKind.Ordinary, true, target);
+    ordinary.SetParameters(ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("x", source, 0, ordinary)));
+    const instance = ConversionClassifierTests.RawMethod(source, "op_Implicit", MethodKind.Conversion, false, target);
+    instance.SetParameters(ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("x", source, 0, instance)));
+    ConversionClassifierTests.RawMethod(source, "op_Implicit", MethodKind.Conversion, true, target);
+    const two = ConversionClassifierTests.RawMethod(source, "op_Implicit", MethodKind.Conversion, true, target);
+    two.SetParameters(ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("x", source, 0, two),
+      new ParameterSymbol("y", source, 1, two)));
+    ConversionClassifierTests.Operator(source, "op_NotConversion", source, target);
+    ConversionClassifierTests.None(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, source, target));
+    ConversionClassifierTests.None(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, source, target));
+    const explicitMethod = ConversionClassifierTests.Operator(target, "op_Explicit", source, target);
+    ConversionClassifierTests.None(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, source, target));
+    ConversionClassifierTests.Method(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, source, target), explicitMethod, false);
+  }
+
+  @TestMethod
+  userDefinedRecursionGuardRejectsChainingAndRestoresSearchDepth(): void {
+    const c = new ConversionClassifier();
+    const a = new ConversionClassifierNativeType("A", TypeKind.Struct);
+    const b = new ConversionClassifierNativeType("B", TypeKind.Struct);
+    const d = new ConversionClassifierNativeType("D", TypeKind.Struct);
+    const ab = ConversionClassifierTests.Operator(a, "op_Implicit", a, b);
+    ConversionClassifierTests.Operator(b, "op_Implicit", b, d);
+    ConversionClassifierTests.Operator(a, "op_Implicit", b, d);
+    ConversionClassifierTests.Operator(a, "op_Implicit", new NullableTypeSymbol(b), d);
+    ConversionClassifierTests.None(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, a, d));
+    ConversionClassifierTests.None(c.ClassifyExplicit(ConversionClassifierTests.NoExpression, a, d));
+    ConversionClassifierTests.None(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, a, b, false));
+    ConversionClassifierTests.Method(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, a, b), ab, true);
+    const wrapped = c.ClassifyImplicit(ConversionClassifierTests.NoExpression, a, new NullableTypeSymbol(b));
+    ConversionClassifierTests.Method(wrapped, ab, true);
+    if (!wrapped.WrapNullable) throw new Exception("User-defined method survives nullable wrap");
+    ConversionClassifierTests.None(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, new NullableTypeSymbol(a), new NullableTypeSymbol(b)));
+    const liftedExplicit = c.ClassifyExplicit(ConversionClassifierTests.NoExpression, new NullableTypeSymbol(a), new NullableTypeSymbol(b));
+    ConversionClassifierTests.Check(liftedExplicit, ConversionKind.ExplicitReference, false);
+    const unwrapped = c.ClassifyExplicit(ConversionClassifierTests.NoExpression, new NullableTypeSymbol(a), b);
+    ConversionClassifierTests.Check(unwrapped, ConversionKind.FromNullable, false);
+    if (!Object.ReferenceEquals(unwrapped.Method, ab)) throw new Exception("Unwrap retains follow-up method");
+    ConversionClassifierTests.Method(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, a, b), ab, true);
+  }
+
+  @TestMethod
+  injectedLiteralEnumResolverSupportsHitsMissesAndNullablePayloads(): void {
+    const text = new ConversionClassifierNativeType("string", TypeKind.Class, SpecialType.String);
+    const enumeration = new ConversionClassifierNativeType("LiteralEnum", TypeKind.Enum);
+    const other = new ConversionClassifierNativeType("Other", TypeKind.Enum);
+    const member = new ConversionClassifierConstantField(enumeration, "red", new ConstantValue(17));
+    let hits = 0;
+    const c = new ConversionClassifier((type, value) => {
+      if (Object.ReferenceEquals(type, enumeration) && value == "red") { hits++; return member; }
+      return (null as (FieldSymbol | null))!;
+    });
+    const expression = new BoundLiteral(new ConstantValue("red"), text);
+    const direct = c.ClassifyImplicit(expression, text, enumeration);
+    ConversionClassifierTests.Check(direct, ConversionKind.EnumNumeric, true);
+    if (direct.Constant == null || !(direct.Constant.Value instanceof int) ||
+        (direct.Constant.Value as int) != 17 || direct.WrapNullable || hits != 1)
+      throw new Exception("Resolver member constant payload and target identity");
+    const wrapped = c.ClassifyImplicit(expression, text, new NullableTypeSymbol(enumeration));
+    ConversionClassifierTests.Check(wrapped, ConversionKind.EnumNumeric, true);
+    if (!wrapped.WrapNullable || wrapped.Constant == null || (wrapped.Constant.Value as int) != 17)
+      throw new Exception("Nullable literal enum payload");
+    ConversionClassifierTests.Check(c.ClassifyExplicit(expression, text, enumeration), ConversionKind.EnumNumeric, true);
+    ConversionClassifierTests.None(c.ClassifyImplicit(new BoundLiteral(new ConstantValue("blue"), text), text, enumeration));
+    ConversionClassifierTests.None(c.ClassifyImplicit(expression, text, other));
+    ConversionClassifierTests.None(c.ClassifyImplicit(ConversionClassifierTests.NoExpression, text, enumeration));
+    ConversionClassifierTests.None(new ConversionClassifier().ClassifyImplicit(expression, text, enumeration));
+    const nullMember = new ConversionClassifierConstantField(enumeration, "red", ConstantValue.Null);
+    const nullResolver = new ConversionClassifier((type, value) => nullMember);
+    const nullPayload = nullResolver.ClassifyImplicit(expression, text, enumeration);
+    ConversionClassifierTests.Check(nullPayload, ConversionKind.EnumNumeric, true);
+    if (nullPayload.Constant == null || !nullPayload.Constant.IsNull) throw new Exception("Null-valued enum member payload");
+    const absentConstantMember = new ConversionClassifierConstantField(enumeration, "red", null);
+    const absentConstantResolver = new ConversionClassifier((type, value) => absentConstantMember);
+    const absentConstantPayload = absentConstantResolver.ClassifyImplicit(expression, text, new NullableTypeSymbol(enumeration));
+    ConversionClassifierTests.Check(absentConstantPayload, ConversionKind.EnumNumeric, true);
+    if (!absentConstantPayload.WrapNullable || absentConstantPayload.Constant == null || !absentConstantPayload.Constant.IsNull)
+      throw new Exception("Matched member without a constant still wraps a null constant payload");
+  }
+
+  private static Numeric(special: SpecialType): ConversionClassifierNativeType {
+    return new ConversionClassifierNativeType(special.ToString(), TypeKind.Struct, special);
+  }
+  private static Union(name: string, cases: TypeSymbol[]): ConversionClassifierNativeType {
+    const type = new ConversionClassifierNativeType(name, TypeKind.Struct);
+    type.Union = true;
+    const builder = ImmutableArray.CreateBuilder<TypeSymbol>();
+    for (const item of cases) builder.Add(item);
+    type.Cases = builder.ToImmutable();
+    return type;
+  }
+  private static Tuple(name: string, arguments: TypeSymbol[]): ConversionClassifierNativeType {
+    const type = new ConversionClassifierNativeType(name, TypeKind.Struct);
+    type.Tuple = true;
+    const builder = ImmutableArray.CreateBuilder<TypeSymbol>();
+    for (const item of arguments) builder.Add(item);
+    type.Arguments = builder.ToImmutable();
+    return type;
+  }
+  private static RawMethod(owner: ConversionClassifierNativeType, name: string, kind: MethodKind,
+    isStatic: bool, result: TypeSymbol): SynthesizedMethodSymbol {
+    const method = new SynthesizedMethodSymbol(owner, name, kind, Accessibility.Public, isStatic, result,
+      ImmutableArray<ParameterSymbol>.Empty);
+    owner.AddMember(method);
+    return method;
+  }
+  private static Operator(owner: ConversionClassifierNativeType, name: string,
+    parameter: TypeSymbol, result: TypeSymbol): MethodSymbol {
+    const method = ConversionClassifierTests.RawMethod(owner, name, MethodKind.Conversion, true, result);
+    method.SetParameters(ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("value", parameter, 0, method)));
+    return method;
+  }
+  private static Bounds(target: SpecialType, minimum: long, maximum: long, below: long, above: long, clrName: string): void {
+    const c = new ConversionClassifier();
+    const source = ConversionClassifierTests.Numeric(SpecialType.Int64);
+    const destination = ConversionClassifierTests.Numeric(target);
+    for (const value of [minimum, maximum]) {
+      const conversion = c.ClassifyImplicit(new BoundLiteral(new ConstantValue(value), source), source, destination);
+      ConversionClassifierTests.Check(conversion, ConversionKind.ImplicitNumeric, true);
+      if (conversion.Constant == null || conversion.Constant.Value == null ||
+          conversion.Constant.Value.GetType().FullName != clrName)
+        throw new Exception("Integral boundary folded CLR type: " + clrName);
+    }
+    for (const value of [below, above])
+      ConversionClassifierTests.None(c.ClassifyImplicit(new BoundLiteral(new ConstantValue(value), source), source, destination));
+  }
+  private static Check(conversion: Conversion, kind: ConversionKind, isImplicit: bool): void {
+    if (!conversion.Exists || conversion.Kind != kind || conversion.IsImplicit != isImplicit)
+      throw new Exception("Conversion kind or implicitness: " + kind);
+  }
+  private static Identity(conversion: Conversion): void {
+    ConversionClassifierTests.Check(conversion, ConversionKind.Identity, true);
+    if (!Conversions.IsIdentity(conversion) || conversion.CaseIndex != -1 || conversion.Method != null ||
+        conversion.Constant != null || conversion.WrapNullable) throw new Exception("Identity fields");
+  }
+  private static None(conversion: Conversion): void {
+    if (conversion.Exists || Conversions.IsIdentity(conversion) || conversion.Kind != ConversionKind.Identity ||
+        conversion.IsImplicit || conversion.CaseIndex != 0 || conversion.Method != null ||
+        conversion.Constant != null || conversion.WrapNullable) throw new Exception("None fields");
+  }
+  private static Index(conversion: Conversion, kind: ConversionKind, isImplicit: bool, index: int): void {
+    ConversionClassifierTests.Check(conversion, kind, isImplicit);
+    if (conversion.CaseIndex != index) throw new Exception("Conversion case marker: " + index);
+  }
+  private static Method(conversion: Conversion, method: MethodSymbol, isImplicit: bool): void {
+    ConversionClassifierTests.Check(conversion, ConversionKind.UserDefined, isImplicit);
+    if (!Object.ReferenceEquals(conversion.Method, method)) throw new Exception("Selected conversion method identity");
+  }
+}
+
+export sealed class ConversionClassifierNativeType extends NamedTypeSymbol {
+  Parent: NamedTypeSymbol? = null;
+  Union: bool = false;
+  Tuple: bool = false;
+  Sealed: bool = false;
+  Cases: ImmutableArray<TypeSymbol> = ImmutableArray<TypeSymbol>.Empty;
+  Arguments: ImmutableArray<TypeSymbol> = ImmutableArray<TypeSymbol>.Empty;
+  private members: ImmutableArray<Symbol> = ImmutableArray<Symbol>.Empty;
+  private interfaces: ImmutableArray<NamedTypeSymbol> = ImmutableArray<NamedTypeSymbol>.Empty;
+  constructor(private readonly name: string, private readonly kind: TypeKind, private readonly special: SpecialType) { super(); }
+  constructor(name: string, kind: TypeKind) {
+    super();
+    this.name = name;
+    this.kind = kind;
+    this.special = SpecialType.None;
+  }
+  override get Name(): string { return this.name; }
+  override get TypeKind(): TypeKind { return this.kind; }
+  override get SpecialType(): SpecialType { return this.special; }
+  override get BaseType(): NamedTypeSymbol? { return this.Parent; }
+  override get IsUnionType(): bool { return this.Union; }
+  override get UnionCases(): ImmutableArray<TypeSymbol> { return this.Cases; }
+  override get IsTuple(): bool { return this.Tuple; }
+  override get IsSealed(): bool { return this.Sealed; }
+  override get TypeParameters(): ImmutableArray<TypeParameterSymbol> { return ImmutableArray<TypeParameterSymbol>.Empty; }
+  override get TypeArguments(): ImmutableArray<TypeSymbol> { return this.Arguments; }
+  override get Interfaces(): ImmutableArray<NamedTypeSymbol> { return this.interfaces; }
+  override GetMembers(): ImmutableArray<Symbol> { return this.members; }
+  AddMember(member: Symbol): void { this.members = this.members.Add(member); }
+  AddInterface(type: NamedTypeSymbol): void { this.interfaces = this.interfaces.Add(type); }
+}
+
+export sealed class ConversionClassifierConstantField extends FieldSymbol {
+  constructor(private readonly owner: Symbol, private readonly name: string, private readonly value: ConstantValue?) { super(); }
+  override get Name(): string { return this.name; }
+  override get ContainingSymbol(): Symbol? { return this.owner; }
+  override get Type(): TypeSymbol { return this.owner as TypeSymbol; }
+  override get IsConst(): bool { return true; }
+  override get IsStatic(): bool { return true; }
+  override get ConstantValue(): ConstantValue? { return this.value; }
+}

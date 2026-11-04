@@ -1,0 +1,6 @@
+export sealed class ServerOptions {
+  DiagnosticsDelay: TimeSpan = TimeSpan.FromMilliseconds(150);
+  RuntimePath: string? = null;
+  DotnetPath: string? = null;
+  readonly ChildEnvironment: Dictionary<string, string?> = new Dictionary<string, string?>();
+}

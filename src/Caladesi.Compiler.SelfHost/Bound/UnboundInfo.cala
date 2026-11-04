@@ -1,0 +1,40 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { Symbol, Accessibility } from "../Symbols/Symbol";
+import { TypeSymbol, ErrorTypeSymbol } from "../Symbols/TypeSymbols";
+import { MethodSymbol, MethodKind, ParameterSymbol } from "../Symbols/MemberSymbols";
+import { BoundLambda } from "./BoundNodes";
+
+export sealed class LambdaInfo {
+  ExplicitReturnType: TypeSymbol? = null;
+  IsAsync: bool = false;
+  IsGenerator: bool = false;
+  HasExpressionBody: bool = false;
+  constructor(public readonly ParameterCount: int, public readonly ExplicitParameterTypes: ImmutableArray<TypeSymbol?>,
+    public readonly Bind: Func<ImmutableArray<TypeSymbol>, TypeSymbol?, bool, BoundLambda?>,
+    public readonly InferReturnType: Func<ImmutableArray<TypeSymbol>, TypeSymbol?>) {}
+}
+export sealed class ObjectLiteralInfo {
+  HasSpread: bool = false;
+  constructor(public readonly PropertyNames: ImmutableArray<string>) {}
+}
+export sealed class CollectionInfo {
+  HasSpread: bool = false;
+  NaturalElementType: TypeSymbol? = null;
+  constructor(public readonly ElementCount: int) {}
+}
+export sealed class LambdaSymbol extends MethodSymbol {
+  private parameters: ImmutableArray<ParameterSymbol> = ImmutableArray<ParameterSymbol>.Empty;
+  ReturnTypeValue: TypeSymbol? = null;
+  CapturesThis: bool = false;
+  constructor(public readonly Container: Symbol, private readonly name: string,
+    public readonly IsAsyncLambda: bool, public readonly IsIteratorLambda: bool) { super(); }
+  override get Name(): string { return this.name; }
+  override get ContainingSymbol(): Symbol? { return this.Container; }
+  override get MethodKind(): MethodKind { return MethodKind.LambdaMethod; }
+  override get ReturnType(): TypeSymbol { return this.ReturnTypeValue ?? ErrorTypeSymbol.Instance; }
+  override get Parameters(): ImmutableArray<ParameterSymbol> { return this.parameters; }
+  override get IsAsync(): bool { return this.IsAsyncLambda; }
+  override get IsIterator(): bool { return this.IsIteratorLambda; }
+  override get DeclaredAccessibility(): Accessibility { return Accessibility.Private; }
+  SetParameters(parameters: ImmutableArray<ParameterSymbol>): void { this.parameters = parameters; }
+}

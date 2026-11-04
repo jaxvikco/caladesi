@@ -1,0 +1,126 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { IReadOnlyList } from "System.Collections.Generic";
+import { Compilation, CompilationOptions, OutputKind, SourceFile } from "Caladesi.Compiler";
+import { SyntaxTree } from "Caladesi.Compiler.Syntax";
+import { ReferenceSet } from "Caladesi.Compiler.Symbols.Metadata";
+import { SemanticModel, CompletionEntry, SemanticTokenModifiers, SemanticTokenType, SymbolDisplay } from "Caladesi.Compiler.Semantics";
+
+@TestClass
+export class SemanticModelIntegrationTests {
+  private static Compile(text: string, extra: string? = null): Compilation {
+    const options = new CompilationOptions();
+    options.OutputKind = OutputKind.DynamicallyLinkedLibrary;
+    options.RecordSemanticInfo = true;
+    options.AssemblyName = "SemanticIntegration";
+    options.ProjectDirectory = "/semantic";
+    const trees = extra == null ? ImmutableArray.Create<SyntaxTree>(SyntaxTree.ParseText(text, "/semantic/main.cala")) :
+      ImmutableArray.Create<SyntaxTree>(SyntaxTree.ParseText(text, "/semantic/main.cala"), SyntaxTree.ParseText(extra, "/semantic/lib.cala"));
+    return Compilation.Create(options, trees, ReferenceSet.Create([typeof(object).Assembly.Location]));
+  }
+  private static Has(entries: IReadOnlyList<CompletionEntry>, name: string): bool {
+    for (const entry of entries) if (entry.Label == name) return true;
+    return false;
+  }
+  @TestMethod
+  functionHoverDefinitionReferencesTokensAndSignatureShareRecordedSymbols(): void {
+    const text = "function square(x: int): int { return x * x; }\nconst a = square(2);\nconst b = square(3);";
+    const compilation = SemanticModelIntegrationTests.Compile(text);
+    const model = compilation.GetSemanticModel(compilation.SyntaxTrees[0]);
+    const position = text.IndexOf("square(2)", StringComparison.Ordinal) + 2;
+    if (model.GetHover(position) != "function square(x: int): int") throw new Exception("Function hover");
+    const at = model.GetSymbolAt(position);
+    if (at == null || at.IsDeclaration) throw new Exception("Call symbol");
+    const definition = model.GetDefinition(at.Symbol);
+    if (definition == null || definition.Span.Start != text.IndexOf("square", StringComparison.Ordinal) || !definition.IsDeclaration)
+      throw new Exception("Definition location");
+    const references = model.FindReferences(at.Symbol);
+    if (references.Count != 3 || !references[0].IsDeclaration || model.FindReferences(at.Symbol, false).Count != 2)
+      throw new Exception("Reference order/declaration filtering");
+    if (model.GetSymbolAt(text.IndexOf("square", StringComparison.Ordinal) + "square".Length) == null)
+      throw new Exception("Cursor immediately after name");
+    let functions = 0;
+    let declarations = 0;
+    for (const token of model.GetSemanticTokens()) {
+      if (token.Type == SemanticTokenType.Function) functions++;
+      if ((token.Modifiers & SemanticTokenModifiers.Declaration) != SemanticTokenModifiers.None) declarations++;
+    }
+    if (functions != 3 || declarations < 4) throw new Exception("Semantic classifications");
+    const help = model.GetSignatureHelp(text.IndexOf("square(2)", StringComparison.Ordinal) + "square(".Length);
+    if (help == null || help.Signatures.Count != 1 || help.ActiveParameter != 0 ||
+      help.Signatures[0].Label != "square(x: int): int") throw new Exception("Signature help");
+    if (model.GetSignatureHelp(text.IndexOf("square(2)", StringComparison.Ordinal) + "square(2)".Length) != null)
+      throw new Exception("Signature help after closing parenthesis");
+    if (typeof(Compilation).Assembly.GetName().Name != "Caladesi.Compiler.SelfHost") throw new Exception("Non-native compilation");
+  }
+  @TestMethod
+  completionsRespectLexicalScopeAndStaticReceiver(): void {
+    const text = "class Dog { name: string = \"d\"; static count: int = 0; bark(): string { return \"woof\"; } }\n" +
+      "function f(value: int): void { const local = value; { const hidden = 1; } local; }\nconst d = new Dog();\nd.;\nDog.";
+    const compilation = SemanticModelIntegrationTests.Compile(text);
+    const model = compilation.GetSemanticModel(compilation.SyntaxTrees[0]);
+    const instance = model.GetCompletions(text.IndexOf("\nd.", StringComparison.Ordinal) + 3);
+    if (!SemanticModelIntegrationTests.Has(instance, "name") || !SemanticModelIntegrationTests.Has(instance, "bark") ||
+      SemanticModelIntegrationTests.Has(instance, "count") || SemanticModelIntegrationTests.Has(instance, "let"))
+      throw new Exception("Instance-only member completion");
+    const statics = model.GetCompletions(text.Length);
+    if (!SemanticModelIntegrationTests.Has(statics, "count") || SemanticModelIntegrationTests.Has(statics, "name"))
+      throw new Exception("Static-only member completion");
+    const locals = model.GetCompletions(text.IndexOf("local; }", StringComparison.Ordinal) + 2);
+    if (!SemanticModelIntegrationTests.Has(locals, "local") || !SemanticModelIntegrationTests.Has(locals, "value") ||
+      SemanticModelIntegrationTests.Has(locals, "hidden") || !SemanticModelIntegrationTests.Has(locals, "return"))
+      throw new Exception("Lexical completion scope");
+    if (model.GetCompletions(-10).Count == 0) throw new Exception("Clamped completion");
+  }
+  @TestMethod
+  sourceModuleReferencesIncludeImportsAndCompletionFiltersPrivateExports(): void {
+    const text = "import { twice } from \"./lib\";\nimport * as L from \"./lib\";\nconst result = twice(21);\nL.";
+    const compilation = SemanticModelIntegrationTests.Compile(text,
+      "export function twice(x: int): int { return x * 2; }\nfunction hidden(): void {}");
+    const model = compilation.GetSemanticModel(compilation.SyntaxTrees[0]);
+    const at = model.GetSymbolAt(text.IndexOf("twice(21)", StringComparison.Ordinal) + 1);
+    if (at == null) throw new Exception("Imported function binding");
+    const references = model.FindReferences(at.Symbol);
+    if (references.Count != 3) throw new Exception("Import/reference/declaration");
+    const definition = model.GetDefinition(at.Symbol);
+    if (definition == null || definition.Tree.FilePath != "/semantic/lib.cala") throw new Exception("Cross-file definition");
+    const entries = model.GetCompletions(text.Length);
+    if (!SemanticModelIntegrationTests.Has(entries, "twice") || SemanticModelIntegrationTests.Has(entries, "hidden") ||
+      SemanticModelIntegrationTests.Has(entries, "function")) throw new Exception("Module completion export filtering");
+  }
+  @TestMethod
+  overloadSignatureHelpOrdersByArityAndCountsSeparators(): void {
+    const text = "class C { run(x: int): int { return x; } run(x: int, y: int): int { return x + y; } }\nconst c = new C();\nc.run(1, 2);";
+    const compilation = SemanticModelIntegrationTests.Compile(text);
+    const model = compilation.GetSemanticModel(compilation.SyntaxTrees[0]);
+    const help = model.GetSignatureHelp(text.LastIndexOf(", 2", StringComparison.Ordinal) + 2);
+    if (help == null || help.Signatures.Count != 2 || help.ActiveParameter != 1 || help.ActiveSignature != 1 ||
+      help.Signatures[0].Parameters.Count != 1 || help.Signatures[1].Parameters.Count != 2)
+      throw new Exception("Overload sorting/active selection");
+  }
+  @TestMethod
+  readonlyPropertyGenericMethodAndAliasFormatting(): void {
+    const text = "type NumberAlias = int;\nclass C { get value(): int { return 1; } identity<T>(value: T): T { return value; } }\n" +
+      "const c = new C();\nconst n = c.value;\nc.identity<int>(n);";
+    const compilation = SemanticModelIntegrationTests.Compile(text);
+    const model = compilation.GetSemanticModel(compilation.SyntaxTrees[0]);
+    if (model.GetHover(text.IndexOf("NumberAlias", StringComparison.Ordinal) + 1) != "type NumberAlias = int")
+      throw new Exception("Alias description");
+    if (model.GetHover(text.IndexOf("c.value", StringComparison.Ordinal) + 3) != "(property) C.value: int (readonly)")
+      throw new Exception("Readonly property description");
+    const method = model.GetSymbolAt(text.IndexOf("c.identity", StringComparison.Ordinal) + 3);
+    if (method == null || SymbolDisplay<SourceFile>.Describe(method.Symbol) != "(method) C.identity<T>(value: T): T")
+      throw new Exception("Generic method original-definition display");
+    if (model.GetDocumentSymbols().Count != 4) throw new Exception("Native outline reuse");
+  }
+  @TestMethod
+  semanticModelRequiresRecordingOption(): void {
+    const options = new CompilationOptions();
+    options.OutputKind = OutputKind.DynamicallyLinkedLibrary;
+    const tree = SyntaxTree.ParseText("const x = 1;");
+    const compilation = Compilation.Create(options, ImmutableArray.Create<SyntaxTree>(tree), ReferenceSet.Empty);
+    let rejected = false;
+    try { compilation.GetSemanticModel(tree); } catch (error: ArgumentException) { rejected = true; }
+    if (!rejected) throw new Exception("Missing recording option must be rejected");
+  }
+}

@@ -1,0 +1,42 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { Symbol } from "../Symbol";
+import { NamedTypeSymbol } from "../NamedTypeSymbol";
+import { TypeParameterSymbol, TypeParameterConstraints, VarianceKind } from "../TypeSymbols";
+import { TypeParameterListSyntax, TypeParameterSyntax } from "../../Syntax/Nodes.Core";
+import { SyntaxKind } from "../../Syntax/SyntaxKind";
+import { SourceSymbolContext } from "./SourceSymbolContext";
+
+export sealed class SourceTypeParameters<TSourceFile> {
+  static Create(context: SourceSymbolContext<TSourceFile>, file: TSourceFile, owner: Symbol, container: NamedTypeSymbol?,
+    list: TypeParameterListSyntax): ImmutableArray<TypeParameterSymbol> {
+    ArgumentNullException.ThrowIfNull(list);
+    const builder = ImmutableArray.CreateBuilder<TypeParameterSymbol>(list.Parameters.Count);
+    let ordinalBase = 0;
+    if (owner instanceof NamedTypeSymbol) {
+      const containingType = (owner as NamedTypeSymbol).ContainingType;
+      if (containingType != null) ordinalBase = containingType.Arity;
+    }
+    for (let i = 0; i < list.Parameters.Count; i++) {
+      const syntax = list.Parameters.Get(i);
+      let variance = VarianceKind.None;
+      if (syntax.VarianceKeyword != null) {
+        if (syntax.VarianceKeyword.Kind == SyntaxKind.InKeyword) variance = VarianceKind.In;
+        else if (syntax.VarianceKeyword.Kind == SyntaxKind.OutKeyword) variance = VarianceKind.Out;
+      }
+      const binding = new SourceConstraintBinding<TSourceFile>(context, file, owner, syntax);
+      builder.Add(new TypeParameterSymbol(syntax.Identifier.Text, ordinalBase + i, owner, variance,
+        binding.Bind));
+    }
+
+    return builder.MoveToImmutable();
+  }
+}
+
+// An explicit capture avoids the stage-zero generic loop-closure lowering limitation.
+sealed class SourceConstraintBinding<TSourceFile> {
+  constructor(private readonly context: SourceSymbolContext<TSourceFile>, private readonly file: TSourceFile,
+    private readonly owner: Symbol, private readonly syntax: TypeParameterSyntax) {}
+  Bind(parameter: TypeParameterSymbol): TypeParameterConstraints {
+    return this.context.BindConstraints(this.file, this.owner, this.syntax, parameter);
+  }
+}

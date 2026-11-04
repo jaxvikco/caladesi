@@ -1,0 +1,52 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { ILOpCode } from "System.Reflection.Metadata";
+import { ILBuilder } from "Caladesi.Compiler.Emit";
+import { ErrorTypeSymbol } from "Caladesi.Compiler.Symbols";
+
+@TestClass
+export class ILBuilderTests {
+  @TestMethod
+  stackDepthAndReturnReset(): void {
+    const builder = new ILBuilder();
+    builder.LdcI4(1);
+    builder.LdcI4(2);
+    builder.Op(ILOpCode.Add, -1);
+    if (builder.CurrentDepth != 1 || builder.MaxStack != 6) throw new Exception("Stack tracking");
+    builder.Op(ILOpCode.Ret, -1);
+    if (builder.CurrentDepth != 0 || builder.Offset == 0) throw new Exception("Return depth reset");
+    builder.ResetDepth(8);
+    if (builder.CurrentDepth != 8 || builder.MaxStack != 12) throw new Exception("Explicit stack depth");
+  }
+
+  @TestMethod
+  branchesRestoreIncomingDepth(): void {
+    const builder = new ILBuilder();
+    const target = builder.NewLabel();
+    builder.LdcI4(1);
+    builder.Branch(ILOpCode.Br, target);
+    if (builder.CurrentDepth != 0) throw new Exception("Unconditional branch depth");
+    builder.Mark(target);
+    if (builder.CurrentDepth != 1) throw new Exception("Incoming branch depth");
+    builder.Op(ILOpCode.Pop, -1);
+    if (builder.CurrentDepth != 0) throw new Exception("Pop depth");
+  }
+
+  @TestMethod
+  localsAndSequencePointsKeepMetadata(): void {
+    const builder = new ILBuilder();
+    const local = builder.NewLocal(ErrorTypeSymbol.Instance, "value");
+    if (local.Index != 0 || local.Name != "value" || builder.Locals.Count != 1) throw new Exception("Local slot");
+    builder.MarkSequencePoint(1, 2, 3, 4);
+    builder.LdcI4(1);
+    builder.MarkHidden();
+    const visible = builder.SequencePoints[0];
+    const hidden = builder.SequencePoints[1];
+    if (visible.Offset != 0 || visible.StartLine != 1 || visible.StartColumn != 2 ||
+        visible.EndLine != 3 || visible.EndColumn != 4 || visible.IsHidden) {
+      throw new Exception("Visible sequence point");
+    }
+    if (!hidden.IsHidden || hidden.StartLine != 0xFEEFEE || hidden.Offset != builder.Offset) {
+      throw new Exception("Hidden sequence point");
+    }
+  }
+}

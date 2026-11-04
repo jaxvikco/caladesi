@@ -1,0 +1,512 @@
+import { IEnumerable, IReadOnlyList, Dictionary, List, HashSet, ReferenceEqualityComparer, IComparer } from "System.Collections.Generic";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { Path, Stream } from "System.IO";
+import { Monitor } from "System.Threading";
+import { CompilationOptions, OutputKind } from "./CompilationOptions";
+import { SourceFile } from "./SourceFile";
+import { FileScope, FileScopeContext } from "./FileScope";
+import { Symbol, AssemblySymbol, SymbolKind } from "./Symbols/Symbol";
+import { NamespaceSymbol } from "./Symbols/NamespaceSymbol";
+import { NamedTypeSymbol } from "./Symbols/NamedTypeSymbol";
+import { TypeSymbol, ArrayTypeSymbol, ErrorTypeSymbol, TypeParameterSymbol, TypeParameterConstraints } from "./Symbols/TypeSymbols";
+import { MethodSymbol, MethodKind, FieldSymbol, ParameterSymbol, ConstantValue } from "./Symbols/MemberSymbols";
+import { SpecialType } from "./Symbols/SpecialType";
+import { ReferenceSet } from "./Symbols/Metadata/ReferenceSet";
+import { SourceNamedType, SourceClassSymbol, SourceInterfaceSymbol, SourceEnumSymbol, TypeAliasSymbol } from "./Symbols/Source/SourceTypes";
+import { SourceModuleClassSymbol } from "./Symbols/Source/SourceModuleClass";
+import { TypeAliasDeclarations } from "./Symbols/Source/SourceTypeAliasTypes";
+import { SourceMethodSymbol, SourcePropertySymbol, SourceFieldSymbol } from "./Symbols/Source/SourceMembers";
+import { SynthesizedAnonymousRecord } from "./Symbols/Source/SynthesizedAnonymousRecord";
+import { SyntaxTree } from "./Syntax/SyntaxTree";
+import { SyntaxNode } from "./Syntax/SyntaxElement";
+import { SyntaxToken } from "./Syntax/SyntaxToken";
+import { StatementSyntax, ImportDeclarationSyntax, ClassDeclarationSyntax, InterfaceDeclarationSyntax,
+  EnumDeclarationSyntax, TypeAliasDeclarationSyntax, FunctionDeclarationSyntax, VariableStatementSyntax,
+  EmptyStatementSyntax, TypeSyntax, TypeParameterSyntax, ParameterListSyntax, ImportSpecifierSyntax,
+  ExpressionSyntax, DecoratorSyntax, MethodDeclarationSyntax, PropertyDeclarationSyntax, AccessorDeclarationSyntax,
+  EnumMemberSyntax, VariableDeclaratorSyntax, ParameterSyntax } from "./Syntax/Nodes.Core";
+import { Diagnostic, DiagnosticBag, DiagnosticSeverity } from "./Diagnostics/Diagnostic";
+import { Descriptors } from "./Diagnostics/Descriptors";
+import { BoundBlock } from "./Bound/BoundNodes";
+import { BoundAttribute } from "./BoundAttribute";
+import { Binder } from "./Binding/Binder";
+import { BinderContext } from "./Binding/BinderContext";
+import { CompilationDeclarationContext, CompilationSemanticContext } from "./CompilationContexts";
+import { DeclarationChecker } from "./DeclarationChecker";
+import { EntryPointChecker } from "./EntryPointChecker";
+import { EmissionContext, EmitResult } from "./Emit/EmissionContext";
+import { AssemblyEmitter } from "./Emit/AssemblyEmitter";
+import { SemanticModel } from "./Semantics/SemanticModel";
+
+export sealed class SourceAssemblySymbol extends AssemblySymbol {
+  constructor(private readonly compilation: Compilation) { super(); }
+  override get Name(): string { return this.compilation.Options.AssemblyName; }
+  override get Version(): Version { return this.compilation.Options.AssemblyVersion; }
+  override get GlobalNamespace(): NamespaceSymbol { return this.compilation.GlobalNamespace; }
+  override get IsFromSource(): bool { return true; }
+}
+
+class DiagnosticOrder implements IComparer<Diagnostic> {
+  Compare(left: Diagnostic, right: Diagnostic): int {
+    let order = string.CompareOrdinal(left.FilePath, right.FilePath);
+    if (order != 0) return order;
+    order = left.Span.Start.CompareTo(right.Span.Start);
+    return order != 0 ? order : string.CompareOrdinal(left.Id, right.Id);
+  }
+}
+
+export sealed class Compilation extends BinderContext<SourceFile> {
+  private readonly files: Dictionary<SyntaxTree, SourceFile> = new Dictionary<SyntaxTree, SourceFile>();
+  private readonly filesByPath: Dictionary<string, SourceFile> = new Dictionary<string, SourceFile>(StringComparer.Ordinal);
+  private readonly specialTypes: NamedTypeSymbol?[] = new NamedTypeSymbol[Enum.GetValues<SpecialType>().Length + 1];
+  private readonly wellKnown: Dictionary<string, NamedTypeSymbol?> = new Dictionary<string, NamedTypeSymbol?>(StringComparer.Ordinal);
+  private readonly gate: object = new object();
+  private readonly declarationDiagnostics: DiagnosticBag = new DiagnosticBag();
+  readonly BodyDiagnostics: DiagnosticBag = new DiagnosticBag();
+  readonly SourceAssembly: SourceAssemblySymbol;
+  private readonly globalNamespace: NamespaceSymbol;
+  readonly FileScopes: CompilationFileScopeContext;
+  private diagnostics: ImmutableArray<Diagnostic>;
+  private declared = false;
+  RecordedSymbols: Dictionary<SyntaxNode, Symbol>? = null;
+  RecordedTypes: Dictionary<SyntaxNode, TypeSymbol>? = null;
+  RecordedDeclarations: Dictionary<[Tree: SyntaxTree, Start: int], Symbol>? = null;
+  private readonly anonymousRecords: Dictionary<string, SynthesizedAnonymousRecord<SourceFile>> =
+    new Dictionary<string, SynthesizedAnonymousRecord<SourceFile>>(StringComparer.Ordinal);
+  private readonly anonymousRecordList: List<SynthesizedAnonymousRecord<SourceFile>> = new List<SynthesizedAnonymousRecord<SourceFile>>();
+  private declarationIndex: Dictionary<[Tree: SyntaxTree, Start: int], Symbol>? = null;
+  private readonly boundAttributes: Dictionary<DecoratorSyntax, BoundAttribute?> =
+    new Dictionary<DecoratorSyntax, BoundAttribute?>(ReferenceEqualityComparer.Instance);
+
+  private constructor(public readonly Options: CompilationOptions, public readonly SyntaxTrees: ImmutableArray<SyntaxTree>,
+    public readonly References: ReferenceSet) {
+    super();
+    this.SourceAssembly = new SourceAssemblySymbol(this);
+    this.globalNamespace = new NamespaceSymbol("", null, References.GlobalNamespace);
+    this.FileScopes = new CompilationFileScopeContext(this);
+    for (const tree of SyntaxTrees) {
+      const file = new SourceFile(this, tree);
+      this.files[tree] = file;
+      this.filesByPath[Compilation.NormalizePath(tree.FilePath)] = file;
+    }
+  }
+
+  static Create(options: CompilationOptions, trees: IEnumerable<SyntaxTree>, references: ReferenceSet): Compilation {
+    ArgumentNullException.ThrowIfNull(references);
+    return new Compilation(options, ImmutableArray.CreateRange<SyntaxTree>(trees), references);
+  }
+  static Create(options: CompilationOptions, trees: IEnumerable<SyntaxTree>, referencePaths: IEnumerable<string>): Compilation {
+    return new Compilation(options, ImmutableArray.CreateRange<SyntaxTree>(trees), ReferenceSet.Create(referencePaths));
+  }
+  WithSyntaxTrees(trees: IEnumerable<SyntaxTree>): Compilation { return Compilation.Create(this.Options, trees, this.References); }
+  WithOptions(options: CompilationOptions): Compilation { return Compilation.Create(options, this.SyntaxTrees, this.References); }
+  override get DeclarationDiagnostics(): DiagnosticBag { return this.declarationDiagnostics; }
+  override get GlobalNamespace(): NamespaceSymbol { return this.globalNamespace; }
+  override GetTree(file: SourceFile): SyntaxTree { return file.Tree; }
+  override GetFilePath(file: SourceFile): string { return file.FilePath; }
+  override IsSourceNamedType(type: NamedTypeSymbol): bool { return type instanceof SourceNamedType<SourceFile>; }
+  override GetNamespace(file: SourceFile): Symbol { return file.Namespace; }
+  override get IsConsoleApplication(): bool { return this.Options.OutputKind == OutputKind.ConsoleApplication; }
+  override HasTopLevelStatements(file: SourceFile): bool { return file.TopLevelStatements.Length > 0; }
+  CreateBinder(file: SourceFile, containing: Symbol?, diagnostics: DiagnosticBag?): Binder<SourceFile> {
+    const binder = new Binder<SourceFile>(this, file, containing, diagnostics);
+    if (this.Options.RecordSemanticInfo) {
+      this.EnsureRecording();
+      binder.SymbolMap = this.RecordedSymbols;
+      binder.TypeMap = this.RecordedTypes;
+    }
+    return binder;
+  }
+  override BindParameters(file: SourceFile, method: SourceMethodSymbol<SourceFile>,
+    syntax: ParameterListSyntax): ImmutableArray<ParameterSymbol> {
+    return this.CreateBinder(file, method, this.DeclarationDiagnostics).BindParameters(method, syntax);
+  }
+  override BindType(file: SourceFile, owner: Symbol, syntax: TypeSyntax, allowVoid: bool): TypeSymbol {
+    return this.CreateBinder(file, owner, this.DeclarationDiagnostics).BindType(syntax, allowVoid);
+  }
+  override AdjustDeclaredReturnType(file: SourceFile, method: SourceMethodSymbol<SourceFile>,
+    type: TypeSymbol, syntax: TypeSyntax): TypeSymbol {
+    return this.CreateBinder(file, method, this.DeclarationDiagnostics).AdjustDeclaredReturnType(method, type, syntax);
+  }
+  override BindConstraints(file: SourceFile, owner: Symbol, syntax: TypeParameterSyntax,
+    parameter: TypeParameterSymbol): TypeParameterConstraints {
+    return this.CreateBinder(file, owner, this.DeclarationDiagnostics).BindConstraints(syntax, parameter);
+  }
+  override BindMethodBody(file: SourceFile, method: SourceMethodSymbol<SourceFile>): BoundBlock? {
+    return this.CreateBinder(file, method, this.BodyDiagnostics).BindMethodBody(method);
+  }
+  override InferVariableType(file: SourceFile, owner: Symbol, expression: ExpressionSyntax,
+    allowTopLevelAwait: bool): TypeSymbol {
+    const binder = this.CreateBinder(file, owner, this.DeclarationDiagnostics);
+    if (allowTopLevelAwait) binder.IsAsync = true;
+    return binder.InferVariableType(expression);
+  }
+  override EvaluateEnumInitializer(file: SourceFile, owner: SourceNamedType<SourceFile>, expression: ExpressionSyntax,
+    previous: ImmutableArray<SourceFieldSymbol<SourceFile>>): ConstantValue? {
+    return this.CreateBinder(file, owner, this.DeclarationDiagnostics).EvaluateEnumInitializer(owner, expression, previous);
+  }
+  override TryEvaluateConstant(file: SourceFile, owner: Symbol, expression: ExpressionSyntax, type: TypeSymbol): ConstantValue? {
+    return this.CreateBinder(file, owner, new DiagnosticBag()).TryEvaluateConstant(expression, type);
+  }
+  override BindTopLevelStatements(file: SourceFile, method: SourceMethodSymbol<SourceFile>,
+    module: SourceModuleClassSymbol<SourceFile>): BoundBlock? {
+    return this.CreateBinder(file, method, this.BodyDiagnostics).BindTopLevelStatements(method, module);
+  }
+  get SourceFiles(): IEnumerable<SourceFile> { return this.EnumerateSourceFiles(); }
+  private *EnumerateSourceFiles(): IEnumerable<SourceFile> {
+    for (const tree of this.SyntaxTrees) yield this.files[tree];
+  }
+  GetSourceFile(tree: SyntaxTree): SourceFile { return this.files[tree]; }
+  GetFile(tree: SyntaxTree): SourceFile { this.EnsureDeclarations(); return this.files[tree]; }
+
+  private static NormalizePath(path: string): string {
+    if (string.IsNullOrEmpty(path)) return "";
+    try { return Path.GetFullPath(path); }
+    catch (error: ArgumentException) { return path; }
+  }
+  FindSourceFile(from: SourceFile, spec: string): SourceFile? {
+    const directory = Path.GetDirectoryName(Compilation.NormalizePath(from.FilePath)) ?? "";
+    const combined = Path.GetFullPath(Path.Combine(directory, spec));
+    const candidates: string[] = [combined, combined + ".cala", Path.Combine(combined, "index.cala")];
+    for (const candidate of candidates) {
+      const [found, file] = this.filesByPath.TryGetValue(candidate);
+      if (found) return file;
+    }
+    return null;
+  }
+  FindTypeByFullName(fullName: string): NamedTypeSymbol? {
+    const dot = fullName.LastIndexOf('.');
+    if (dot < 0) return null;
+    const ns = this.GlobalNamespace.FindNamespace(fullName.Substring(0, dot));
+    if (ns != null) {
+      for (const type of ns.GetTypeMembersByName(fullName.Substring(dot + 1))) return type;
+    }
+    return null;
+  }
+  override GetSpecialType(type: SpecialType): NamedTypeSymbol {
+    const index = type as int;
+    Monitor.Enter(this.gate);
+    try {
+      const cached = this.specialTypes[index];
+      if (cached != null) return cached;
+      const result = this.References.GetSpecialType(type) ?? ErrorTypeSymbol.Instance;
+      this.specialTypes[index] = result;
+      return result;
+    } finally { Monitor.Exit(this.gate); }
+  }
+  override GetWellKnownType(metadataName: string): NamedTypeSymbol? {
+    ArgumentNullException.ThrowIfNull(metadataName);
+    Monitor.Enter(this.gate);
+    try {
+      const [found, cached] = this.wellKnown.TryGetValue(metadataName);
+      if (found) return cached;
+      this.EnsureDeclarations();
+      const dot = metadataName.LastIndexOf('.');
+      const ns = dot < 0 ? this.GlobalNamespace : this.GlobalNamespace.FindNamespace(metadataName.Substring(0, dot));
+      const name = metadataName.Substring(dot + 1);
+      let result: NamedTypeSymbol? = null;
+      if (ns != null) {
+        for (const type of ns.GetTypeMembers()) {
+          if (type.IsFromSource && type.MetadataName == name) { result = type; break; }
+        }
+      }
+      if (result == null) result = this.References.FindType(metadataName);
+      this.wellKnown[metadataName] = result;
+      return result;
+    } finally { Monitor.Exit(this.gate); }
+  }
+  RequireWellKnownType(metadataName: string): NamedTypeSymbol {
+    return this.GetWellKnownType(metadataName) ?? new ErrorTypeSymbol(metadataName);
+  }
+  override CreateArrayType(element: TypeSymbol): ArrayTypeSymbol { return this.CreateArrayType(element, 1); }
+  CreateArrayType(element: TypeSymbol, rank: int): ArrayTypeSymbol {
+    return new ArrayTypeSymbol(element, this.GetSpecialType(SpecialType.Array), rank);
+  }
+  EnsureRecording(): void {
+    if (this.RecordedSymbols == null) this.RecordedSymbols = new Dictionary<SyntaxNode, Symbol>(ReferenceEqualityComparer.Instance);
+    if (this.RecordedTypes == null) this.RecordedTypes = new Dictionary<SyntaxNode, TypeSymbol>(ReferenceEqualityComparer.Instance);
+    if (this.RecordedDeclarations == null) this.RecordedDeclarations = new Dictionary<[Tree: SyntaxTree, Start: int], Symbol>();
+  }
+  override GetScope(file: SourceFile): FileScope<SourceFile> { return file.Scope; }
+  override RecordDeclaration(file: SourceFile, start: int, symbol: Symbol): void {
+    if (!this.Options.RecordSemanticInfo) return;
+    this.EnsureRecording();
+    const key: [Tree: SyntaxTree, Start: int] = [file.Tree, start];
+    this.RecordedDeclarations![key] = symbol;
+  }
+  override RecordSymbol(syntax: SyntaxNode, symbol: Symbol): void {
+    if (!this.Options.RecordSemanticInfo) return;
+    this.EnsureRecording();
+    this.RecordedSymbols![syntax] = symbol;
+  }
+  override RecordType(syntax: SyntaxNode, type: TypeSymbol): void {
+    if (!this.Options.RecordSemanticInfo) return;
+    this.EnsureRecording();
+    this.RecordedTypes![syntax] = type;
+  }
+  EnsureDeclarations(): void {
+    Monitor.Enter(this.gate);
+    try {
+      if (this.declared) return;
+      this.declared = true;
+      const names = new Dictionary<[Namespace: string, Name: string], SourceNamedType<SourceFile>>();
+      for (const tree of this.SyntaxTrees) {
+        const file = this.files[tree];
+        file.Namespace = this.GlobalNamespace.GetOrAddNamespace(file.NamespaceName);
+        this.CollectFile(file, names);
+      }
+      for (const tree of this.SyntaxTrees) {
+        const file = this.files[tree];
+        if (!Compilation.FileNeedsModuleClass(file)) continue;
+        let name = file.ModuleClassBaseName;
+        let collision = names.ContainsKey([file.NamespaceName, name]);
+        if (!collision) {
+          for (const otherTree of this.SyntaxTrees) {
+            if (Object.ReferenceEquals(otherTree, tree)) continue;
+            const other = this.files[otherTree];
+            if (other.NamespaceName == file.NamespaceName && Compilation.FileNeedsModuleClass(other) &&
+                other.ModuleClassBaseName == name && string.CompareOrdinal(otherTree.FilePath, tree.FilePath) < 0) {
+              collision = true;
+              break;
+            }
+          }
+        }
+        if (collision) name += "Module";
+        const module = new SourceModuleClassSymbol<SourceFile>(this, file, name);
+        file.ModuleClass = module;
+        file.Namespace.AddType(module);
+      }
+    } finally { Monitor.Exit(this.gate); }
+  }
+  private static FileNeedsModuleClass(file: SourceFile): bool {
+    for (const statement of file.Tree.Root.Statements) {
+      if (!(statement instanceof ImportDeclarationSyntax) && !(statement instanceof TypeAliasDeclarationSyntax) &&
+          !(statement instanceof ClassDeclarationSyntax) && !(statement instanceof InterfaceDeclarationSyntax) &&
+          !(statement instanceof EnumDeclarationSyntax) && !(statement instanceof EmptyStatementSyntax)) return true;
+    }
+    return false;
+  }
+  private Register(file: SourceFile, type: SourceNamedType<SourceFile>, identifier: SyntaxToken,
+    names: Dictionary<[Namespace: string, Name: string], SourceNamedType<SourceFile>>,
+    types: List<SourceNamedType<SourceFile>>): void {
+    const key: [Namespace: string, Name: string] = [file.NamespaceName, type.MetadataName];
+    if (names.ContainsKey(key)) {
+      this.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.DuplicateType, file.FilePath, identifier.Span, type.Name, file.NamespaceName));
+      return;
+    }
+    names[key] = type;
+    types.Add(type);
+    file.Namespace.AddType(type);
+  }
+  private CollectFile(file: SourceFile, names: Dictionary<[Namespace: string, Name: string], SourceNamedType<SourceFile>>): void {
+    const types = new List<SourceNamedType<SourceFile>>();
+    const aliases = ImmutableArray.CreateBuilder<TypeAliasSymbol<SourceFile>>();
+    const imports = ImmutableArray.CreateBuilder<ImportDeclarationSyntax>();
+    const statements = ImmutableArray.CreateBuilder<StatementSyntax>();
+    for (const statement of file.Tree.Root.Statements) {
+      if (statement instanceof ImportDeclarationSyntax) imports.Add(statement as ImportDeclarationSyntax);
+      else if (statement instanceof ClassDeclarationSyntax && !(statement as ClassDeclarationSyntax).Identifier.IsMissing) {
+        const syntax = statement as ClassDeclarationSyntax;
+        this.Register(file, new SourceClassSymbol<SourceFile>(this, file, syntax, file.Namespace), syntax.Identifier, names, types);
+      } else if (statement instanceof InterfaceDeclarationSyntax && !(statement as InterfaceDeclarationSyntax).Identifier.IsMissing) {
+        const syntax = statement as InterfaceDeclarationSyntax;
+        this.Register(file, new SourceInterfaceSymbol<SourceFile>(this, file, syntax, file.Namespace), syntax.Identifier, names, types);
+      } else if (statement instanceof EnumDeclarationSyntax && !(statement as EnumDeclarationSyntax).Identifier.IsMissing) {
+        const syntax = statement as EnumDeclarationSyntax;
+        this.Register(file, new SourceEnumSymbol<SourceFile>(this, file, syntax, file.Namespace), syntax.Identifier, names, types);
+      } else if (statement instanceof TypeAliasDeclarationSyntax && !(statement as TypeAliasDeclarationSyntax).Identifier.IsMissing) {
+        const syntax = statement as TypeAliasDeclarationSyntax;
+        const created = TypeAliasDeclarations<SourceFile>.Create(this, file, syntax);
+        if (created.Type != null) this.Register(file, created.Type, syntax.Identifier, names, types);
+        if (created.Alias != null) aliases.Add(created.Alias);
+      } else if (!(statement instanceof FunctionDeclarationSyntax) && !(statement instanceof VariableStatementSyntax) &&
+                 !(statement instanceof EmptyStatementSyntax)) statements.Add(statement);
+    }
+    file.Types = ImmutableArray.CreateRange<SourceNamedType<SourceFile>>(types);
+    file.Aliases = aliases.ToImmutable();
+    file.Imports = imports.ToImmutable();
+    file.TopLevelStatements = statements.ToImmutable();
+  }
+  get AllSourceTypes(): IEnumerable<SourceNamedType<SourceFile>> { return this.EnumerateSourceTypes(); }
+  private *EnumerateSourceTypes(): IEnumerable<SourceNamedType<SourceFile>> {
+    this.EnsureDeclarations();
+    for (const file of this.SourceFiles) {
+      for (const type of file.Types) yield type;
+      if (file.ModuleClass != null) yield file.ModuleClass;
+    }
+  }
+  get AnonymousRecords(): IReadOnlyList<SynthesizedAnonymousRecord<SourceFile>> { return this.anonymousRecordList; }
+  override GetAnonymousRecord(names: ImmutableArray<string>, types: ImmutableArray<TypeSymbol>): NamedTypeSymbol {
+    return this.GetAnonymousRecord(names as IReadOnlyList<string>, types as IReadOnlyList<TypeSymbol>);
+  }
+  GetAnonymousRecord(names: IReadOnlyList<string>, types: IReadOnlyList<TypeSymbol>): NamedTypeSymbol {
+    this.EnsureDeclarations();
+    const key = string.Join("|", names);
+    let definition: SynthesizedAnonymousRecord<SourceFile>;
+    Monitor.Enter(this.gate);
+    try {
+      const [found, existing] = this.anonymousRecords.TryGetValue(key);
+      if (found) definition = existing;
+      else {
+        definition = new SynthesizedAnonymousRecord<SourceFile>(this, this.files[this.SyntaxTrees[0]],
+          "<>f__AnonymousType" + this.anonymousRecordList.Count, ImmutableArray.CreateRange<string>(names));
+        this.anonymousRecords[key] = definition;
+        this.anonymousRecordList.Add(definition);
+      }
+    } finally { Monitor.Exit(this.gate); }
+    return definition.Construct(ImmutableArray.CreateRange<TypeSymbol>(types));
+  }
+  ApplyDiagnosticOptions(all: IEnumerable<Diagnostic>): ImmutableArray<Diagnostic> {
+    const result = new List<Diagnostic>();
+    const seen = new HashSet<[File: string?, Start: int, Length: int, Identity: string]>();
+    for (const diagnostic of all) {
+      if (!seen.Add([diagnostic.FilePath, diagnostic.Span.Start, diagnostic.Span.Length, diagnostic.Id + diagnostic.Message])) continue;
+      if (diagnostic.EffectiveSeverity == DiagnosticSeverity.Warning) {
+        let suppressed = false;
+        for (const id of this.Options.NoWarn) if (string.Equals(id, diagnostic.Id, StringComparison.OrdinalIgnoreCase)) { suppressed = true; break; }
+        if (suppressed) continue;
+      }
+      result.Add(this.Options.WarningsAsErrors && diagnostic.EffectiveSeverity == DiagnosticSeverity.Warning ?
+        diagnostic.WithSeverity(DiagnosticSeverity.Error) : diagnostic);
+    }
+    result.Sort(new DiagnosticOrder());
+    return ImmutableArray.CreateRange<Diagnostic>(result);
+  }
+  GetAssemblyNameOf(type: NamedTypeSymbol): string? {
+    return type.IsFromSource ? this.Options.AssemblyName : type.ContainingAssembly?.Name;
+  }
+  GetDiagnostics(): ImmutableArray<Diagnostic> {
+    Monitor.Enter(this.gate);
+    try {
+      if (!this.diagnostics.IsDefault) return this.diagnostics;
+      this.EnsureDeclarations();
+      const all = new List<Diagnostic>();
+      for (const tree of this.SyntaxTrees) all.AddRange(tree.Diagnostics);
+      for (const file of this.SourceFiles) all.AddRange(file.Scope.GetImportDiagnostics());
+      const context = new CompilationDeclarationContext(this);
+      const checker = new DeclarationChecker<SourceFile>(context);
+      checker.CheckAll();
+      all.AddRange(this.DeclarationDiagnostics.Items);
+      all.AddRange(this.BodyDiagnostics.Items);
+      all.AddRange(checker.Diagnostics);
+      all.AddRange(new EntryPointChecker<SourceFile>(context).Check());
+      this.diagnostics = this.ApplyDiagnosticOptions(all);
+      return this.diagnostics;
+    } finally { Monitor.Exit(this.gate); }
+  }
+  get HasErrors(): bool {
+    for (const diagnostic of this.GetDiagnostics())
+      if (diagnostic.EffectiveSeverity == DiagnosticSeverity.Error) return true;
+    return false;
+  }
+  Emit(peStream: Stream): EmitResult { return this.Emit(peStream, null, null); }
+  Emit(peStream: Stream, pdbStream: Stream?): EmitResult { return this.Emit(peStream, pdbStream, null); }
+  Emit(peStream: Stream, pdbStream: Stream?, pdbFileName: string?): EmitResult {
+    // Binding must finish before snapshotting anonymous records and emission types.
+    const diagnostics = this.GetDiagnostics();
+    const context = new EmissionContext<SourceFile>(this.Options,
+      type => this.GetSpecialType(type), name => this.GetWellKnownType(name),
+      () => this.GetDiagnostics(),
+      () => new EntryPointChecker<SourceFile>(new CompilationDeclarationContext(this)).FindEntryPoint());
+    context.BindAttribute = (file, decorator, owner) => this.GetBoundAttribute(file, decorator, owner);
+    context.GetAssemblyName = type => this.GetAssemblyNameOf(type);
+    for (const diagnostic of diagnostics)
+      if (diagnostic.EffectiveSeverity == DiagnosticSeverity.Error)
+        return new AssemblyEmitter<SourceFile>(context).Emit(peStream, pdbStream, pdbFileName);
+    for (const type of this.AllSourceTypes) context.Types.Add(type);
+    for (const type of this.AnonymousRecords) context.Types.Add(type);
+    for (const file of this.SourceFiles) context.AddDocument(file, file.FilePath, file.Tree.Text);
+    return new AssemblyEmitter<SourceFile>(context).Emit(peStream, pdbStream, pdbFileName);
+  }
+  GetDeclarationIndex(): Dictionary<[Tree: SyntaxTree, Start: int], Symbol> {
+    if (this.declarationIndex != null) return this.declarationIndex;
+    const index = new Dictionary<[Tree: SyntaxTree, Start: int], Symbol>();
+    if (this.RecordedDeclarations != null)
+      for (const pair of this.RecordedDeclarations) index[pair.Key] = pair.Value;
+    for (const type of this.AllSourceTypes) {
+      if (!(type instanceof SourceModuleClassSymbol<SourceFile>))
+        Compilation.AddDeclaration(index, type.File.Tree, type.IdentifierToken, type);
+      for (const member of type.GetMembers()) {
+        if (member instanceof SourceMethodSymbol<SourceFile>) {
+          const method = member as SourceMethodSymbol<SourceFile>;
+          if (method.MethodKind != MethodKind.PropertyGet && method.MethodKind != MethodKind.PropertySet)
+            Compilation.AddDeclaration(index, type.File.Tree, Compilation.DeclarationIdentifier(method.Declaration), method);
+        } else if (member instanceof SourcePropertySymbol<SourceFile>) {
+          const property = member as SourcePropertySymbol<SourceFile>;
+          Compilation.AddDeclaration(index, type.File.Tree, Compilation.DeclarationIdentifier(property.Declaration), property);
+        } else if (member instanceof SourceFieldSymbol<SourceFile>) {
+          const field = member as SourceFieldSymbol<SourceFile>;
+          if (!field.IsBackingField)
+            Compilation.AddDeclaration(index, type.File.Tree, Compilation.DeclarationIdentifier(field.Declaration), field);
+        }
+      }
+    }
+    for (const file of this.SourceFiles)
+      for (const alias of file.Aliases) Compilation.AddDeclaration(index, file.Tree, alias.Syntax.Identifier, alias);
+    this.declarationIndex = index;
+    return index;
+  }
+  private static AddDeclaration(index: Dictionary<[Tree: SyntaxTree, Start: int], Symbol>,
+    tree: SyntaxTree, token: SyntaxToken?, symbol: Symbol): void {
+    if (token != null && !token.IsMissing) index.TryAdd([tree, token.Start], symbol);
+  }
+  static DeclarationIdentifier(declaration: SyntaxNode?): SyntaxToken? {
+    if (declaration instanceof FunctionDeclarationSyntax) return (declaration as FunctionDeclarationSyntax).Identifier;
+    if (declaration instanceof MethodDeclarationSyntax) return (declaration as MethodDeclarationSyntax).Identifier;
+    if (declaration instanceof PropertyDeclarationSyntax) return (declaration as PropertyDeclarationSyntax).Identifier;
+    if (declaration instanceof AccessorDeclarationSyntax) return (declaration as AccessorDeclarationSyntax).Identifier;
+    if (declaration instanceof ClassDeclarationSyntax) return (declaration as ClassDeclarationSyntax).Identifier;
+    if (declaration instanceof InterfaceDeclarationSyntax) return (declaration as InterfaceDeclarationSyntax).Identifier;
+    if (declaration instanceof EnumDeclarationSyntax) return (declaration as EnumDeclarationSyntax).Identifier;
+    if (declaration instanceof EnumMemberSyntax) return (declaration as EnumMemberSyntax).Identifier;
+    if (declaration instanceof TypeAliasDeclarationSyntax) return (declaration as TypeAliasDeclarationSyntax).Identifier;
+    if (declaration instanceof VariableDeclaratorSyntax) return (declaration as VariableDeclaratorSyntax).Identifier;
+    if (declaration instanceof ParameterSyntax) return (declaration as ParameterSyntax).Identifier;
+    return null;
+  }
+  GetSemanticModel(tree: SyntaxTree): SemanticModel<SourceFile> {
+    return new SemanticModel<SourceFile>(new CompilationSemanticContext(this), tree);
+  }
+  GetBoundAttribute(file: SourceFile, decorator: DecoratorSyntax, owner: Symbol?): BoundAttribute? {
+    Monitor.Enter(this.gate);
+    try {
+      const [found, existing] = this.boundAttributes.TryGetValue(decorator);
+      if (found) return existing;
+      const bound = this.CreateBinder(file, owner, this.BodyDiagnostics).BindDecorator(decorator);
+      this.boundAttributes[decorator] = bound;
+      return bound;
+    } finally { Monitor.Exit(this.gate); }
+  }
+}
+
+export sealed class CompilationFileScopeContext extends FileScopeContext<SourceFile> {
+  constructor(private readonly compilation: Compilation) { super(); }
+  override get Options(): CompilationOptions { return this.compilation.Options; }
+  override get GlobalNamespace(): NamespaceSymbol { return this.compilation.GlobalNamespace; }
+  override GetFilePath(file: SourceFile): string { return file.FilePath; }
+  override GetModuleClassBaseName(file: SourceFile): string { return file.ModuleClassBaseName; }
+  override GetTypes(file: SourceFile): ImmutableArray<NamedTypeSymbol> {
+    const types = ImmutableArray.CreateBuilder<NamedTypeSymbol>();
+    for (const type of file.Types) types.Add(type);
+    return types.ToImmutable();
+  }
+  override GetAliases(file: SourceFile): ImmutableArray<Symbol> {
+    const aliases = ImmutableArray.CreateBuilder<Symbol>();
+    for (const alias of file.Aliases) aliases.Add(alias);
+    return aliases.ToImmutable();
+  }
+  override GetModuleClass(file: SourceFile): NamedTypeSymbol? { return file.ModuleClass; }
+  override GetImports(file: SourceFile): ImmutableArray<ImportDeclarationSyntax> { return file.Imports; }
+  override IsExportedAlias(symbol: Symbol): bool? {
+    return symbol instanceof TypeAliasSymbol<SourceFile> ? (symbol as TypeAliasSymbol<SourceFile>).IsExported : null;
+  }
+  override IsModuleVariable(field: FieldSymbol): bool {
+    return field instanceof SourceFieldSymbol<SourceFile> && (field as SourceFieldSymbol<SourceFile>).IsModuleVariable;
+  }
+  override FindSourceFile(from: SourceFile, spec: string): SourceFile? { return this.compilation.FindSourceFile(from, spec); }
+  override GetScope(file: SourceFile): FileScope<SourceFile> { return file.Scope; }
+  override RecordImport(specifier: ImportSpecifierSyntax, symbol: Symbol): void {
+    this.compilation.EnsureRecording();
+    this.compilation.RecordedSymbols![specifier] = symbol;
+  }
+}

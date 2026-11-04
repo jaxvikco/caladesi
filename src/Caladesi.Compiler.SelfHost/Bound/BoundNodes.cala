@@ -1,0 +1,254 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { SyntaxNode } from "../Syntax/SyntaxElement";
+import { Symbol } from "../Symbols/Symbol";
+import { TypeSymbol, ErrorTypeSymbol, ArrayTypeSymbol } from "../Symbols/TypeSymbols";
+import { ConstantValue, LocalSymbol, ParameterSymbol, FieldSymbol, PropertySymbol, MethodSymbol, LabelSymbol } from "../Symbols/MemberSymbols";
+import { NamespaceSymbol } from "../Symbols/NamespaceSymbol";
+import { LambdaInfo, ObjectLiteralInfo, CollectionInfo, LambdaSymbol } from "./UnboundInfo";
+
+export abstract class BoundNode {
+  Syntax: SyntaxNode? = null;
+}
+export abstract class BoundExpression extends BoundNode {
+  constructor(public readonly Type: TypeSymbol?) { super(); }
+  get ConstantValue(): ConstantValue? { return null; }
+  get HasErrors(): bool { return (this.Type != null && this.Type.IsErrorType) || this instanceof BoundBadExpression; }
+}
+export sealed class BoundBadExpression extends BoundExpression {
+  constructor(public readonly Children: ImmutableArray<BoundNode>, type: TypeSymbol?) { super(type ?? ErrorTypeSymbol.Instance); }
+  constructor(children: ImmutableArray<BoundNode>) { super(ErrorTypeSymbol.Instance); this.Children = children; }
+}
+export sealed class BoundLiteral extends BoundExpression {
+  constructor(public readonly Value: ConstantValue, type: TypeSymbol) { super(type); }
+  override get ConstantValue(): ConstantValue? { return this.Value; }
+}
+export sealed class BoundLocal extends BoundExpression {
+  constructor(public readonly Local: LocalSymbol) { super(Local.Type); }
+  override get ConstantValue(): ConstantValue? { return this.Local.IsConst ? this.Local.ConstantValue : null; }
+}
+export sealed class BoundParameter extends BoundExpression {
+  constructor(public readonly Parameter: ParameterSymbol) { super(Parameter.Type); }
+}
+export sealed class BoundThis extends BoundExpression {
+  constructor(type: TypeSymbol) { super(type); }
+}
+export sealed class BoundBaseReference extends BoundExpression {
+  constructor(type: TypeSymbol) { super(type); }
+}
+export sealed class BoundFieldAccess extends BoundExpression {
+  constructor(public readonly Receiver: BoundExpression?, public readonly Field: FieldSymbol) { super(Field.Type); }
+  override get ConstantValue(): ConstantValue? { return this.Field.IsConst ? this.Field.ConstantValue : null; }
+}
+export sealed class BoundPropertyAccess extends BoundExpression {
+  IsBaseAccess: bool = false;
+  constructor(public readonly Receiver: BoundExpression?, public readonly Property: PropertySymbol,
+    public readonly Arguments: ImmutableArray<BoundExpression>) { super(Property.Type); }
+}
+export sealed class BoundCall extends BoundExpression {
+  IsBaseCall: bool = false;
+  constructor(public readonly Receiver: BoundExpression?, public readonly Method: MethodSymbol,
+    public readonly Arguments: ImmutableArray<BoundExpression>, type: TypeSymbol?) { super(type ?? Method.ReturnType); }
+  constructor(receiver: BoundExpression?, method: MethodSymbol, arguments: ImmutableArray<BoundExpression>) {
+    super(method.ReturnType); this.Receiver = receiver; this.Method = method; this.Arguments = arguments;
+  }
+}
+export sealed class BoundMemberInit {
+  constructor(public readonly Member: Symbol, public readonly Value: BoundExpression) {}
+}
+export sealed class BoundObjectCreation extends BoundExpression {
+  constructor(public readonly Constructor: MethodSymbol?, type: TypeSymbol, public readonly Arguments: ImmutableArray<BoundExpression>,
+    public readonly Initializers: ImmutableArray<BoundMemberInit>) { super(type); }
+}
+export sealed class BoundDefaultValue extends BoundExpression {
+  constructor(type: TypeSymbol) { super(type); }
+}
+export sealed class BoundArrayCreation extends BoundExpression {
+  constructor(type: ArrayTypeSymbol, public readonly Length: BoundExpression?,
+    public readonly Initializers: ImmutableArray<BoundExpression>) { super(type); }
+  get Type(): ArrayTypeSymbol { return super.Type! as ArrayTypeSymbol; }
+}
+export sealed class BoundArrayAccess extends BoundExpression {
+  constructor(public readonly Array: BoundExpression, public readonly Index: BoundExpression, elementType: TypeSymbol) { super(elementType); }
+}
+export enum ConversionKind {
+  Identity, ImplicitNumeric, ExplicitNumeric, ToNullable, FromNullable, Boxing, Unboxing, ImplicitReference,
+  ExplicitReference, UserDefined, NullLiteral, UnionWrap, UnionExtract, LiftedNumeric, EnumNumeric, TypeOnly, TypeParameter
+}
+export sealed class BoundConversion extends BoundExpression {
+  CaseIndex: int = -1;
+  ConstantFolded: ConstantValue? = null;
+  constructor(public readonly Operand: BoundExpression, public readonly Kind: ConversionKind, type: TypeSymbol,
+    public readonly Method: MethodSymbol?) { super(type); }
+  constructor(operand: BoundExpression, kind: ConversionKind, type: TypeSymbol) {
+    super(type); this.Operand = operand; this.Kind = kind; this.Method = null;
+  }
+  override get ConstantValue(): ConstantValue? { return this.ConstantFolded; }
+}
+export enum UnaryOperatorKind { Plus, Minus, Not, BitwiseNot, UserDefined }
+export sealed class BoundUnary extends BoundExpression {
+  Folded: ConstantValue? = null;
+  constructor(public readonly Kind: UnaryOperatorKind, public readonly Operand: BoundExpression, type: TypeSymbol,
+    public readonly Method: MethodSymbol?) { super(type); }
+  constructor(kind: UnaryOperatorKind, operand: BoundExpression, type: TypeSymbol) {
+    super(type); this.Kind = kind; this.Operand = operand; this.Method = null;
+  }
+  override get ConstantValue(): ConstantValue? { return this.Folded; }
+}
+export enum BinaryOperatorKind {
+  Add, Subtract, Multiply, Divide, Remainder, ShiftLeft, ShiftRight, UnsignedShiftRight, And, Or, Xor,
+  Equal, NotEqual, LessThan, LessThanOrEqual, GreaterThan, GreaterThanOrEqual, UserDefined
+}
+export sealed class BoundBinary extends BoundExpression {
+  Folded: ConstantValue? = null;
+  constructor(public readonly Kind: BinaryOperatorKind, public readonly Left: BoundExpression, public readonly Right: BoundExpression,
+    type: TypeSymbol, public readonly OperandType: TypeSymbol, public readonly Method: MethodSymbol?) { super(type); }
+  constructor(kind: BinaryOperatorKind, left: BoundExpression, right: BoundExpression, type: TypeSymbol, operandType: TypeSymbol) {
+    super(type); this.Kind = kind; this.Left = left; this.Right = right; this.OperandType = operandType; this.Method = null;
+  }
+  override get ConstantValue(): ConstantValue? { return this.Folded; }
+}
+export sealed class BoundLogicalBinary extends BoundExpression {
+  Folded: ConstantValue? = null;
+  constructor(public readonly IsAnd: bool, public readonly Left: BoundExpression, public readonly Right: BoundExpression, type: TypeSymbol) { super(type); }
+  override get ConstantValue(): ConstantValue? { return this.Folded; }
+}
+export sealed class BoundAssignment extends BoundExpression {
+  IsDiscarded: bool = false;
+  constructor(public readonly Target: BoundExpression, public readonly Value: BoundExpression) { super(Target.Type); }
+}
+export sealed class BoundConditional extends BoundExpression {
+  constructor(public readonly Condition: BoundExpression, public readonly WhenTrue: BoundExpression,
+    public readonly WhenFalse: BoundExpression, type: TypeSymbol) { super(type); }
+}
+export sealed class BoundCoalesce extends BoundExpression {
+  constructor(public readonly Left: BoundExpression, public readonly Right: BoundExpression, type: TypeSymbol) { super(type); }
+}
+export sealed class BoundConditionalReceiver extends BoundExpression {
+  constructor(type: TypeSymbol) { super(type); }
+}
+export sealed class BoundConditionalAccess extends BoundExpression {
+  constructor(public readonly Receiver: BoundExpression, public readonly Placeholder: BoundConditionalReceiver,
+    public readonly WhenNotNull: BoundExpression, type: TypeSymbol?) { super(type); }
+}
+export enum TypeTestKind { Reference, UnionCase }
+export sealed class BoundTypeTest extends BoundExpression {
+  OperandWasNullable: bool = false;
+  constructor(public readonly Operand: BoundExpression, public readonly Target: TypeSymbol, boolType: TypeSymbol,
+    public readonly Kind: TypeTestKind = TypeTestKind.Reference, public readonly CaseIndex: int = -1) { super(boolType); }
+}
+export sealed class BoundLambda extends BoundExpression {
+  constructor(public readonly Symbol: LambdaSymbol, public readonly Body: BoundBlock, delegateType: TypeSymbol) { super(delegateType); }
+}
+export sealed class BoundDelegateCreation extends BoundExpression {
+  constructor(public readonly Receiver: BoundExpression?, public readonly Method: MethodSymbol, delegateType: TypeSymbol) { super(delegateType); }
+}
+export sealed class BoundSequence extends BoundExpression {
+  constructor(public readonly Locals: ImmutableArray<LocalSymbol>, public readonly SideEffects: ImmutableArray<BoundStatement>,
+    public readonly Value: BoundExpression) { super(Value.Type); }
+}
+export sealed class BoundIsNull extends BoundExpression {
+  constructor(public readonly Operand: BoundExpression, boolType: TypeSymbol) { super(boolType); }
+}
+export sealed class BoundAddressOf extends BoundExpression {
+  constructor(public readonly Operand: BoundExpression) { super(Operand.Type); }
+}
+export sealed class BoundTypeOf extends BoundExpression {
+  constructor(public readonly Operand: TypeSymbol, systemType: TypeSymbol) { super(systemType); }
+}
+export sealed class AwaitInfo {
+  constructor(public readonly GetAwaiter: MethodSymbol, public readonly IsCompleted: PropertySymbol?,
+    public readonly IsCompletedGetter: MethodSymbol?, public readonly GetResult: MethodSymbol, public readonly AwaiterType: TypeSymbol) {}
+}
+export sealed class BoundAwait extends BoundExpression {
+  constructor(public readonly Operand: BoundExpression, public readonly Info: AwaitInfo, type: TypeSymbol) { super(type); }
+}
+export sealed class BoundThrowExpression extends BoundExpression {
+  constructor(public readonly Operand: BoundExpression, type: TypeSymbol) { super(type); }
+}
+export sealed class BoundTypeExpression extends BoundExpression {
+  constructor(type: TypeSymbol) { super(type); }
+  get TypeSym(): TypeSymbol { return this.Type!; }
+}
+export sealed class BoundNamespaceExpression extends BoundExpression {
+  constructor(public readonly Namespace: NamespaceSymbol) { super(null); }
+}
+// BoundModuleExpression awaits the SourceFile/Compilation migration.
+export sealed class BoundMethodGroup extends BoundExpression {
+  IsBaseAccess: bool = false;
+  constructor(public readonly Receiver: BoundExpression?, public readonly Name: string,
+    public readonly Candidates: ImmutableArray<MethodSymbol>, public readonly TypeArguments: ImmutableArray<TypeSymbol>,
+    public readonly ReceiverIsExtension: bool = false) { super(null); }
+}
+export sealed class BoundUnbound extends BoundExpression {
+  IsLambda: bool = false;
+  IsObjectLiteral: bool = false;
+  IsCollection: bool = false;
+  Lambda: LambdaInfo? = null;
+  ObjectLiteral: ObjectLiteralInfo? = null;
+  Collection: CollectionInfo? = null;
+  constructor(public readonly SyntaxNode: SyntaxNode, public readonly BindToType: Func<TypeSymbol?, BoundExpression>,
+    naturalType: TypeSymbol?) { super(naturalType); }
+  constructor(syntax: SyntaxNode, bindToType: Func<TypeSymbol?, BoundExpression>) {
+    super(null); this.SyntaxNode = syntax; this.BindToType = bindToType;
+  }
+}
+export abstract class BoundStatement extends BoundNode {}
+export sealed class BoundBlock extends BoundStatement {
+  constructor(public readonly Locals: ImmutableArray<LocalSymbol>, public readonly Statements: ImmutableArray<BoundStatement>) { super(); }
+}
+export sealed class BoundStatementList extends BoundStatement {
+  constructor(public readonly Statements: ImmutableArray<BoundStatement>) { super(); }
+}
+export sealed class BoundExpressionStatement extends BoundStatement {
+  constructor(public readonly Expression: BoundExpression) { super(); }
+}
+export sealed class BoundLocalDeclaration extends BoundStatement {
+  constructor(public readonly Local: LocalSymbol, public readonly Initializer: BoundExpression?) { super(); }
+}
+export sealed class BoundIf extends BoundStatement {
+  constructor(public readonly Condition: BoundExpression, public readonly Consequence: BoundStatement,
+    public readonly Alternative: BoundStatement?) { super(); }
+}
+export sealed class BoundWhile extends BoundStatement {
+  constructor(public readonly Condition: BoundExpression, public readonly Body: BoundStatement,
+    public readonly BreakLabel: LabelSymbol, public readonly ContinueLabel: LabelSymbol) { super(); }
+}
+export sealed class BoundDoWhile extends BoundStatement {
+  constructor(public readonly Condition: BoundExpression, public readonly Body: BoundStatement,
+    public readonly BreakLabel: LabelSymbol, public readonly ContinueLabel: LabelSymbol) { super(); }
+}
+export sealed class BoundFor extends BoundStatement {
+  constructor(public readonly Locals: ImmutableArray<LocalSymbol>, public readonly Initializer: BoundStatement?,
+    public readonly Condition: BoundExpression?, public readonly Increment: BoundStatement?, public readonly Body: BoundStatement,
+    public readonly BreakLabel: LabelSymbol, public readonly ContinueLabel: LabelSymbol) { super(); }
+}
+export sealed class BoundGoto extends BoundStatement {
+  constructor(public readonly Label: LabelSymbol) { super(); }
+}
+export sealed class BoundConditionalGoto extends BoundStatement {
+  constructor(public readonly Condition: BoundExpression, public readonly Label: LabelSymbol, public readonly JumpIfTrue: bool) { super(); }
+}
+export sealed class BoundLabel extends BoundStatement {
+  constructor(public readonly Label: LabelSymbol) { super(); }
+}
+export sealed class BoundReturn extends BoundStatement {
+  constructor(public readonly Expression: BoundExpression?) { super(); }
+}
+export sealed class BoundThrow extends BoundStatement {
+  constructor(public readonly Expression: BoundExpression?) { super(); }
+}
+export sealed class BoundCatch {
+  constructor(public readonly Local: LocalSymbol?, public readonly ExceptionType: TypeSymbol, public readonly Body: BoundBlock) {}
+}
+export sealed class BoundTry extends BoundStatement {
+  constructor(public readonly Body: BoundBlock, public readonly Catches: ImmutableArray<BoundCatch>, public readonly Finally: BoundBlock?) { super(); }
+}
+export sealed class BoundYieldReturn extends BoundStatement {
+  DisposeTarget: LabelSymbol? = null;
+  constructor(public readonly Expression: BoundExpression) { super(); }
+}
+export sealed class BoundYieldBreak extends BoundStatement {}
+export sealed class BoundNoOp extends BoundStatement {}
+export sealed class BoundSequencePoint extends BoundStatement {
+  constructor(public readonly Statement: BoundStatement, public readonly SyntaxNodeForSpan: SyntaxNode) { super(); }
+}

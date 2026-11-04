@@ -1,0 +1,345 @@
+import { Func } from "System";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { List } from "System.Collections.Generic";
+import { TypeSymbol, TypeParameterSymbol, ArrayTypeSymbol, NullableTypeSymbol, VarianceKind } from "../Symbols/TypeSymbols";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { MethodSymbol, ParameterSymbol, MethodKind } from "../Symbols/MemberSymbols";
+import { TypeMap } from "../Symbols/TypeMap";
+import { BoundExpression, BoundUnbound, BoundMethodGroup } from "../Bound/BoundNodes";
+import { LambdaInfo } from "../Bound/UnboundInfo";
+import { ConversionClassifier } from "./ConversionClassifier";
+
+class InferenceContext {
+  readonly Fixed: List<TypeSymbol?> = new List<TypeSymbol?>();
+  readonly Lower: List<List<TypeSymbol>> = new List<List<TypeSymbol>>();
+  readonly Upper: List<List<TypeSymbol>> = new List<List<TypeSymbol>>();
+  readonly Exact: List<List<TypeSymbol>> = new List<List<TypeSymbol>>();
+  constructor(public readonly TypeParameters: ImmutableArray<TypeParameterSymbol>) {
+    for (let i = 0; i < TypeParameters.Length; i++) {
+      this.Fixed.Add(null);
+      this.Lower.Add(new List<TypeSymbol>());
+      this.Upper.Add(new List<TypeSymbol>());
+      this.Exact.Add(new List<TypeSymbol>());
+    }
+  }
+  IndexOf(type: TypeSymbol): int {
+    if (!(type instanceof TypeParameterSymbol)) return -1;
+    for (let i = 0; i < this.TypeParameters.Length; i++)
+      if (Object.ReferenceEquals(this.TypeParameters[i], type)) return i;
+    return -1;
+  }
+}
+
+export sealed class TypeInference {
+  private readonly classifier: ConversionClassifier;
+  private readonly methodGroupResolver: Func<BoundMethodGroup, ImmutableArray<TypeSymbol>, MethodSymbol?>?;
+  constructor(classifier: ConversionClassifier) {
+    this.classifier = classifier;
+    this.methodGroupResolver = null;
+  }
+  constructor(classifier: ConversionClassifier,
+    methodGroupResolver: Func<BoundMethodGroup, ImmutableArray<TypeSymbol>, MethodSymbol?>) {
+    this.classifier = classifier;
+    this.methodGroupResolver = methodGroupResolver;
+  }
+  private static EffectiveParameters(m: MethodSymbol, isIndexer: bool, indexerCount: int): ImmutableArray<ParameterSymbol> {
+    const ps = m.Parameters;
+    if (isIndexer && ps.Length > indexerCount && m.MethodKind == MethodKind.PropertySet) {
+      const builder = ImmutableArray.CreateBuilder<ParameterSymbol>();
+      for (let i = 0; i < indexerCount && i < ps.Length; i++) builder.Add(ps[i]);
+      return builder.ToImmutable();
+    }
+    return ps;
+  }
+  private static ParamTypeFor(ps: ImmutableArray<ParameterSymbol>, i: int, expanded: bool): TypeSymbol? {
+    if (ps.Length == 0) return null;
+    if (i < ps.Length - 1 || (i == ps.Length - 1 && !expanded)) return ps[i].Type;
+    const last = ps[ps.Length - 1];
+    if (last.IsParams && last.Type instanceof ArrayTypeSymbol) return (last.Type as ArrayTypeSymbol).ElementType;
+    return i < ps.Length ? ps[i].Type : null;
+  }
+  InferTypeArguments(m: MethodSymbol, args: ImmutableArray<BoundExpression>, isIndexer: bool,
+    indexerCount: int, expected: TypeSymbol?): ImmutableArray<TypeSymbol> {
+    const tps = m.TypeParameters;
+    const n = tps.Length;
+    const ctx = new InferenceContext(tps);
+    const ps = TypeInference.EffectiveParameters(m, isIndexer, indexerCount);
+    const expanded = ps.Length > 0 && ps[ps.Length - 1].IsParams &&
+      !(args.Length == ps.Length && args[args.Length - 1].Type instanceof ArrayTypeSymbol);
+    for (let i = 0; i < args.Length; i++) {
+      const pt = TypeInference.ParamTypeFor(ps, i, expanded);
+      if (pt == null) continue;
+      const a = args[i];
+      if (a instanceof BoundUnbound) {
+        const u = a as BoundUnbound;
+        if (u.IsLambda && u.Lambda != null) TypeInference.ExplicitLambdaInference(ctx, u.Lambda, pt);
+        else if (u.Type != null) TypeInference.LowerBoundInference(ctx, u.Type, pt);
+        continue;
+      }
+      if (a instanceof BoundMethodGroup || a.Type == null || a.Type.IsNullType) continue;
+      TypeInference.LowerBoundInference(ctx, a.Type, pt);
+    }
+    for (let i = 0; i < args.Length; i++) {
+      if (!(args[i] instanceof BoundUnbound)) continue;
+      const u = args[i] as BoundUnbound;
+      if (!u.IsCollection || u.Collection == null || u.Collection.NaturalElementType == null) continue;
+      const pt = TypeInference.ParamTypeFor(ps, i, expanded);
+      if (pt != null) TypeInference.InferFromElementType(ctx, u.Collection!.NaturalElementType!, pt);
+    }
+    const done = new List<bool>();
+    for (let i = 0; i < args.Length; i++) done.Add(false);
+    for (let iter = 0; iter < 2 * n + args.Length + 4; iter++) {
+      let progress = false;
+      for (let i = 0; i < args.Length; i++) {
+        if (done[i] || !(args[i] instanceof BoundUnbound)) continue;
+        const u = args[i] as BoundUnbound;
+        if (!u.IsLambda || u.Lambda == null) continue;
+        const info = u.Lambda;
+        const pt = TypeInference.ParamTypeFor(ps, i, expanded);
+        if (pt == null) continue;
+        const invoke = TypeInference.InvokeOf(pt);
+        if (invoke == null || invoke.Parameters.Length != info.ParameterCount) { done[i] = true; continue; }
+        const inputs = TypeInference.Inputs(ctx, invoke);
+        if (TypeInference.UnfixedInputs(ctx, inputs)) continue;
+        const rt = info.InferReturnType(inputs);
+        done[i] = true;
+        progress = true;
+        if (rt != null && !rt.IsNullType) TypeInference.LowerBoundInference(ctx, rt, invoke.ReturnType);
+      }
+      if (progress) continue;
+      for (let i = 0; i < args.Length; i++) {
+        if (done[i] || !(args[i] instanceof BoundMethodGroup)) continue;
+        const invoke = TypeInference.InvokeOf(TypeInference.ParamTypeFor(ps, i, expanded));
+        if (invoke == null) { done[i] = true; continue; }
+        const inputs = TypeInference.Inputs(ctx, invoke);
+        if (TypeInference.UnfixedInputs(ctx, inputs)) continue;
+        done[i] = true;
+        progress = true;
+        const chosen = this.methodGroupResolver == null ? null : this.methodGroupResolver.Invoke(args[i] as BoundMethodGroup, inputs);
+        if (chosen != null && !chosen.ReturnType.IsVoid) TypeInference.LowerBoundInference(ctx, chosen.ReturnType, invoke.ReturnType);
+      }
+      if (progress) continue;
+      let toFix = -1;
+      for (let j = 0; j < n && toFix < 0; j++) {
+        if (ctx.Fixed[j] != null || !TypeInference.HasBounds(ctx, j)) continue;
+        for (let i = 0; i < args.Length; i++) {
+          if (done[i]) continue;
+          const a = args[i];
+          if (!(a instanceof BoundMethodGroup) && !(a instanceof BoundUnbound && (a as BoundUnbound).IsLambda)) continue;
+          const invoke = TypeInference.InvokeOf(TypeInference.ParamTypeFor(ps, i, expanded));
+          if (invoke == null) continue;
+          for (const p of invoke.Parameters) {
+            if (TypeInference.Mentions(p.Type, tps[j])) { toFix = j; break; }
+          }
+          if (toFix >= 0) break;
+        }
+      }
+      if (toFix < 0) {
+        for (let j = 0; j < n; j++) {
+          if (ctx.Fixed[j] == null && TypeInference.HasBounds(ctx, j)) { toFix = j; break; }
+        }
+      }
+      if (toFix < 0) break;
+      if (!this.FixTypeParameter(ctx, toFix)) return new ImmutableArray<TypeSymbol>();
+    }
+    for (let j = 0; j < n; j++) {
+      if (ctx.Fixed[j] != null) continue;
+      if (!TypeInference.HasBounds(ctx, j)) {
+        if (expected != null && j >= 0) {
+          TypeInference.LowerBoundInference(ctx, expected, m.ReturnType);
+          if (TypeInference.HasBounds(ctx, j)) {
+            if (!this.FixTypeParameter(ctx, j)) return new ImmutableArray<TypeSymbol>();
+            continue;
+          }
+        }
+        return new ImmutableArray<TypeSymbol>();
+      }
+      if (!this.FixTypeParameter(ctx, j)) return new ImmutableArray<TypeSymbol>();
+    }
+    const result = ImmutableArray.CreateBuilder<TypeSymbol>();
+    for (const t of ctx.Fixed) result.Add(t!);
+    return result.ToImmutable();
+  }
+  private static InvokeOf(type: TypeSymbol?): MethodSymbol? {
+    const stripped = type?.StripNullable();
+    return stripped instanceof NamedTypeSymbol ? (stripped as NamedTypeSymbol).DelegateInvokeMethod : null;
+  }
+  private static Inputs(ctx: InferenceContext, invoke: MethodSymbol): ImmutableArray<TypeSymbol> {
+    const builder = ImmutableArray.CreateBuilder<TypeSymbol>();
+    for (const p of invoke.Parameters) builder.Add(TypeInference.FixedSubstitute(ctx, p.Type));
+    return builder.ToImmutable();
+  }
+  private static UnfixedInputs(ctx: InferenceContext, inputs: ImmutableArray<TypeSymbol>): bool {
+    for (const t of inputs) if (TypeInference.MentionsUnfixed(ctx, t)) return true;
+    return false;
+  }
+  private static HasBounds(c: InferenceContext, j: int): bool {
+    return c.Lower[j].Count + c.Upper[j].Count + c.Exact[j].Count > 0;
+  }
+  private static Mentions(t: TypeSymbol, tp: TypeParameterSymbol): bool {
+    if (t instanceof TypeParameterSymbol) return Object.ReferenceEquals(t, tp);
+    if (t instanceof ArrayTypeSymbol) return TypeInference.Mentions((t as ArrayTypeSymbol).ElementType, tp);
+    if (t instanceof NullableTypeSymbol) return TypeInference.Mentions((t as NullableTypeSymbol).Underlying, tp);
+    if (t instanceof NamedTypeSymbol) {
+      for (const a of (t as NamedTypeSymbol).TypeArguments) if (TypeInference.Mentions(a, tp)) return true;
+    }
+    return false;
+  }
+  private static MentionsUnfixed(c: InferenceContext, t: TypeSymbol): bool {
+    for (let j = 0; j < c.TypeParameters.Length; j++)
+      if (c.Fixed[j] == null && TypeInference.Mentions(t, c.TypeParameters[j])) return true;
+    return false;
+  }
+  private static FixedSubstitute(c: InferenceContext, t: TypeSymbol): TypeSymbol {
+    const from = ImmutableArray.CreateBuilder<TypeParameterSymbol>();
+    const to = ImmutableArray.CreateBuilder<TypeSymbol>();
+    for (let j = 0; j < c.TypeParameters.Length; j++) {
+      if (c.Fixed[j] != null) { from.Add(c.TypeParameters[j]); to.Add(c.Fixed[j]!); }
+    }
+    return from.Count == 0 ? t : new TypeMap(from.ToImmutable(), to.ToImmutable()).Substitute(t);
+  }
+  private static ExplicitLambdaInference(ctx: InferenceContext, info: LambdaInfo, paramType: TypeSymbol): void {
+    const invoke = TypeInference.InvokeOf(paramType);
+    if (invoke == null || invoke.Parameters.Length != info.ParameterCount) return;
+    for (let i = 0; i < info.ParameterCount; i++) {
+      const et = info.ExplicitParameterTypes[i];
+      if (et != null) TypeInference.ExactBoundInference(ctx, et, invoke.Parameters[i].Type);
+    }
+    if (info.ExplicitReturnType != null) TypeInference.LowerBoundInference(ctx, info.ExplicitReturnType, invoke.ReturnType);
+  }
+  private static InferFromElementType(ctx: InferenceContext, elem: TypeSymbol, paramType: TypeSymbol): void {
+    const t = paramType.StripNullable();
+    if (t instanceof ArrayTypeSymbol) TypeInference.LowerBoundInference(ctx, elem, (t as ArrayTypeSymbol).ElementType);
+    else if (t instanceof NamedTypeSymbol) {
+      const nt = t as NamedTypeSymbol;
+      if (nt.IsGenericType && nt.TypeArguments.Length == 1) TypeInference.LowerBoundInference(ctx, elem, nt.TypeArguments[0]);
+    }
+  }
+  private static LowerBoundInference(c: InferenceContext, u: TypeSymbol, v: TypeSymbol): void {
+    const idx = c.IndexOf(v);
+    if (idx >= 0) {
+      if (!u.IsNullType) TypeInference.AddBound(c.Lower[idx], u);
+      return;
+    }
+    if (v instanceof NullableTypeSymbol) {
+      TypeInference.LowerBoundInference(c, u instanceof NullableTypeSymbol ? (u as NullableTypeSymbol).Underlying : u,
+        (v as NullableTypeSymbol).Underlying);
+      return;
+    }
+    if (u instanceof NullableTypeSymbol && !(v instanceof TypeParameterSymbol)) {
+      TypeInference.LowerBoundInference(c, (u as NullableTypeSymbol).Underlying, v);
+      return;
+    }
+    if (v instanceof ArrayTypeSymbol) {
+      const va = v as ArrayTypeSymbol;
+      if (u instanceof ArrayTypeSymbol) {
+        const ua = u as ArrayTypeSymbol;
+        if (ua.Rank == va.Rank) {
+          if (ua.ElementType.IsReferenceType) TypeInference.LowerBoundInference(c, ua.ElementType, va.ElementType);
+          else TypeInference.ExactBoundInference(c, ua.ElementType, va.ElementType);
+        }
+      }
+      return;
+    }
+    if (v instanceof NamedTypeSymbol && (v as NamedTypeSymbol).IsGenericType) {
+      const vn = v as NamedTypeSymbol;
+      const match = TypeInference.FindConstructedMatch(u, vn);
+      if (match == null) return;
+      const def = vn.OriginalDefinition;
+      for (let i = 0; i < vn.TypeArguments.Length; i++) {
+        const ua = match.TypeArguments[i];
+        const va = vn.TypeArguments[i];
+        if (def.TypeParameters[i].Variance == VarianceKind.Out && ua.IsReferenceType) TypeInference.LowerBoundInference(c, ua, va);
+        else if (def.TypeParameters[i].Variance == VarianceKind.In && ua.IsReferenceType) TypeInference.UpperBoundInference(c, ua, va);
+        else TypeInference.ExactBoundInference(c, ua, va);
+      }
+    }
+  }
+  private static UpperBoundInference(c: InferenceContext, u: TypeSymbol, v: TypeSymbol): void {
+    const idx = c.IndexOf(v);
+    if (idx >= 0) { TypeInference.AddBound(c.Upper[idx], u); return; }
+    // The oracle deliberately does not compare ranks in upper array inference.
+    if (v instanceof ArrayTypeSymbol && u instanceof ArrayTypeSymbol) {
+      TypeInference.UpperBoundInference(c, (u as ArrayTypeSymbol).ElementType, (v as ArrayTypeSymbol).ElementType);
+      return;
+    }
+    if (v instanceof NamedTypeSymbol && u instanceof NamedTypeSymbol) {
+      const vn = v as NamedTypeSymbol;
+      const un = u as NamedTypeSymbol;
+      if (vn.IsGenericType && un.IsGenericType && Object.ReferenceEquals(vn.OriginalDefinition, un.OriginalDefinition)) {
+        for (let i = 0; i < vn.TypeArguments.Length; i++) TypeInference.ExactBoundInference(c, un.TypeArguments[i], vn.TypeArguments[i]);
+      }
+    }
+  }
+  private static ExactBoundInference(c: InferenceContext, u: TypeSymbol, v: TypeSymbol): void {
+    const idx = c.IndexOf(v);
+    if (idx >= 0) { TypeInference.AddBound(c.Exact[idx], u); return; }
+    if (v instanceof NullableTypeSymbol && u instanceof NullableTypeSymbol) {
+      TypeInference.ExactBoundInference(c, (u as NullableTypeSymbol).Underlying, (v as NullableTypeSymbol).Underlying); return;
+    }
+    if (v instanceof ArrayTypeSymbol && u instanceof ArrayTypeSymbol && (u as ArrayTypeSymbol).Rank == (v as ArrayTypeSymbol).Rank) {
+      TypeInference.ExactBoundInference(c, (u as ArrayTypeSymbol).ElementType, (v as ArrayTypeSymbol).ElementType); return;
+    }
+    if (v instanceof NamedTypeSymbol && u instanceof NamedTypeSymbol) {
+      const vn = v as NamedTypeSymbol;
+      const un = u as NamedTypeSymbol;
+      if (vn.IsGenericType && un.IsGenericType && Object.ReferenceEquals(vn.OriginalDefinition, un.OriginalDefinition)) {
+        for (let i = 0; i < vn.TypeArguments.Length; i++) TypeInference.ExactBoundInference(c, un.TypeArguments[i], vn.TypeArguments[i]);
+      }
+    }
+  }
+  private static AddBound(list: List<TypeSymbol>, t: TypeSymbol): void {
+    for (const e of list) if (e.Equals(t)) return;
+    list.Add(t);
+  }
+  private static FindConstructedMatch(u: TypeSymbol, target: NamedTypeSymbol): NamedTypeSymbol? {
+    const def = target.OriginalDefinition;
+    if (u instanceof NamedTypeSymbol && Object.ReferenceEquals((u as NamedTypeSymbol).OriginalDefinition, def)) return u as NamedTypeSymbol;
+    for (let b = u.BaseType; b != null; b = b.BaseType) if (Object.ReferenceEquals(b.OriginalDefinition, def)) return b;
+    let found: NamedTypeSymbol? = null;
+    for (const i of u.AllInterfaces) {
+      if (!Object.ReferenceEquals(i.OriginalDefinition, def)) continue;
+      if (found == null) found = i;
+      else if (!found.Equals(i)) return null;
+    }
+    if (found == null && u instanceof ArrayTypeSymbol && (u as ArrayTypeSymbol).Rank == 1 && def.TypeParameters.Length == 1) {
+      const name = def.ToMetadataString();
+      if (name == "System.Collections.Generic.IEnumerable`1" || name == "System.Collections.Generic.IList`1" ||
+          name == "System.Collections.Generic.ICollection`1" || name == "System.Collections.Generic.IReadOnlyList`1" ||
+          name == "System.Collections.Generic.IReadOnlyCollection`1") return def.Construct(ImmutableArray.Create<TypeSymbol>((u as ArrayTypeSymbol).ElementType));
+    }
+    return found;
+  }
+  private FixTypeParameter(c: InferenceContext, j: int): bool {
+    const candidates = new List<TypeSymbol>();
+    for (const t of c.Lower[j]) TypeInference.AddBound(candidates, t);
+    for (const t of c.Upper[j]) TypeInference.AddBound(candidates, t);
+    for (const t of c.Exact[j]) TypeInference.AddBound(candidates, t);
+    for (let k = candidates.Count - 1; k >= 0; k--) {
+      const cand = candidates[k];
+      let ok = true;
+      for (const e of c.Exact[j]) { if (!cand.Equals(e)) { ok = false; break; } }
+      if (ok) {
+        for (const l of c.Lower[j]) { if (!this.classifier.ClassifyImplicit(null, l, cand).Exists) { ok = false; break; } }
+      }
+      if (ok) {
+        for (const u of c.Upper[j]) { if (!this.classifier.ClassifyImplicit(null, cand, u).Exists) { ok = false; break; } }
+      }
+      if (!ok) candidates.RemoveAt(k);
+    }
+    if (candidates.Count == 0) return false;
+    let best = candidates[0];
+    if (candidates.Count > 1) {
+      let winner: TypeSymbol? = null;
+      for (const cand of candidates) {
+        let all = true;
+        for (const o of candidates) { if (!this.classifier.ClassifyImplicit(null, o, cand).Exists) { all = false; break; } }
+        if (all) { winner = cand; break; }
+      }
+      if (winner == null) return false;
+      best = winner;
+    }
+    c.Fixed[j] = best;
+    return true;
+  }
+}

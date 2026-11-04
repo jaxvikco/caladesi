@@ -1,0 +1,612 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { Conversions } from "Caladesi.Compiler";
+import { ConversionBinder, ConversionBindingContext, ConversionClassifier } from "Caladesi.Compiler.Binding";
+import { BoundExpression, BoundNode, BoundLiteral, BoundDefaultValue, BoundConversion, BoundBadExpression,
+  BoundNamespaceExpression, BoundMethodGroup, BoundUnbound, BoundObjectCreation, BoundMemberInit,
+  BoundSequence, BoundLocalDeclaration, BoundLocal, BoundFieldAccess, BoundCall, ConversionKind } from "Caladesi.Compiler.Bound";
+import { Symbol, TypeSymbol, TypeKind, SpecialType, NullableTypeSymbol, NullTypeSymbol,
+  ErrorTypeSymbol, ConstantValue, FieldSymbol, MethodSymbol, MethodKind, ParameterSymbol, Accessibility,
+  NamespaceSymbol } from "Caladesi.Compiler.Symbols";
+import { SynthesizedMethodSymbol } from "Caladesi.Compiler.Symbols.Source";
+import { DiagnosticDescriptor, Descriptors } from "Caladesi.Compiler.Diagnostics";
+import { SyntaxNode, SyntaxTree } from "Caladesi.Compiler.Syntax";
+import { ConversionClassifierNativeType, ConversionClassifierConstantField } from "./ConversionClassifierTests";
+
+@TestClass
+export class ConversionBinderTests {
+  // Native metadata currently omits nullable annotations on these parameter types.
+  private static readonly NoSyntax: SyntaxNode = (null as (SyntaxNode | null))!;
+  private static readonly NoExpression: BoundExpression = (null as (BoundExpression | null))!;
+  private static readonly NoNamespace: NamespaceSymbol = (null as (NamespaceSymbol | null))!;
+
+  @TestMethod
+  identityAndErrorRecoveryPreserveTheOriginalNodeAndSyntax(): void {
+    const integer = ConversionBinderTests.Numeric(SpecialType.Int32);
+    const context = new ConversionBinderTestContext();
+    const binder = new ConversionBinder(new ConversionClassifier(), context);
+    const originalSyntax = SyntaxTree.ParseText("const original = 1;").Root;
+    const requestedSyntax = SyntaxTree.ParseText("const requested = 2;").Root;
+    const expression = new BoundLiteral(new ConstantValue(1), integer);
+    expression.Syntax = originalSyntax;
+    ConversionBinderTests.Same(binder.CreateConversion(expression, Conversions.Identity, integer, requestedSyntax), expression);
+    ConversionBinderTests.Same(binder.ConvertImplicit(expression, integer, requestedSyntax), expression);
+    ConversionBinderTests.Same(binder.ConvertExplicit(expression, integer, requestedSyntax), expression);
+    ConversionBinderTests.Same(binder.CreateConversion(expression, Conversions.WithNullableWrap(Conversions.Identity),
+      new NullableTypeSymbol(integer), requestedSyntax), expression);
+    ConversionBinderTests.Same(expression.Syntax, originalSyntax);
+    const error = new BoundBadExpression(ImmutableArray<BoundNode>.Empty);
+    ConversionBinderTests.Same(binder.ConvertImplicit(error, integer, requestedSyntax), error);
+    ConversionBinderTests.Same(binder.ConvertExplicit(error, integer, requestedSyntax), error);
+    ConversionBinderTests.Same(binder.ConvertImplicit(expression, ErrorTypeSymbol.Instance, requestedSyntax), expression);
+    ConversionBinderTests.Same(binder.ConvertExplicit(expression, ErrorTypeSymbol.Instance, requestedSyntax), expression);
+    if (context.ReportCount != 0) throw new Exception("Identity/error recovery must not diagnose");
+  }
+
+  @TestMethod
+  numericConstantsBecomeLiteralsWithTargetClrTypesAndNullableWrappers(): void {
+    const integer = ConversionBinderTests.Numeric(SpecialType.Int32);
+    const context = new ConversionBinderTestContext();
+    const binder = new ConversionBinder(new ConversionClassifier(), context);
+    const syntax = SyntaxTree.ParseText("const value = 7;").Root;
+    const source = new BoundLiteral(new ConstantValue(7), integer);
+    const targets = [SpecialType.SByte, SpecialType.Byte, SpecialType.Int16, SpecialType.UInt16,
+      SpecialType.UInt32, SpecialType.Int64, SpecialType.UInt64, SpecialType.IntPtr, SpecialType.UIntPtr];
+    const clrNames = ["System.SByte", "System.Byte", "System.Int16", "System.UInt16",
+      "System.UInt32", "System.Int64", "System.UInt64", "System.Int64", "System.UInt64"];
+    for (let i = 0; i < targets.Length; i++) {
+      const target = ConversionBinderTests.Numeric(targets[i]);
+      const converted = binder.ConvertImplicit(source, target, syntax);
+      if (!(converted instanceof BoundLiteral)) throw new Exception("Constant conversion should create a literal");
+      ConversionBinderTests.Same(converted.Type, target);
+      ConversionBinderTests.Same(converted.Syntax, syntax);
+      const value = converted.ConstantValue;
+      if (value == null || value.Value == null || value.Value.GetType().FullName != clrNames[i] ||
+          Convert.ToInt32(value.Value) != 7) throw new Exception("Constant literal CLR target type");
+      const nullable = new NullableTypeSymbol(target);
+      const wrapped = ConversionBinderTests.Node(binder.ConvertImplicit(source, nullable, syntax), ConversionKind.ToNullable, nullable, syntax);
+      if (!(wrapped.Operand instanceof BoundLiteral)) throw new Exception("Nullable constant must wrap a literal");
+      ConversionBinderTests.Same(wrapped.Operand.Type, target);
+      if (wrapped.Operand.ConstantValue == null || wrapped.Operand.ConstantValue.Value == null ||
+          wrapped.Operand.ConstantValue.Value.GetType().FullName != clrNames[i])
+        throw new Exception("Nullable constant has the underlying CLR type");
+    }
+    const text = new ConversionClassifierNativeType("string", TypeKind.Class, SpecialType.String);
+    const character = ConversionBinderTests.Numeric(SpecialType.Char);
+    const charLiteral = binder.ConvertImplicit(new BoundLiteral(new ConstantValue("x"), text), character, syntax);
+    if (!(charLiteral instanceof BoundLiteral) || charLiteral.ConstantValue == null ||
+        !(charLiteral.ConstantValue.Value instanceof char) || (charLiteral.ConstantValue.Value as char) != 'x')
+      throw new Exception("Character conversion literal");
+    ConversionBinderTests.Same(charLiteral.Type, character);
+    if (context.ReportCount != 0) throw new Exception("Constant conversions must not diagnose");
+  }
+
+  @TestMethod
+  literalEnumResolverProducesUnderlyingAndNullableLiterals(): void {
+    const text = new ConversionClassifierNativeType("string", TypeKind.Class, SpecialType.String);
+    const enumeration = new ConversionClassifierNativeType("Color", TypeKind.Enum);
+    const member = new ConversionClassifierConstantField(enumeration, "red", new ConstantValue(17));
+    const classifier = new ConversionClassifier((type, value) => {
+      if (Object.ReferenceEquals(type, enumeration) && value == "red") return member;
+      return (null as (FieldSymbol | null))!;
+    });
+    const context = new ConversionBinderTestContext();
+    const binder = new ConversionBinder(classifier, context);
+    const syntax = SyntaxTree.ParseText("const color = \"red\";").Root;
+    const expression = new BoundLiteral(new ConstantValue("red"), text);
+    const converted = binder.ConvertImplicit(expression, enumeration, syntax);
+    if (!(converted instanceof BoundLiteral) || converted.ConstantValue == null ||
+        !(converted.ConstantValue.Value instanceof int) || (converted.ConstantValue.Value as int) != 17)
+      throw new Exception("Literal enum conversion uses resolver constant");
+    ConversionBinderTests.Same(converted.Type, enumeration);
+    ConversionBinderTests.Same(converted.Syntax, syntax);
+    const nullable = new NullableTypeSymbol(enumeration);
+    const wrapped = ConversionBinderTests.Node(binder.ConvertImplicit(expression, nullable, syntax),
+      ConversionKind.ToNullable, nullable, syntax);
+    if (!(wrapped.Operand instanceof BoundLiteral)) throw new Exception("Nullable enum literal");
+    ConversionBinderTests.Same(wrapped.Operand.Type, enumeration);
+    if (wrapped.Operand.ConstantValue == null || (wrapped.Operand.ConstantValue.Value as int) != 17)
+      throw new Exception("Nullable enum constant payload");
+  }
+
+  @TestMethod
+  ordinaryConversionsFoldWithoutReplacingTheConversionNode(): void {
+    const integer = ConversionBinderTests.Numeric(SpecialType.Int32);
+    const tiny = ConversionBinderTests.Numeric(SpecialType.Byte);
+    const floating = ConversionBinderTests.Numeric(SpecialType.Double);
+    const context = new ConversionBinderTestContext();
+    const binder = new ConversionBinder(new ConversionClassifier(), context);
+    const syntax = SyntaxTree.ParseText("const value = 257;").Root;
+    const source = new BoundLiteral(new ConstantValue(257), integer);
+    const narrowed = ConversionBinderTests.Node(binder.ConvertExplicit(source, tiny, syntax),
+      ConversionKind.ExplicitNumeric, tiny, syntax);
+    ConversionBinderTests.Same(narrowed.Operand, source);
+    if (narrowed.ConstantFolded == null || !(narrowed.ConstantFolded.Value instanceof byte) ||
+        (narrowed.ConstantFolded.Value as byte) != 1 ||
+        !Object.ReferenceEquals(narrowed.ConstantValue, narrowed.ConstantFolded))
+      throw new Exception("Explicit numeric fold retains conversion and unchecked target box");
+    const widened = ConversionBinderTests.Node(binder.ConvertImplicit(new BoundLiteral(new ConstantValue(7), integer), floating, syntax),
+      ConversionKind.ImplicitNumeric, floating, syntax);
+    if (widened.ConstantFolded == null || !(widened.ConstantFolded.Value instanceof double) ||
+        (widened.ConstantFolded.Value as double) != 7.0) throw new Exception("Implicit numeric conversion folding");
+    const runtime = new BoundDefaultValue(integer);
+    runtime.Syntax = syntax;
+    const runtimeConversion = ConversionBinderTests.Node(binder.ConvertImplicit(runtime, floating, ConversionBinderTests.NoSyntax),
+      ConversionKind.ImplicitNumeric, floating, syntax);
+    if (runtimeConversion.ConstantValue != null) throw new Exception("Nonconstant conversions do not invent constants");
+    const obj = new ConversionClassifierNativeType("object", TypeKind.Class, SpecialType.Object);
+    const boxed = ConversionBinderTests.Node(binder.ConvertImplicit(source, obj, syntax), ConversionKind.Boxing, obj, syntax);
+    if (boxed.ConstantValue != null) throw new Exception("Boxing is not constant folded");
+    const text = new ConversionClassifierNativeType("string", TypeKind.Class, SpecialType.String);
+    text.Parent = obj;
+    const reference = ConversionBinderTests.Node(binder.ConvertImplicit(new BoundLiteral(new ConstantValue("text"), text), obj, syntax),
+      ConversionKind.ImplicitReference, obj, syntax);
+    if (reference.ConstantValue != null) throw new Exception("Reference conversions are not constant folded");
+    const nullable = new NullableTypeSymbol(integer);
+    const nullLiteral = new BoundLiteral(ConstantValue.Null, NullTypeSymbol.Instance);
+    const nullConversion = ConversionBinderTests.Node(binder.ConvertImplicit(nullLiteral, nullable, syntax),
+      ConversionKind.NullLiteral, nullable, syntax);
+    ConversionBinderTests.Same(nullConversion.Operand, nullLiteral);
+    if (nullConversion.ConstantValue != ConstantValue.Null) throw new Exception("Null conversion must preserve the null constant");
+  }
+
+  @TestMethod
+  nullableUnwrapBuildsNumericAndUserDefinedFollowupChains(): void {
+    const integer = ConversionBinderTests.Numeric(SpecialType.Int32);
+    const wide = ConversionBinderTests.Numeric(SpecialType.Int64);
+    const context = new ConversionBinderTestContext();
+    const binder = new ConversionBinder(new ConversionClassifier(), context);
+    const syntax = SyntaxTree.ParseText("const value = source;").Root;
+    const source = new BoundDefaultValue(new NullableTypeSymbol(integer));
+    const direct = ConversionBinderTests.Node(binder.ConvertExplicit(source, integer, syntax),
+      ConversionKind.FromNullable, integer, syntax);
+    ConversionBinderTests.Same(direct.Operand, source);
+    const widened = ConversionBinderTests.Node(binder.ConvertExplicit(source, wide, syntax),
+      ConversionKind.ImplicitNumeric, wide, syntax);
+    const unwrap = ConversionBinderTests.Node(widened.Operand, ConversionKind.FromNullable, integer, syntax);
+    ConversionBinderTests.Same(unwrap.Operand, source);
+    const tiny = ConversionBinderTests.Numeric(SpecialType.Byte);
+    const narrowed = ConversionBinderTests.Node(binder.ConvertExplicit(source, tiny, syntax),
+      ConversionKind.ExplicitNumeric, tiny, syntax);
+    ConversionBinderTests.Node(narrowed.Operand, ConversionKind.FromNullable, integer, syntax);
+    const a = new ConversionClassifierNativeType("A", TypeKind.Struct);
+    const b = new ConversionClassifierNativeType("B", TypeKind.Struct);
+    const method = ConversionBinderTests.Method(a, "op_Explicit", MethodKind.Conversion, b, [a]);
+    const nullableA = new BoundDefaultValue(new NullableTypeSymbol(a));
+    const user = ConversionBinderTests.Node(binder.ConvertExplicit(nullableA, b, syntax),
+      ConversionKind.UserDefined, b, syntax);
+    ConversionBinderTests.Same(user.Method, method);
+    const userUnwrap = ConversionBinderTests.Node(user.Operand, ConversionKind.FromNullable, a, syntax);
+    ConversionBinderTests.Same(userUnwrap.Operand, nullableA);
+    const nullableB = new NullableTypeSymbol(b);
+    const combined = Conversions.WithNullableWrap(Conversions.Explicit(ConversionKind.FromNullable, method));
+    const wrapped = ConversionBinderTests.Node(binder.CreateConversion(nullableA, combined, nullableB, syntax),
+      ConversionKind.ToNullable, nullableB, syntax);
+    const wrappedUser = ConversionBinderTests.Node(wrapped.Operand, ConversionKind.UserDefined, b, syntax);
+    ConversionBinderTests.Same(wrappedUser.Method, method);
+    ConversionBinderTests.Node(wrappedUser.Operand, ConversionKind.FromNullable, a, syntax);
+    if (context.ReportCount != 0) throw new Exception("Nullable conversion chains must not diagnose");
+  }
+
+  @TestMethod
+  unionConversionsRetainCaseAndMappingMarkers(): void {
+    const integer = ConversionBinderTests.Numeric(SpecialType.Int32);
+    const wide = ConversionBinderTests.Numeric(SpecialType.Int64);
+    const text = new ConversionClassifierNativeType("string", TypeKind.Class, SpecialType.String);
+    const sourceUnion = ConversionBinderTests.Union("Small", [integer, text]);
+    const targetUnion = ConversionBinderTests.Union("Large", [wide, integer, text]);
+    const binder = new ConversionBinder(new ConversionClassifier(), new ConversionBinderTestContext());
+    const syntax = SyntaxTree.ParseText("const union = source;").Root;
+    const source = new BoundDefaultValue(integer);
+    const wrapped = ConversionBinderTests.Node(binder.ConvertImplicit(source, targetUnion, syntax),
+      ConversionKind.UnionWrap, targetUnion, syntax);
+    if (wrapped.CaseIndex != 1) throw new Exception("Union exact case index");
+    ConversionBinderTests.Same(wrapped.Operand, source);
+    const unionValue = new BoundDefaultValue(sourceUnion);
+    const mapped = ConversionBinderTests.Node(binder.ConvertImplicit(unionValue, targetUnion, syntax),
+      ConversionKind.UnionWrap, targetUnion, syntax);
+    if (mapped.CaseIndex != -3) throw new Exception("Union mapping marker");
+    const extracted = ConversionBinderTests.Node(binder.ConvertExplicit(unionValue, text, syntax),
+      ConversionKind.UnionExtract, text, syntax);
+    if (extracted.CaseIndex != 1) throw new Exception("Union extraction case index");
+    ConversionBinderTests.Same(extracted.Operand, unionValue);
+    const nullable = new NullableTypeSymbol(targetUnion);
+    const nullableWrap = ConversionBinderTests.Node(binder.ConvertImplicit(source, nullable, syntax),
+      ConversionKind.ToNullable, nullable, syntax);
+    const inner = ConversionBinderTests.Node(nullableWrap.Operand, ConversionKind.UnionWrap, targetUnion, syntax);
+    if (inner.CaseIndex != 1) throw new Exception("Nullable wrapping preserves union case index");
+  }
+
+  @TestMethod
+  tupleConstructorConversionReusesArgumentsWithoutATemporary(): void {
+    const integer = ConversionBinderTests.Numeric(SpecialType.Int32);
+    const wide = ConversionBinderTests.Numeric(SpecialType.Int64);
+    const sourceType = ConversionBinderTests.Tuple("Source", [integer, integer]);
+    const targetType = ConversionBinderTests.Tuple("Target", [wide, integer]);
+    const sourceCtor = sourceType.InstanceConstructors[1];
+    const targetCtor = targetType.InstanceConstructors[1];
+    const first = new BoundDefaultValue(integer);
+    const second = new BoundLiteral(new ConstantValue(4), integer);
+    const args = ImmutableArray.CreateBuilder<BoundExpression>();
+    args.Add(first);
+    args.Add(second);
+    const source = new BoundObjectCreation(sourceCtor, sourceType, args.ToImmutable(), ImmutableArray<BoundMemberInit>.Empty);
+    const syntax = SyntaxTree.ParseText("const tuple = [a, b];").Root;
+    const binder = new ConversionBinder(new ConversionClassifier(), new ConversionBinderTestContext());
+    const result = binder.ConvertImplicit(source, targetType, syntax);
+    if (!(result instanceof BoundObjectCreation)) throw new Exception("Tuple ctor fast path must not allocate a temp sequence");
+    const creation = result as BoundObjectCreation;
+    ConversionBinderTests.Same(creation.Constructor, targetCtor);
+    ConversionBinderTests.Same(creation.Type, targetType);
+    ConversionBinderTests.Same(creation.Syntax, syntax);
+    if (creation.Arguments.Length != 2 || !creation.Initializers.IsDefaultOrEmpty)
+      throw new Exception("Tuple constructor shape");
+    const converted = ConversionBinderTests.Node(creation.Arguments[0], ConversionKind.ImplicitNumeric, wide, syntax);
+    ConversionBinderTests.Same(converted.Operand, first);
+    ConversionBinderTests.Same(creation.Arguments[1], second);
+    const nullable = new NullableTypeSymbol(targetType);
+    const wrapped = ConversionBinderTests.Node(binder.ConvertImplicit(source, nullable, syntax),
+      ConversionKind.ToNullable, nullable, syntax);
+    if (!(wrapped.Operand instanceof BoundObjectCreation)) throw new Exception("Nullable tuple wraps the converted creation");
+    ConversionBinderTests.Same(wrapped.Operand.Type, targetType);
+    ConversionBinderTests.Same((wrapped.Operand as BoundObjectCreation).Constructor, targetCtor);
+    ConversionBinderTests.Same((wrapped.Operand as BoundObjectCreation).Arguments[1], second);
+  }
+
+  @TestMethod
+  generalTupleConversionEvaluatesTheSourceOnceThroughASynthesizedLocal(): void {
+    const integer = ConversionBinderTests.Numeric(SpecialType.Int32);
+    const wide = ConversionBinderTests.Numeric(SpecialType.Int64);
+    const sourceType = ConversionBinderTests.Tuple("Source", [integer, integer]);
+    const targetType = ConversionBinderTests.Tuple("Target", [wide, wide]);
+    const owner = new ConversionClassifierNativeType("Owner", TypeKind.Class);
+    const producer = ConversionBinderTests.Method(owner, "Produce", MethodKind.Ordinary, sourceType, []);
+    const source = new BoundCall(ConversionBinderTests.NoExpression, producer, ImmutableArray<BoundExpression>.Empty);
+    const context = new ConversionBinderTestContext();
+    context.Owner = producer;
+    const syntax = SyntaxTree.ParseText("const tuple = produce();").Root;
+    const binder = new ConversionBinder(new ConversionClassifier(), context);
+    const result = binder.ConvertImplicit(source, targetType, syntax);
+    if (!(result instanceof BoundSequence)) throw new Exception("General tuple conversion needs a sequence");
+    const sequence = result as BoundSequence;
+    ConversionBinderTests.Same(sequence.Syntax, syntax);
+    ConversionBinderTests.Same(sequence.Type, targetType);
+    if (sequence.Locals.Length != 1 || sequence.SideEffects.Length != 1 ||
+        !(sequence.SideEffects[0] instanceof BoundLocalDeclaration)) throw new Exception("Exactly one tuple evaluation");
+    const local = sequence.Locals[0];
+    if (local.Name != "<tuple>" || !local.IsSynthesized || local.IsConst) throw new Exception("Synthesized tuple local flags");
+    ConversionBinderTests.Same(local.Type, sourceType);
+    ConversionBinderTests.Same(local.ContainingSymbol, producer);
+    const declaration = sequence.SideEffects[0] as BoundLocalDeclaration;
+    ConversionBinderTests.Same(declaration.Local, local);
+    ConversionBinderTests.Same(declaration.Initializer, source);
+    if (!(sequence.Value instanceof BoundObjectCreation)) throw new Exception("Tuple sequence result is a creation");
+    const creation = sequence.Value as BoundObjectCreation;
+    ConversionBinderTests.Same(creation.Constructor, targetType.InstanceConstructors[1]);
+    ConversionBinderTests.Same(creation.Syntax, syntax);
+    if (creation.Arguments.Length != 2 || !creation.Initializers.IsDefaultOrEmpty) throw new Exception("General tuple arguments");
+    for (let i = 0; i < creation.Arguments.Length; i++) {
+      const converted = ConversionBinderTests.Node(creation.Arguments[i], ConversionKind.ImplicitNumeric, wide, syntax);
+      if (!(converted.Operand instanceof BoundFieldAccess)) throw new Exception("Tuple conversion reads source fields");
+      const field = converted.Operand as BoundFieldAccess;
+      ConversionBinderTests.Same(field.Syntax, syntax);
+      ConversionBinderTests.Same(field.Field, sourceType.GetMembers("Item" + (i + 1))[0]);
+      if (!(field.Receiver instanceof BoundLocal)) throw new Exception("Tuple element receiver is the shared temp");
+      ConversionBinderTests.Same((field.Receiver as BoundLocal).Local, local);
+    }
+    if (context.ReportCount != 0) throw new Exception("General tuple conversion must not diagnose");
+  }
+
+  @TestMethod
+  failedEntrypointsSelectDiagnosticsAndPreserveRecoveryTreeSyntax(): void {
+    const context = new ConversionBinderTestContext();
+    const binder = new ConversionBinder(new ConversionClassifier(), context);
+    const integer = ConversionBinderTests.Numeric(SpecialType.Int32);
+    const wide = ConversionBinderTests.Numeric(SpecialType.Int64);
+    const boolean = context.BoolType;
+    const originalSyntax = SyntaxTree.ParseText("const original = 1;").Root;
+    const syntax = SyntaxTree.ParseText("const requested = 2;").Root;
+    const source = new BoundDefaultValue(wide);
+    source.Syntax = originalSyntax;
+    const failedImplicit = ConversionBinderTests.Node(binder.ConvertImplicit(source, integer, syntax),
+      ConversionKind.Identity, integer, syntax);
+    ConversionBinderTests.Same(failedImplicit.Operand, source);
+    context.Check(Descriptors.NotAssignableExplicitExists, syntax, [wide.ToDisplayString(), integer.ToDisplayString(), integer.ToDisplayString()]);
+    context.Clear();
+    const incompatible = new BoundDefaultValue(integer);
+    incompatible.Syntax = originalSyntax;
+    const failed = ConversionBinderTests.Node(binder.ConvertImplicit(incompatible, boolean, ConversionBinderTests.NoSyntax),
+      ConversionKind.Identity, boolean, originalSyntax);
+    ConversionBinderTests.Same(failed.Operand, incompatible);
+    context.Check(Descriptors.NotAssignable, ConversionBinderTests.NoSyntax, [integer.ToDisplayString(), boolean.ToDisplayString()]);
+    context.Clear();
+    const explicitFailure = ConversionBinderTests.Node(binder.ConvertExplicit(incompatible, boolean, syntax),
+      ConversionKind.Identity, boolean, syntax);
+    ConversionBinderTests.Same(explicitFailure.Operand, incompatible);
+    context.Check(Descriptors.CannotConvert, syntax, [integer.ToDisplayString(), boolean.ToDisplayString()]);
+    context.Clear();
+    const nil = new BoundLiteral(ConstantValue.Null, NullTypeSymbol.Instance);
+    binder.ConvertImplicit(nil, integer, syntax);
+    context.Check(Descriptors.NullNotAssignable, syntax, [integer.ToDisplayString()]);
+    context.Clear();
+    binder.ConvertExplicit(nil, integer, syntax);
+    context.Check(Descriptors.CannotConvert, syntax, [NullTypeSymbol.Instance.ToDisplayString(), integer.ToDisplayString()]);
+    context.Clear();
+    const nullable = new NullableTypeSymbol(integer);
+    binder.ConvertImplicit(new BoundDefaultValue(nullable), wide, syntax);
+    context.Check(Descriptors.PossiblyNullAssign, syntax, [nullable.ToDisplayString(), wide.ToDisplayString()]);
+    context.Clear();
+    binder.ConvertImplicit(new BoundDefaultValue(nullable), boolean, syntax);
+    context.Check(Descriptors.NotAssignable, syntax, [nullable.ToDisplayString(), boolean.ToDisplayString()]);
+  }
+
+  @TestMethod
+  literalEnumFailureUsesQuotedValueForBothNullableAndNonnullableTargets(): void {
+    const context = new ConversionBinderTestContext();
+    const binder = new ConversionBinder(new ConversionClassifier(), context);
+    const enumeration = new ConversionClassifierNativeType("Color", TypeKind.Enum);
+    context.LiteralEnum = enumeration;
+    const text = new ConversionClassifierNativeType("string", TypeKind.Class, SpecialType.String);
+    const source = new BoundLiteral(new ConstantValue("blue"), text);
+    const syntax = SyntaxTree.ParseText("const color = \"blue\";").Root;
+    binder.ConvertImplicit(source, enumeration, syntax);
+    context.Check(Descriptors.NotAssignable, syntax, ["\"blue\"", enumeration.ToDisplayString()]);
+    context.Clear();
+    const nullable = new NullableTypeSymbol(enumeration);
+    binder.ConvertImplicit(source, nullable, syntax);
+    context.Check(Descriptors.NotAssignable, syntax, ["\"blue\"", nullable.ToDisplayString()]);
+    context.Clear();
+    binder.ConvertExplicit(source, enumeration, syntax);
+    context.Check(Descriptors.CannotConvert, syntax, [text.ToDisplayString(), enumeration.ToDisplayString()]);
+  }
+
+  @TestMethod
+  nonvaluesReturnBadTreesAndReportFalseSuppressesAllEntrypointDiagnostics(): void {
+    const context = new ConversionBinderTestContext();
+    const binder = new ConversionBinder(new ConversionClassifier(), context);
+    const integer = ConversionBinderTests.Numeric(SpecialType.Int32);
+    const syntax = SyntaxTree.ParseText("const value = namespaceValue;").Root;
+    const ns = new NamespaceSymbol("Example", ConversionBinderTests.NoNamespace);
+    const namespaceExpression = new BoundNamespaceExpression(ns);
+    const result = binder.ConvertImplicit(namespaceExpression, integer, syntax);
+    ConversionBinderTests.Bad(result, namespaceExpression, syntax);
+    context.Check(Descriptors.NamespaceUsedAsValue, syntax, [ns.ToDisplayString()]);
+    context.Clear();
+    const nonvalue = new ConversionBinderNonvalue();
+    ConversionBinderTests.Bad(binder.ConvertExplicit(nonvalue, integer, syntax), nonvalue, syntax);
+    context.Check(Descriptors.ExpressionNotAValue, syntax, []);
+    context.Clear();
+    nonvalue.Syntax = syntax;
+    ConversionBinderTests.Bad(binder.ConvertImplicit(nonvalue, integer, ConversionBinderTests.NoSyntax, false),
+      nonvalue, ConversionBinderTests.NoSyntax);
+    ConversionBinderTests.Bad(binder.ConvertImplicit(nonvalue, integer, syntax, false), nonvalue, syntax);
+    ConversionBinderTests.Bad(binder.ConvertExplicit(namespaceExpression, integer, syntax, false), namespaceExpression, syntax);
+    const source = new BoundDefaultValue(integer);
+    ConversionBinderTests.Node(binder.ConvertImplicit(source, context.BoolType, syntax, false),
+      ConversionKind.Identity, context.BoolType, syntax);
+    ConversionBinderTests.Node(binder.ConvertExplicit(source, context.BoolType, syntax, false),
+      ConversionKind.Identity, context.BoolType, syntax);
+    binder.ConvertImplicit(new BoundLiteral(ConstantValue.Null, NullTypeSymbol.Instance), integer, syntax, false);
+    binder.ConvertImplicit(new BoundDefaultValue(new NullableTypeSymbol(integer)), integer, syntax, false);
+    if (context.ReportCount != 0) throw new Exception("report=false must suppress diagnostics without changing recovery trees");
+  }
+
+  @TestMethod
+  boolEntrypointKeepsAnyBooleanNodeAndOtherwiseUsesImplicitConversion(): void {
+    const context = new ConversionBinderTestContext();
+    const binder = new ConversionBinder(new ConversionClassifier(), context);
+    const syntax = SyntaxTree.ParseText("if (condition) {}").Root;
+    const originalSyntax = SyntaxTree.ParseText("const original = true;").Root;
+    const otherBoolean = ConversionBinderTests.Numeric(SpecialType.Boolean);
+    const condition = new BoundDefaultValue(otherBoolean);
+    condition.Syntax = originalSyntax;
+    ConversionBinderTests.Same(binder.ConvertToBool(condition, syntax), condition);
+    ConversionBinderTests.Same(condition.Syntax, originalSyntax);
+    const integer = ConversionBinderTests.Numeric(SpecialType.Int32);
+    const source = new BoundDefaultValue(integer);
+    const converted = ConversionBinderTests.Node(binder.ConvertToBool(source, syntax),
+      ConversionKind.Identity, context.BoolType, syntax);
+    ConversionBinderTests.Same(converted.Operand, source);
+    context.Check(Descriptors.NotAssignable, syntax, [integer.ToDisplayString(), context.BoolType.ToDisplayString()]);
+    context.Clear();
+    const truthy = new ConversionClassifierNativeType("Truthy", TypeKind.Struct);
+    const method = ConversionBinderTests.Method(truthy, "op_Implicit", MethodKind.Conversion, context.BoolType, [truthy]);
+    const truthyValue = new BoundDefaultValue(truthy);
+    const user = ConversionBinderTests.Node(binder.ConvertToBool(truthyValue, syntax),
+      ConversionKind.UserDefined, context.BoolType, syntax);
+    ConversionBinderTests.Same(user.Operand, truthyValue);
+    ConversionBinderTests.Same(user.Method, method);
+    if (context.ReportCount != 0) throw new Exception("Bool entrypoint honors implicit user conversions");
+  }
+
+  @TestMethod
+  unboundExpressionsBindOnceAndExplicitRequestsResumeTheImplicitRoute(): void {
+    const context = new ConversionBinderTestContext();
+    const binder = new ConversionBinder(new ConversionClassifier(), context);
+    const integer = ConversionBinderTests.Numeric(SpecialType.Int32);
+    const wide = ConversionBinderTests.Numeric(SpecialType.Int64);
+    const syntax = SyntaxTree.ParseText("const value = unbound;").Root;
+    const value = new BoundLiteral(new ConstantValue(7), integer);
+    let calls = 0;
+    const unbound = new BoundUnbound(syntax, target => {
+      calls++;
+      ConversionBinderTests.Same(target, integer);
+      return value;
+    });
+    ConversionBinderTests.Same(binder.ConvertImplicit(unbound, integer, syntax), value);
+    if (calls != 1 || context.ReportCount != 0) throw new Exception("Unbound binding succeeds exactly once");
+    const wideValue = new BoundDefaultValue(wide);
+    let explicitCalls = 0;
+    const explicitUnbound = new BoundUnbound(syntax, target => {
+      explicitCalls++;
+      ConversionBinderTests.Same(target, integer);
+      return wideValue;
+    });
+    const result = ConversionBinderTests.Node(binder.ConvertExplicit(explicitUnbound, integer, syntax),
+      ConversionKind.Identity, integer, syntax);
+    ConversionBinderTests.Same(result.Operand, wideValue);
+    context.Check(Descriptors.NotAssignableExplicitExists, syntax, [wide.ToDisplayString(), integer.ToDisplayString(), integer.ToDisplayString()]);
+    if (explicitCalls != 1) throw new Exception("Explicit unbound entrypoint binds once and converts implicitly");
+    context.Clear();
+    binder.ConvertExplicit(explicitUnbound, integer, syntax, false);
+    if (explicitCalls != 2 || context.ReportCount != 0) throw new Exception("Unbound route retains report=false");
+    let failureCalls = 0;
+    const stillUnbound = new BoundUnbound(syntax, target => value);
+    const failed = new BoundUnbound(syntax, target => {
+      failureCalls++;
+      return stillUnbound;
+    });
+    const bad = binder.ConvertImplicit(failed, integer, syntax);
+    if (!(bad instanceof BoundBadExpression) || !(bad as BoundBadExpression).Children.IsDefaultOrEmpty)
+      throw new Exception("Still-unbound callback result becomes an empty bad node");
+    ConversionBinderTests.Same(bad.Syntax, syntax);
+    const explicitBad = binder.ConvertExplicit(failed, integer, syntax, false);
+    if (!(explicitBad instanceof BoundBadExpression) || failureCalls != 2 || context.ReportCount != 0)
+      throw new Exception("Unbound failure must not recurse or invent diagnostics");
+    failed.Syntax = syntax;
+    const badWithoutSyntax = binder.ConvertImplicit(failed, integer, ConversionBinderTests.NoSyntax);
+    if (!(badWithoutSyntax instanceof BoundBadExpression) || !(badWithoutSyntax as BoundBadExpression).Children.IsDefaultOrEmpty ||
+        failureCalls != 3 || badWithoutSyntax.Syntax != null) throw new Exception("Bad unbound result does not inherit syntax");
+  }
+
+  @TestMethod
+  methodGroupsUseTypedContextSeamWithExactArgumentsForBothEntrypoints(): void {
+    const context = new ConversionBinderTestContext();
+    const binder = new ConversionBinder(new ConversionClassifier(), context);
+    const target = new ConversionClassifierNativeType("Callback", TypeKind.Delegate);
+    const syntax = SyntaxTree.ParseText("const callback = method;").Root;
+    const group = new BoundMethodGroup(ConversionBinderTests.NoExpression, "method",
+      ImmutableArray<MethodSymbol>.Empty, ImmutableArray<TypeSymbol>.Empty);
+    const converted = new BoundDefaultValue(target);
+    context.GroupResult = converted;
+    ConversionBinderTests.Same(binder.ConvertImplicit(group, target, syntax), converted);
+    context.CheckGroup(group, target, syntax, true, 1);
+    ConversionBinderTests.Same(binder.ConvertExplicit(group, target, syntax), converted);
+    context.CheckGroup(group, target, syntax, true, 2);
+    ConversionBinderTests.Same(binder.ConvertImplicit(group, target, ConversionBinderTests.NoSyntax, false), converted);
+    context.CheckGroup(group, target, ConversionBinderTests.NoSyntax, false, 3);
+    ConversionBinderTests.Same(binder.ConvertExplicit(group, target, syntax, false), converted);
+    context.CheckGroup(group, target, syntax, false, 4);
+    const unbound = new BoundUnbound(syntax, type => group);
+    ConversionBinderTests.Same(binder.ConvertExplicit(unbound, target, syntax, false), converted);
+    context.CheckGroup(group, target, syntax, false, 5);
+    if (context.ReportCount != 0) throw new Exception("Method groups bypass nonvalue diagnostics");
+  }
+
+  private static Numeric(special: SpecialType): ConversionClassifierNativeType {
+    return new ConversionClassifierNativeType(special.ToString(), TypeKind.Struct, special);
+  }
+  private static Union(name: string, cases: TypeSymbol[]): ConversionClassifierNativeType {
+    const type = new ConversionClassifierNativeType(name, TypeKind.Struct);
+    type.Union = true;
+    const builder = ImmutableArray.CreateBuilder<TypeSymbol>();
+    for (const item of cases) builder.Add(item);
+    type.Cases = builder.ToImmutable();
+    return type;
+  }
+  private static Tuple(name: string, types: TypeSymbol[]): ConversionClassifierNativeType {
+    const type = new ConversionClassifierNativeType(name, TypeKind.Struct);
+    type.Tuple = true;
+    const arguments = ImmutableArray.CreateBuilder<TypeSymbol>();
+    for (let i = 0; i < types.Length; i++) {
+      arguments.Add(types[i]);
+      type.AddMember(new ConversionBinderTupleField(type, "Item" + (i + 1), types[i]));
+    }
+    type.Arguments = arguments.ToImmutable();
+    ConversionBinderTests.Method(type, ".ctor", MethodKind.Constructor, ErrorTypeSymbol.Instance, []);
+    ConversionBinderTests.Method(type, ".ctor", MethodKind.Constructor, ErrorTypeSymbol.Instance, types);
+    return type;
+  }
+  private static Method(owner: ConversionClassifierNativeType, name: string, kind: MethodKind,
+    result: TypeSymbol, types: TypeSymbol[]): MethodSymbol {
+    const method = new SynthesizedMethodSymbol(owner, name, kind, Accessibility.Public,
+      kind != MethodKind.Constructor, result, ImmutableArray<ParameterSymbol>.Empty);
+    const parameters = ImmutableArray.CreateBuilder<ParameterSymbol>();
+    for (let i = 0; i < types.Length; i++) parameters.Add(new ParameterSymbol("arg" + i, types[i], i, method));
+    method.SetParameters(parameters.ToImmutable());
+    owner.AddMember(method);
+    return method;
+  }
+  private static Node(expression: BoundExpression, kind: ConversionKind, target: TypeSymbol, syntax: SyntaxNode): BoundConversion {
+    if (!(expression instanceof BoundConversion)) throw new Exception("Expected bound conversion: " + kind);
+    const conversion = expression as BoundConversion;
+    if (conversion.Kind != kind) throw new Exception("Unexpected bound conversion kind: " + conversion.Kind);
+    ConversionBinderTests.Same(conversion.Type, target);
+    ConversionBinderTests.Same(conversion.Syntax, syntax);
+    return conversion;
+  }
+  private static Bad(expression: BoundExpression, child: BoundExpression, syntax: SyntaxNode): void {
+    if (!(expression instanceof BoundBadExpression)) throw new Exception("Nonvalue recovery must be bad");
+    const bad = expression as BoundBadExpression;
+    if (bad.Children.Length != 1) throw new Exception("Nonvalue recovery retains one child");
+    ConversionBinderTests.Same(bad.Children[0], child);
+    ConversionBinderTests.Same(bad.Syntax, syntax);
+    if (!bad.HasErrors) throw new Exception("Bad recovery has errors");
+  }
+  static Same(actual: object?, expected: object?): void {
+    if (!Object.ReferenceEquals(actual, expected)) throw new Exception("Expected reference identity");
+  }
+}
+
+export sealed class ConversionBinderTestContext extends ConversionBindingContext {
+  private readonly boolean: TypeSymbol = new ConversionClassifierNativeType("bool", TypeKind.Struct, SpecialType.Boolean);
+  Owner: Symbol? = null;
+  LiteralEnum: TypeSymbol? = null;
+  ReportCount: int = 0;
+  private descriptor: DiagnosticDescriptor? = null;
+  private syntax: SyntaxNode? = null;
+  private arguments: object[] = [];
+  GroupResult: BoundExpression = new BoundDefaultValue(ErrorTypeSymbol.Instance);
+  private group: BoundMethodGroup? = null;
+  private groupTarget: TypeSymbol? = null;
+  private groupSyntax: SyntaxNode? = null;
+  private groupReport: bool = false;
+  private groupCalls: int = 0;
+  override get BoolType(): TypeSymbol { return this.boolean; }
+  override get ContainingSymbol(): Symbol? { return this.Owner; }
+  override ConvertMethodGroup(group: BoundMethodGroup, target: TypeSymbol, syntax: SyntaxNode?, report: bool): BoundExpression {
+    this.group = group;
+    this.groupTarget = target;
+    this.groupSyntax = syntax;
+    this.groupReport = report;
+    this.groupCalls++;
+    return this.GroupResult;
+  }
+  override IsLiteralEnum(type: TypeSymbol): bool { return Object.ReferenceEquals(type, this.LiteralEnum); }
+  override Report(descriptor: DiagnosticDescriptor, syntax: SyntaxNode?, args: object?[]): void {
+    this.ReportCount++;
+    this.descriptor = descriptor;
+    this.syntax = syntax;
+    this.arguments = args;
+  }
+  Clear(): void {
+    this.ReportCount = 0;
+    this.descriptor = null;
+    this.syntax = null;
+    this.arguments = [];
+  }
+  Check(descriptor: DiagnosticDescriptor, syntax: SyntaxNode, args: string[]): void {
+    if (this.ReportCount != 1 || !Object.ReferenceEquals(this.descriptor, descriptor) ||
+        !Object.ReferenceEquals(this.syntax, syntax) || this.arguments.Length != args.Length)
+      throw new Exception("Diagnostic descriptor, location, count, or arity");
+    for (let i = 0; i < args.Length; i++)
+      if (!Object.Equals(this.arguments[i], args[i])) throw new Exception("Diagnostic argument: " + i);
+  }
+  CheckGroup(group: BoundMethodGroup, target: TypeSymbol, syntax: SyntaxNode, report: bool, calls: int): void {
+    ConversionBinderTests.Same(this.group, group);
+    ConversionBinderTests.Same(this.groupTarget, target);
+    ConversionBinderTests.Same(this.groupSyntax, syntax);
+    if (this.groupReport != report || this.groupCalls != calls) throw new Exception("Typed method-group seam arguments");
+  }
+}
+
+export sealed class ConversionBinderNonvalue extends BoundExpression {
+  constructor() { super((null as (TypeSymbol | null))!); }
+}
+
+export sealed class ConversionBinderTupleField extends FieldSymbol {
+  constructor(private readonly owner: Symbol, private readonly name: string, private readonly type: TypeSymbol) { super(); }
+  override get Name(): string { return this.name; }
+  override get ContainingSymbol(): Symbol? { return this.owner; }
+  override get Type(): TypeSymbol { return this.type; }
+}

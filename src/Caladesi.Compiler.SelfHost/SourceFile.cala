@@ -1,0 +1,35 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { NamespaceSymbol } from "./Symbols/NamespaceSymbol";
+import { SourceNamedType, TypeAliasSymbol } from "./Symbols/Source/SourceTypes";
+import { SourceModuleClassSymbol } from "./Symbols/Source/SourceModuleClass";
+import { SyntaxTree } from "./Syntax/SyntaxTree";
+import { ImportDeclarationSyntax, StatementSyntax } from "./Syntax/Nodes.Core";
+import { Compilation } from "./Compilation";
+import { FileScope } from "./FileScope";
+import { SourceFileNames } from "./SourceFileNames";
+
+export sealed class SourceFile {
+  readonly NamespaceName: string;
+  readonly ModuleClassBaseName: string;
+  Namespace: NamespaceSymbol;
+  ModuleClass: SourceModuleClassSymbol<SourceFile>? = null;
+  Types: ImmutableArray<SourceNamedType<SourceFile>> = ImmutableArray<SourceNamedType<SourceFile>>.Empty;
+  Aliases: ImmutableArray<TypeAliasSymbol<SourceFile>> = ImmutableArray<TypeAliasSymbol<SourceFile>>.Empty;
+  Imports: ImmutableArray<ImportDeclarationSyntax> = ImmutableArray<ImportDeclarationSyntax>.Empty;
+  TopLevelStatements: ImmutableArray<StatementSyntax> = ImmutableArray<StatementSyntax>.Empty;
+  private scope: FileScope<SourceFile>? = null;
+
+  constructor(public readonly Compilation: Compilation, public readonly Tree: SyntaxTree) {
+    ArgumentNullException.ThrowIfNull(Compilation);
+    ArgumentNullException.ThrowIfNull(Tree);
+    this.NamespaceName = SourceFileNames.DeriveNamespace(Compilation.Options, Tree.FilePath);
+    this.ModuleClassBaseName = SourceFileNames.GetModuleClassBaseName(Compilation.Options, Tree.FilePath);
+    this.Namespace = Compilation.GlobalNamespace;
+  }
+
+  get FilePath(): string { return this.Tree.FilePath; }
+  get Scope(): FileScope<SourceFile> {
+    if (this.scope == null) this.scope = new FileScope<SourceFile>(this.Compilation.FileScopes, this);
+    return this.scope;
+  }
+}

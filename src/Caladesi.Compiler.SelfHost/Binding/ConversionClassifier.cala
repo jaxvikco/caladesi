@@ -1,0 +1,265 @@
+import { Func, Convert, OverflowException } from "System";
+import { List } from "System.Collections.Generic";
+import { Conversion, Conversions } from "../Conversion";
+import { ConstantFolding } from "../ConstantFolding";
+import { BoundExpression, ConversionKind } from "../Bound/BoundNodes";
+import { TypeSymbol, NullableTypeSymbol, ArrayTypeSymbol, TypeParameterSymbol, TypeKind } from "../Symbols/TypeSymbols";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { ConstantValue, FieldSymbol, MethodSymbol, MethodKind } from "../Symbols/MemberSymbols";
+import { SpecialType, SpecialTypes } from "../Symbols/SpecialType";
+import { TypeRelations } from "./TypeRelations";
+
+export sealed class ConversionClassifier {
+  private readonly literalEnumResolver: Func<TypeSymbol, string, FieldSymbol?>?;
+  private userDefinedDepth: int = 0;
+
+  constructor() { this.literalEnumResolver = null; }
+  constructor(literalEnumResolver: Func<TypeSymbol, string, FieldSymbol?>) {
+    this.literalEnumResolver = literalEnumResolver;
+  }
+
+  ClassifyImplicit(expr: BoundExpression?, source: TypeSymbol, target: TypeSymbol): Conversion {
+    return this.ClassifyImplicit(expr, source, target, true);
+  }
+
+  ClassifyImplicit(expr: BoundExpression?, source: TypeSymbol, target: TypeSymbol, allowUserDefined: bool): Conversion {
+    if (source.IsErrorType || target.IsErrorType) return Conversions.Identity;
+    if (source.Equals(target)) return Conversions.Identity;
+    if (source.IsNeverType) return Conversions.Implicit(ConversionKind.TypeOnly);
+    if (target.IsVoid || source.IsVoid) return Conversions.None;
+    if (source.IsNullType)
+      return target instanceof NullableTypeSymbol ? Conversions.Implicit(ConversionKind.NullLiteral) : Conversions.None;
+    const cv = expr?.ConstantValue;
+    if (cv != null) {
+      const c = this.ClassifyConstantConversion(cv, source, target);
+      if (c.Exists) return c;
+    }
+    if (target instanceof NullableTypeSymbol) {
+      const tn = target as NullableTypeSymbol;
+      if (source instanceof NullableTypeSymbol) {
+        const sn = source as NullableTypeSymbol;
+        const inner = this.ClassifyImplicit(null, sn.Underlying, tn.Underlying);
+        if (!inner.Exists) return Conversions.None;
+        if (Conversions.IsIdentity(inner)) return Conversions.Identity;
+        if (inner.Kind == ConversionKind.ImplicitNumeric || inner.Kind == ConversionKind.EnumNumeric)
+          return Conversions.Implicit(ConversionKind.LiftedNumeric);
+        if (inner.Kind == ConversionKind.Boxing && (sn.Underlying.IsValueType || sn.Underlying instanceof TypeParameterSymbol))
+          return Conversions.Implicit(ConversionKind.Boxing);
+        if (sn.Underlying.IsValueType) return Conversions.None;
+        return Conversions.Implicit(ConversionKind.TypeOnly);
+      }
+      const c = this.ClassifyImplicit(expr, source, tn.Underlying);
+      return !c.Exists ? Conversions.None : Conversions.IsIdentity(c) ?
+        Conversions.Implicit(ConversionKind.ToNullable) : Conversions.WithNullableWrap(c);
+    }
+    if (source instanceof NullableTypeSymbol) return Conversions.None;
+    if (TypeRelations.HasImplicitNumeric(source.SpecialType, target.SpecialType) && source.SpecialType != SpecialType.None)
+      return Conversions.Implicit(ConversionKind.ImplicitNumeric);
+    if (source instanceof TypeParameterSymbol && TypeRelations.BoxingConversionExists(source, target))
+      return Conversions.Implicit(ConversionKind.Boxing);
+    if (TypeRelations.ImplicitReferenceConversionExists(source, target))
+      return Conversions.Implicit(ConversionKind.ImplicitReference);
+    if (TypeRelations.BoxingConversionExists(source, target)) return Conversions.Implicit(ConversionKind.Boxing);
+    if (target instanceof NamedTypeSymbol && (target as NamedTypeSymbol).IsUnionType) {
+      const u = this.ClassifyToUnion(expr, source, target as NamedTypeSymbol);
+      if (u.Exists) return u;
+    }
+    if (allowUserDefined && this.userDefinedDepth == 0) {
+      const ud = this.FindUserDefinedConversion(expr, source, target, false);
+      if (ud.Exists) return ud;
+    }
+    if (source instanceof NamedTypeSymbol && target instanceof NamedTypeSymbol) {
+      const st = source as NamedTypeSymbol;
+      const tt = target as NamedTypeSymbol;
+      if (st.IsTuple && tt.IsTuple && st.TypeArguments.Length == tt.TypeArguments.Length) {
+        let ok = true;
+        for (let i = 0; i < st.TypeArguments.Length && ok; i++)
+          ok = this.ClassifyImplicit(null, st.TypeArguments[i], tt.TypeArguments[i]).Exists;
+        if (ok) return Conversions.Implicit(ConversionKind.TypeOnly, null, -2);
+      }
+    }
+    return Conversions.None;
+  }
+
+  private ClassifyConstantConversion(cv: ConstantValue, source: TypeSymbol, target: TypeSymbol): Conversion {
+    const t = target.SpecialType;
+    const s = source.SpecialType;
+    const value = cv.Value;
+    if (value != null && (s == SpecialType.Int32 || s == SpecialType.Int64 || s == SpecialType.UInt32 ||
+        s == SpecialType.UInt64 || s == SpecialType.Int16 || s == SpecialType.UInt16 || s == SpecialType.Byte || s == SpecialType.SByte)) {
+      if (SpecialTypes.IsIntegral(t) && t != SpecialType.Char && t != s && ConversionClassifier.ConstantFits(value, t)) {
+        const folded = ConstantFolding.ConvertNumeric(value, t);
+        if (folded != null) return Conversions.Implicit(ConversionKind.ImplicitNumeric, null, -1, new ConstantValue(folded));
+      }
+    }
+    if (value instanceof string) {
+      const str = value as string;
+      if (t == SpecialType.Char && str.Length == 1)
+        return Conversions.Implicit(ConversionKind.ImplicitNumeric, null, -1, new ConstantValue(str[0]));
+      // The resolver recognizes source literal enums; peel only the original single nullable layer.
+      if (this.literalEnumResolver != null) {
+        const lookupType = target instanceof NullableTypeSymbol ? (target as NullableTypeSymbol).Underlying : target;
+        const member = this.literalEnumResolver.Invoke(lookupType, str);
+        if (member != null) {
+          const c = Conversions.Implicit(ConversionKind.EnumNumeric, null, -1, new ConstantValue(member.ConstantValue?.Value));
+          return target instanceof NullableTypeSymbol ? Conversions.WithNullableWrap(c) : c;
+        }
+      }
+    }
+    return Conversions.None;
+  }
+
+  private static ConstantFits(value: object, to: SpecialType): bool {
+    try {
+      if (!(value instanceof int || value instanceof long || value instanceof uint || value instanceof ulong ||
+          value instanceof short || value instanceof ushort || value instanceof byte || value instanceof sbyte)) return false;
+      const d = Convert.ToDecimal(value);
+      switch (to) {
+        case SpecialType.SByte: return d >= -128m && d <= 127m;
+        case SpecialType.Byte: return d >= 0m && d <= 255m;
+        case SpecialType.Int16: return d >= -32768m && d <= 32767m;
+        case SpecialType.UInt16: return d >= 0m && d <= 65535m;
+        case SpecialType.Int32:
+        case SpecialType.IntPtr: return d >= -2147483648m && d <= 2147483647m;
+        case SpecialType.UInt32:
+        case SpecialType.UIntPtr: return d >= 0m && d <= 4294967295m;
+        case SpecialType.Int64: return d >= -9223372036854775808m && d <= 9223372036854775807m;
+        case SpecialType.UInt64: return d >= 0m && d <= 18446744073709551615m;
+        default: return false;
+      }
+    } catch (e: OverflowException) { return false; }
+  }
+
+  private ClassifyToUnion(expr: BoundExpression?, source: TypeSymbol, union: NamedTypeSymbol): Conversion {
+    if (source instanceof NamedTypeSymbol && (source as NamedTypeSymbol).IsUnionType && !source.Equals(union)) {
+      let map = true;
+      for (const sc of (source as NamedTypeSymbol).UnionCases) {
+        let found = false;
+        for (const tc of union.UnionCases) {
+          if (this.ClassifyImplicit(null, sc, tc).Exists) { found = true; break; }
+        }
+        if (!found) { map = false; break; }
+      }
+      return map ? Conversions.Implicit(ConversionKind.UnionWrap, null, -3) : Conversions.None;
+    }
+    const cases = union.UnionCases;
+    for (let i = 0; i < cases.Length; i++)
+      if (cases[i].Equals(source)) return Conversions.Implicit(ConversionKind.UnionWrap, null, i);
+    let best = -1;
+    for (let i = 0; i < cases.Length; i++) {
+      const c = this.ClassifyImplicit(expr, source, cases[i]);
+      if (!c.Exists) continue;
+      if (best < 0) best = i;
+      else if (c.Kind == ConversionKind.ImplicitNumeric && !Conversions.IsIdentity(this.ClassifyImplicit(expr, source, cases[best]))) {
+        if (TypeRelations.HasImplicitNumeric(cases[i].SpecialType, cases[best].SpecialType)) best = i;
+      }
+    }
+    return best >= 0 ? Conversions.Implicit(ConversionKind.UnionWrap, null, best) : Conversions.None;
+  }
+
+  ClassifyExplicit(expr: BoundExpression?, source: TypeSymbol, target: TypeSymbol): Conversion {
+    const imp = this.ClassifyImplicit(expr, source, target);
+    if (imp.Exists) return imp;
+    if (source.IsErrorType || target.IsErrorType) return Conversions.Identity;
+    if (source instanceof NullableTypeSymbol) {
+      const sn = source as NullableTypeSymbol;
+      if (target instanceof NullableTypeSymbol) {
+        const inner = this.ClassifyExplicit(null, sn.Underlying, (target as NullableTypeSymbol).Underlying);
+        if (!inner.Exists) return Conversions.None;
+        if (inner.Kind == ConversionKind.Identity) return Conversions.Identity;
+        return Conversions.Explicit(inner.Kind == ConversionKind.ExplicitNumeric || inner.Kind == ConversionKind.EnumNumeric ?
+          ConversionKind.LiftedNumeric : ConversionKind.ExplicitReference);
+      }
+      const c = this.ClassifyImplicit(null, sn.Underlying, target);
+      if (c.Exists && Conversions.IsIdentity(c)) return Conversions.Explicit(ConversionKind.FromNullable);
+      const e = this.ClassifyExplicit(null, sn.Underlying, target);
+      return e.Exists ? Conversions.Create(ConversionKind.FromNullable, false, e.Method, e.CaseIndex) : Conversions.None;
+    }
+    if (target instanceof NullableTypeSymbol) {
+      const e = this.ClassifyExplicit(expr, source, (target as NullableTypeSymbol).Underlying);
+      return e.Exists ? Conversions.WithNullableWrap(e) : Conversions.None;
+    }
+    if (TypeRelations.IsNumericType(source) && TypeRelations.IsNumericType(target))
+      return Conversions.Explicit(ConversionKind.ExplicitNumeric);
+    if (source.TypeKind == TypeKind.Enum && (TypeRelations.IsNumericType(target) || target.TypeKind == TypeKind.Enum))
+      return Conversions.Explicit(ConversionKind.EnumNumeric);
+    if (target.TypeKind == TypeKind.Enum && TypeRelations.IsNumericType(source))
+      return Conversions.Explicit(ConversionKind.EnumNumeric);
+    if (source instanceof NamedTypeSymbol && (source as NamedTypeSymbol).IsUnionType) {
+      const cases = (source as NamedTypeSymbol).UnionCases;
+      for (let i = 0; i < cases.Length; i++)
+        if (cases[i].Equals(target)) return Conversions.Explicit(ConversionKind.UnionExtract, null, i);
+      for (let i = 0; i < cases.Length; i++)
+        if (TypeRelations.ImplicitReferenceConversionExists(target, cases[i]) || TypeRelations.ImplicitReferenceConversionExists(cases[i], target))
+          return Conversions.Explicit(ConversionKind.UnionExtract, null, i);
+    }
+    if (this.ExplicitReferenceConversionExists(source, target)) return Conversions.Explicit(ConversionKind.ExplicitReference);
+    if (target.IsValueType && !source.IsValueType) {
+      if (source.SpecialType == SpecialType.Object || source.SpecialType == SpecialType.ValueType || source.SpecialType == SpecialType.Enum)
+        return Conversions.Explicit(ConversionKind.Unboxing);
+      if (source instanceof NamedTypeSymbol && source.TypeKind == TypeKind.Interface &&
+          TypeRelations.ImplementsInterface(target, source as NamedTypeSymbol)) return Conversions.Explicit(ConversionKind.Unboxing);
+    }
+    if (target instanceof TypeParameterSymbol && (source.SpecialType == SpecialType.Object || source.IsReferenceType || source instanceof TypeParameterSymbol))
+      return Conversions.Explicit(ConversionKind.Unboxing);
+    if (source instanceof TypeParameterSymbol && target.IsReferenceType) return Conversions.Explicit(ConversionKind.ExplicitReference);
+    const ud = this.FindUserDefinedConversion(expr, source, target, true);
+    return ud.Exists ? ud : Conversions.None;
+  }
+
+  private ExplicitReferenceConversionExists(source: TypeSymbol, target: TypeSymbol): bool {
+    if (!(source.IsReferenceType || source instanceof TypeParameterSymbol) || !target.IsReferenceType) return false;
+    if (TypeRelations.ImplicitReferenceConversionExists(target, source)) return true;
+    if (source instanceof ArrayTypeSymbol && target instanceof ArrayTypeSymbol) {
+      const sa = source as ArrayTypeSymbol;
+      const ta = target as ArrayTypeSymbol;
+      return sa.Rank == ta.Rank && this.ExplicitReferenceConversionExists(sa.ElementType, ta.ElementType) &&
+        sa.ElementType.IsReferenceType && ta.ElementType.IsReferenceType;
+    }
+    return (target instanceof NamedTypeSymbol && target.TypeKind == TypeKind.Interface &&
+        source instanceof NamedTypeSymbol && source.TypeKind == TypeKind.Class && !(source as NamedTypeSymbol).IsSealed) ||
+      (source instanceof NamedTypeSymbol && source.TypeKind == TypeKind.Interface &&
+        target instanceof NamedTypeSymbol && target.TypeKind == TypeKind.Class && !(target as NamedTypeSymbol).IsSealed) ||
+      (source instanceof NamedTypeSymbol && source.TypeKind == TypeKind.Interface && target instanceof NamedTypeSymbol && target.TypeKind == TypeKind.Interface) ||
+      (source.TypeKind == TypeKind.Interface && target.TypeKind == TypeKind.Class && TypeRelations.ImplementsInterface(target, source as NamedTypeSymbol));
+  }
+
+  private FindUserDefinedConversion(expr: BoundExpression?, source: TypeSymbol, target: TypeSymbol, isExplicit: bool): Conversion {
+    this.userDefinedDepth++;
+    try { return this.FindUserDefinedConversionCore(expr, source, target, isExplicit); }
+    finally { this.userDefinedDepth--; }
+  }
+
+  private Collect(t: TypeSymbol, isExplicit: bool, candidates: List<MethodSymbol>): void {
+    if (!(t instanceof NamedTypeSymbol)) return;
+    const nt = t as NamedTypeSymbol;
+    for (const m of nt.GetMembers()) {
+      if (m instanceof MethodSymbol) {
+        const ms = m as MethodSymbol;
+        if (ms.MethodKind == MethodKind.Conversion && ms.IsStatic && ms.Parameters.Length == 1 &&
+            (ms.Name == "op_Implicit" || (isExplicit && ms.Name == "op_Explicit"))) candidates.Add(ms);
+      }
+    }
+    const b = nt.BaseType;
+    if (b != null && b.SpecialType != SpecialType.Object) this.Collect(b, isExplicit, candidates);
+  }
+
+  private FindUserDefinedConversionCore(expr: BoundExpression?, source: TypeSymbol, target: TypeSymbol, isExplicit: bool): Conversion {
+    const src = source.StripNullable();
+    const tgt = target.StripNullable();
+    const candidates = new List<MethodSymbol>();
+    this.Collect(src, isExplicit, candidates);
+    if (!Object.ReferenceEquals(src, tgt) && !src.Equals(tgt)) this.Collect(tgt, isExplicit, candidates);
+    let best: MethodSymbol? = null;
+    let bestScore = 2147483647;
+    for (const m of candidates) {
+      const inC = this.ClassifyImplicit(expr, src, m.Parameters[0].Type, false);
+      if (!inC.Exists) continue;
+      const outC = this.ClassifyImplicit(null, m.ReturnType, tgt, false);
+      if (!outC.Exists) continue;
+      const score = (Conversions.IsIdentity(inC) ? 0 : 1) + (Conversions.IsIdentity(outC) ? 0 : 1);
+      if (score < bestScore) { best = m; bestScore = score; }
+    }
+    return best == null ? Conversions.None : Conversions.Create(ConversionKind.UserDefined, best.Name == "op_Implicit", best);
+  }
+}

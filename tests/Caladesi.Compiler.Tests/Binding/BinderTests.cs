@@ -122,6 +122,21 @@ public class BinderTests
     }
 
     [TestMethod]
+    public void CallingAnnotatedLocalFunctionInvalidatesCapturedNarrowing()
+    {
+        AssertError("""
+            function f(s: string | null): int {
+                if (s != null) {
+                    function clear(): void { s = null; }
+                    clear();
+                    return s.Length;
+                }
+                return 0;
+            }
+            """, Descriptors.PossiblyNull);
+    }
+
+    [TestMethod]
     public void Possibly_Null_Deref_Error()
     {
         AssertError("""

@@ -1,0 +1,40 @@
+<Project>
+  <Import Project="../Caladesi.Sdk/Sdk/Sdk.props" />
+  <Import Project="$(CaladesiRepoRoot)eng/Aot.props" />
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RollForward>Major</RollForward>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>cala-ls-selfhost</AssemblyName>
+    <AssemblyName Condition="'$(SelfHostReleaseIdentity)' == 'true'">cala-ls</AssemblyName>
+    <CaladesiRuntimeFileName>Caladesi.Runtime.SelfHost.dll</CaladesiRuntimeFileName>
+    <CaladesiRuntimeFileName Condition="'$(SelfHostReleaseIdentity)' == 'true'">Caladesi.Runtime.dll</CaladesiRuntimeFileName>
+    <RootNamespace>Caladesi.LanguageServer</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <PublishAot>true</PublishAot>
+    <GenerateDependencyFile Condition="'$(SelfHostReleaseIdentity)' == 'true'">true</GenerateDependencyFile>
+    <GenerateRuntimeConfigurationFiles Condition="'$(SelfHostReleaseIdentity)' == 'true'">true</GenerateRuntimeConfigurationFiles>
+    <PublishAot Condition="'$(SelfHostReleaseIdentity)' == 'true'">false</PublishAot>
+    <UseAppHost Condition="'$(SelfHostReleaseIdentity)' == 'true'">false</UseAppHost>
+    <CaladesiCompilerPath>$(CaladesiRepoRoot)src/Caladesi.Cli/bin/$(Configuration)/net10.0/calac.dll</CaladesiCompilerPath>
+    <CaladesiTasksAssembly>$(CaladesiRepoRoot)src/Caladesi.Build.Tasks/bin/$(Configuration)/net10.0/Caladesi.Build.Tasks.dll</CaladesiTasksAssembly>
+    <CaladesiCompilerPath Condition="'$(UseArtifactsOutput)' == 'true'">$(ArtifactsPath)/bin/Caladesi.Cli/$(Configuration.ToLowerInvariant())/calac.dll</CaladesiCompilerPath>
+    <CaladesiTasksAssembly Condition="'$(UseArtifactsOutput)' == 'true'">$(ArtifactsPath)/bin/Caladesi.Build.Tasks/$(Configuration.ToLowerInvariant())/Caladesi.Build.Tasks.dll</CaladesiTasksAssembly>
+    <CaladesiImplicitRuntimeReference>false</CaladesiImplicitRuntimeReference>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Caladesi.Cli/Caladesi.Cli.csproj" ReferenceOutputAssembly="false" Condition="'$(BootstrapDirectory)' == ''" />
+    <ProjectReference Include="../Caladesi.Build.Tasks/Caladesi.Build.Tasks.csproj" ReferenceOutputAssembly="false" Condition="'$(BootstrapDirectory)' == ''" />
+    <ProjectReference Include="../Caladesi.Compiler.SelfHost/Caladesi.Compiler.SelfHost.calaproj" />
+    <ProjectReference Include="../Caladesi.Runtime.SelfHost/Caladesi.Runtime.SelfHost.calaproj" ReferenceOutputAssembly="false" OutputItemType="CaladesiRuntimeAssembly" />
+    <CustomAdditionalCompileInputs Include="$([System.IO.Path]::GetDirectoryName('$(CaladesiCompilerPath)'))/*.dll" />
+  </ItemGroup>
+  <Import Project="../Caladesi.Sdk/Sdk/Sdk.targets" />
+  <Target Name="CopyCaladesiRuntimeToOutput" AfterTargets="Build">
+    <Copy SourceFiles="@(CaladesiRuntimeAssembly)" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="CopyCaladesiRuntimeToPublish" AfterTargets="Publish">
+    <Copy SourceFiles="@(CaladesiRuntimeAssembly)" DestinationFolder="$(PublishDir)" SkipUnchangedFiles="true" />
+    <Error Condition="!Exists('$(PublishDir)$(CaladesiRuntimeFileName)')" Text="The native language server requires $(CaladesiRuntimeFileName) beside its published executable for standalone analysis." />
+  </Target>
+</Project>

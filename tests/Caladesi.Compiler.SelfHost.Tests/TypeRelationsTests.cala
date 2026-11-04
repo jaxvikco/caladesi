@@ -1,0 +1,254 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { TypeRelations } from "Caladesi.Compiler.Binding";
+import { TypeSymbol, NamedTypeSymbol, TypeParameterSymbol, TypeParameterConstraints, TypeKind, VarianceKind,
+  SpecialType, NullableTypeSymbol, ArrayTypeSymbol, ErrorTypeSymbol } from "Caladesi.Compiler.Symbols";
+
+@TestClass
+export class TypeRelationsTests {
+  @TestMethod
+  numericRowsIncludeNativeIntsAndExcludeIdentity(): void {
+    TypeRelationsTests.NumericRow(SpecialType.SByte, [SpecialType.Int16, SpecialType.Int32, SpecialType.Int64, SpecialType.Single, SpecialType.Double, SpecialType.Decimal, SpecialType.IntPtr]);
+    TypeRelationsTests.NumericRow(SpecialType.Byte, [SpecialType.Int16, SpecialType.UInt16, SpecialType.Int32, SpecialType.UInt32, SpecialType.Int64, SpecialType.UInt64, SpecialType.Single, SpecialType.Double, SpecialType.Decimal, SpecialType.IntPtr, SpecialType.UIntPtr]);
+    TypeRelationsTests.NumericRow(SpecialType.Int16, [SpecialType.Int32, SpecialType.Int64, SpecialType.Single, SpecialType.Double, SpecialType.Decimal, SpecialType.IntPtr]);
+    TypeRelationsTests.NumericRow(SpecialType.UInt16, [SpecialType.Int32, SpecialType.UInt32, SpecialType.Int64, SpecialType.UInt64, SpecialType.Single, SpecialType.Double, SpecialType.Decimal, SpecialType.IntPtr, SpecialType.UIntPtr]);
+    TypeRelationsTests.NumericRow(SpecialType.Int32, [SpecialType.Int64, SpecialType.Single, SpecialType.Double, SpecialType.Decimal, SpecialType.IntPtr]);
+    TypeRelationsTests.NumericRow(SpecialType.UInt32, [SpecialType.Int64, SpecialType.UInt64, SpecialType.Single, SpecialType.Double, SpecialType.Decimal, SpecialType.UIntPtr]);
+    TypeRelationsTests.NumericRow(SpecialType.Int64, [SpecialType.Single, SpecialType.Double, SpecialType.Decimal]);
+    TypeRelationsTests.NumericRow(SpecialType.UInt64, [SpecialType.Single, SpecialType.Double, SpecialType.Decimal]);
+    TypeRelationsTests.NumericRow(SpecialType.Char, [SpecialType.UInt16, SpecialType.Int32, SpecialType.UInt32, SpecialType.Int64, SpecialType.UInt64, SpecialType.Single, SpecialType.Double, SpecialType.Decimal, SpecialType.IntPtr, SpecialType.UIntPtr]);
+    TypeRelationsTests.NumericRow(SpecialType.Single, [SpecialType.Double]);
+    TypeRelationsTests.NumericRow(SpecialType.IntPtr, [SpecialType.Int64, SpecialType.Single, SpecialType.Double, SpecialType.Decimal]);
+    TypeRelationsTests.NumericRow(SpecialType.UIntPtr, [SpecialType.UInt64, SpecialType.Single, SpecialType.Double, SpecialType.Decimal]);
+    for (const type of Enum.GetValues<SpecialType>()) {
+      const symbol = new TypeRelationsNativeType("Numeric", TypeKind.Struct, type);
+      const numeric = type == SpecialType.Char || type == SpecialType.SByte || type == SpecialType.Byte ||
+        type == SpecialType.Int16 || type == SpecialType.UInt16 || type == SpecialType.Int32 || type == SpecialType.UInt32 ||
+        type == SpecialType.Int64 || type == SpecialType.UInt64 || type == SpecialType.Single ||
+        type == SpecialType.Double || type == SpecialType.Decimal || type == SpecialType.IntPtr || type == SpecialType.UIntPtr;
+      if (TypeRelations.IsNumericType(symbol) != numeric) throw new Exception("Numeric type predicate");
+      if (!numeric || type == SpecialType.Double || type == SpecialType.Decimal) TypeRelationsTests.NumericRow(type, []);
+      if (TypeRelations.IsNumericType(new NullableTypeSymbol(symbol))) throw new Exception("Nullable is not numeric");
+    }
+  }
+
+  @TestMethod
+  inheritanceAndInterfaceClosureExcludeSelf(): void {
+    const root = new TypeRelationsNativeType("Root", TypeKind.Class);
+    const derived = new TypeRelationsNativeType("Derived", TypeKind.Class, SpecialType.None, root);
+    const marker = new TypeRelationsNativeType("IMarker", TypeKind.Interface);
+    const parent = new TypeRelationsNativeType("IParent", TypeKind.Interface);
+    parent.AddInterface(marker);
+    root.AddInterface(parent);
+    if (!TypeRelations.IsDerivedFrom(derived, root) || TypeRelations.IsDerivedFrom(root, root) ||
+        TypeRelations.IsDerivedFrom(root, derived)) throw new Exception("Strict base ancestry");
+    if (!TypeRelations.ImplementsInterface(derived, marker) || !TypeRelations.ImplementsInterface(derived, parent) ||
+        TypeRelations.ImplementsInterface(marker, marker)) throw new Exception("Inherited interface closure");
+    if (!TypeRelations.ImplicitReferenceConversionExists(marker, marker) ||
+        TypeRelations.ImplementsInterfaceVariant(marker, marker)) throw new Exception("Non-generic interface self identity");
+    const unrelated = new TypeRelationsNativeType("Root", TypeKind.Class);
+    if (TypeRelations.ImplicitReferenceConversionExists(root, unrelated)) throw new Exception("Names are not identity");
+  }
+
+  @TestMethod
+  varianceUsesDefinitionIdentityDirectionAndReferenceArguments(): void {
+    const obj = new TypeRelationsNativeType("object", TypeKind.Class, SpecialType.Object);
+    const text = new TypeRelationsNativeType("string", TypeKind.Class, SpecialType.String, obj);
+    const number = new TypeRelationsNativeType("int", TypeKind.Struct, SpecialType.Int32);
+    const producer = new TypeRelationsNativeType("Producer", TypeKind.Interface, SpecialType.None, null, VarianceKind.Out, true);
+    const narrow = producer.Close([text]);
+    const wide = producer.Close([obj]);
+    if (!TypeRelations.IsVarianceConvertible(narrow, wide) || TypeRelations.IsVarianceConvertible(wide, narrow) ||
+        TypeRelations.IsVarianceConvertible(producer.Close([number]), wide)) throw new Exception("Covariant references only");
+    if (TypeRelations.ImplementsInterface(narrow, wide) || !TypeRelations.ImplementsInterfaceVariant(narrow, wide) ||
+        !TypeRelations.ImplicitReferenceConversionExists(narrow, wide)) throw new Exception("Variant interface self path");
+    const consumer = new TypeRelationsNativeType("Consumer", TypeKind.Interface, SpecialType.None, null, VarianceKind.In, true);
+    if (!TypeRelations.IsVarianceConvertible(consumer.Close([obj]), consumer.Close([text])) ||
+        TypeRelations.IsVarianceConvertible(consumer.Close([text]), consumer.Close([obj])))
+      throw new Exception("Contravariant direction");
+    const invariant = new TypeRelationsNativeType("Invariant", TypeKind.Interface, SpecialType.None, null, VarianceKind.None, true);
+    if (TypeRelations.IsVarianceConvertible(invariant.Close([text]), invariant.Close([obj])) ||
+        !TypeRelations.IsVarianceConvertible(invariant.Close([number]), invariant.Close([number])))
+      throw new Exception("Invariant arguments require equality");
+    const twin = new TypeRelationsNativeType("Producer", TypeKind.Interface, SpecialType.None, null, VarianceKind.Out, true);
+    if (TypeRelations.IsVarianceConvertible(narrow, twin.Close([obj]))) throw new Exception("Definition reference identity");
+    if (!TypeRelations.IsVarianceConvertible(producer.Close([narrow]), producer.Close([wide])))
+      throw new Exception("Nested variance");
+    const value = new TypeRelationsNativeType("Value", TypeKind.Struct);
+    value.AddInterface(narrow);
+    if (!TypeRelations.BoxingConversionExists(value, wide)) throw new Exception("Boxing to variant interface");
+  }
+
+  @TestMethod
+  arraysPreserveRanksAndTheFiveGenericTargetExceptions(): void {
+    const obj = new TypeRelationsNativeType("object", TypeKind.Class, SpecialType.Object);
+    const text = new TypeRelationsNativeType("string", TypeKind.Class, SpecialType.String, obj);
+    const number = new TypeRelationsNativeType("int", TypeKind.Struct, SpecialType.Int32);
+    const arrayBase = new TypeRelationsNativeType("Array", TypeKind.Class, SpecialType.Array);
+    const texts = new ArrayTypeSymbol(text, arrayBase);
+    const objects = new ArrayTypeSymbol(obj, arrayBase);
+    if (!TypeRelations.ImplicitReferenceConversionExists(texts, objects) ||
+        TypeRelations.ImplicitReferenceConversionExists(objects, texts)) throw new Exception("Array covariance");
+    if (!TypeRelations.ImplicitReferenceConversionExists(texts, arrayBase) ||
+        !TypeRelations.ImplicitReferenceConversionExists(texts, obj)) throw new Exception("Array base conversions");
+    if (TypeRelations.ImplicitReferenceConversionExists(texts, new ArrayTypeSymbol(obj, arrayBase, 2)) ||
+        !TypeRelations.ImplicitReferenceConversionExists(new ArrayTypeSymbol(text, arrayBase, 2), new ArrayTypeSymbol(obj, arrayBase, 2)))
+      throw new Exception("Array rank parity");
+    const numbers = new ArrayTypeSymbol(number, arrayBase);
+    if (!TypeRelations.ImplicitReferenceConversionExists(numbers, new ArrayTypeSymbol(number, arrayBase)) ||
+        TypeRelations.ImplicitReferenceConversionExists(numbers, objects)) throw new Exception("Value array identity versus covariance");
+    const names: string[] = ["System.Collections.Generic.IList`1", "System.Collections.Generic.ICollection`1",
+      "System.Collections.Generic.IEnumerable`1", "System.Collections.Generic.IReadOnlyList`1",
+      "System.Collections.Generic.IReadOnlyCollection`1"];
+    for (const name of names) {
+      const definition = new TypeRelationsNativeType(name, TypeKind.Interface, SpecialType.None, null, VarianceKind.None, true);
+      if (!TypeRelations.ImplicitReferenceConversionExists(texts, definition.Close([obj])) ||
+          !TypeRelations.ImplicitReferenceConversionExists(numbers, definition.Close([number])) ||
+          TypeRelations.ImplicitReferenceConversionExists(numbers, definition.Close([obj])) ||
+          TypeRelations.ImplicitReferenceConversionExists(new ArrayTypeSymbol(text, arrayBase, 2), definition.Close([text])))
+        throw new Exception("Rank-one generic array target: " + name);
+      const lookalike = new TypeRelationsNativeType(name.Replace("System.", "Lookalike."), TypeKind.Interface,
+        SpecialType.None, null, VarianceKind.Out, true);
+      const wrongArity = new TypeRelationsNativeType(name.Replace("`1", "`2"), TypeKind.Interface,
+        SpecialType.None, null, VarianceKind.Out, true, 2);
+      if (TypeRelations.ImplicitReferenceConversionExists(texts, lookalike.Close([obj])) ||
+          TypeRelations.ImplicitReferenceConversionExists(texts, wrongArity.Close([obj, obj])))
+        throw new Exception("Array interface matching requires exact namespace and arity");
+    }
+    const enumerable = new TypeRelationsNativeType("System.Collections.IEnumerable", TypeKind.Interface);
+    if (TypeRelations.ImplicitReferenceConversionExists(texts, enumerable)) throw new Exception("Non-generic array interface quirk");
+    const enumerator = new TypeRelationsNativeType("System.Collections.Generic.IEnumerator`1", TypeKind.Interface,
+      SpecialType.None, null, VarianceKind.Out, true);
+    if (TypeRelations.ImplicitReferenceConversionExists(texts, enumerator.Close([text])))
+      throw new Exception("Unlisted generic array target");
+  }
+
+  @TestMethod
+  identityAndNullableOrderingAreNotClassification(): void {
+    const obj = new TypeRelationsNativeType("object", TypeKind.Class, SpecialType.Object);
+    const number = new TypeRelationsNativeType("int", TypeKind.Struct, SpecialType.Int32);
+    const nullable = new NullableTypeSymbol(number);
+    if (!TypeRelations.ImplicitReferenceConversionExists(number, number) ||
+        !TypeRelations.ImplicitReferenceConversionExists(number, nullable) ||
+        !TypeRelations.ImplicitReferenceConversionExists(nullable, number)) throw new Exception("Identity before reference guard");
+    if (TypeRelations.ImplicitReferenceConversionExists(number, obj) ||
+        TypeRelations.ImplicitReferenceConversionExists(nullable, obj)) throw new Exception("Reference guard after nullable peeling");
+    if (!TypeRelations.BoxingConversionExists(number, obj) || TypeRelations.BoxingConversionExists(nullable, obj) ||
+        TypeRelations.BoxingConversionExists(number, new NullableTypeSymbol(obj))) throw new Exception("Boxing nullable ordering");
+    const nested = new NullableTypeSymbol(nullable);
+    if (!TypeRelations.ImplicitReferenceConversionExists(nested, nested) ||
+        TypeRelations.ImplicitReferenceConversionExists(nested, nullable) ||
+        TypeRelations.ImplicitReferenceConversionExists(nested, number)) throw new Exception("Exactly one nullable layer is peeled");
+  }
+
+  @TestMethod
+  constraintsPreserveUnconstrainedObjectAndValueTypeQuirks(): void {
+    const obj = new TypeRelationsNativeType("object", TypeKind.Class, SpecialType.Object);
+    const valueType = new TypeRelationsNativeType("ValueType", TypeKind.Class, SpecialType.ValueType);
+    const iface = new TypeRelationsNativeType("I", TypeKind.Interface);
+    const implementation = new TypeRelationsNativeType("C", TypeKind.Class, SpecialType.None, obj);
+    implementation.AddInterface(iface);
+    const unconstrained = new TypeParameterSymbol("T", 0, ErrorTypeSymbol.Instance, VarianceKind.None);
+    if (!TypeRelations.ImplicitReferenceConversionExists(unconstrained, obj) ||
+        !TypeRelations.BoxingConversionExists(unconstrained, obj) ||
+        !TypeRelations.BoxingConversionExists(unconstrained, valueType)) throw new Exception("Unconstrained object/ValueType paths");
+    if (TypeRelations.ImplicitReferenceConversionExists(unconstrained, iface) ||
+        TypeRelations.BoxingConversionExists(unconstrained, iface) ||
+        TypeRelations.BoxingConversionExists(unconstrained, new NullableTypeSymbol(obj))) throw new Exception("Unconstrained target exclusions");
+    const constrained = new TypeParameterSymbol("U", 0, ErrorTypeSymbol.Instance, VarianceKind.None,
+      p => new TypeParameterConstraints(false, false, false, false, ImmutableArray.Create<TypeSymbol>(implementation)));
+    const chained = new TypeParameterSymbol("V", 0, ErrorTypeSymbol.Instance, VarianceKind.None,
+      p => new TypeParameterConstraints(false, false, false, false, ImmutableArray.Create<TypeSymbol>(constrained)));
+    if (!TypeRelations.ImplicitReferenceConversionExists(chained, iface) ||
+        !TypeRelations.BoxingConversionExists(chained, iface) ||
+        !TypeRelations.ImplicitReferenceConversionExists(constrained, implementation)) throw new Exception("Transitive constraints");
+    const interfaceOnly = new TypeParameterSymbol("I", 0, ErrorTypeSymbol.Instance, VarianceKind.None,
+      p => new TypeParameterConstraints(false, false, false, false, ImmutableArray.Create<TypeSymbol>(iface)));
+    if (!TypeRelations.ImplementsInterface(interfaceOnly, iface) ||
+        !TypeRelations.BoxingConversionExists(interfaceOnly, iface)) throw new Exception("Interface-only constraints");
+    const structure = new TypeParameterSymbol("S", 0, ErrorTypeSymbol.Instance, VarianceKind.None,
+      p => new TypeParameterConstraints(false, true, false, false, ImmutableArray<TypeSymbol>.Empty));
+    if (!TypeRelations.ImplicitReferenceConversionExists(structure, obj) ||
+        !TypeRelations.BoxingConversionExists(structure, valueType)) throw new Exception("Struct-constrained parameter quirk");
+    const enumeration = new TypeRelationsNativeType("E", TypeKind.Enum);
+    const enumBase = new TypeRelationsNativeType("Enum", TypeKind.Class, SpecialType.Enum);
+    if (!TypeRelations.BoxingConversionExists(enumeration, enumBase) ||
+        !TypeRelations.BoxingConversionExists(enumeration, valueType) ||
+        TypeRelations.BoxingConversionExists(implementation, valueType)) throw new Exception("Enum boxing paths");
+  }
+
+  @TestMethod
+  delegateVarianceAndSpecialBasePathsDoNotRequireInvokeMethods(): void {
+    const obj = new TypeRelationsNativeType("object", TypeKind.Class, SpecialType.Object);
+    const text = new TypeRelationsNativeType("string", TypeKind.Class, SpecialType.String, obj);
+    const producer = new TypeRelationsNativeType("Delegate", TypeKind.Delegate, SpecialType.None, null, VarianceKind.Out, true);
+    const narrow = producer.Close([text]);
+    const wide = producer.Close([obj]);
+    if (!TypeRelations.IsDelegateVarianceConvertible(narrow, wide) ||
+        !TypeRelations.ImplicitReferenceConversionExists(narrow, wide) ||
+        TypeRelations.IsDelegateVarianceConvertible(wide, narrow)) throw new Exception("Delegate variance");
+    const nongeneric = new TypeRelationsNativeType("Plain", TypeKind.Delegate);
+    if (TypeRelations.IsDelegateVarianceConvertible(nongeneric, nongeneric) ||
+        !TypeRelations.ImplicitReferenceConversionExists(nongeneric, nongeneric)) throw new Exception("Delegate identity is separate");
+    if (!TypeRelations.ImplicitReferenceConversionExists(nongeneric,
+        new TypeRelationsNativeType("Delegate", TypeKind.Class, SpecialType.Delegate)) ||
+        !TypeRelations.ImplicitReferenceConversionExists(nongeneric,
+          new TypeRelationsNativeType("MulticastDelegate", TypeKind.Class, SpecialType.MulticastDelegate)))
+      throw new Exception("Special delegate bases without ancestry");
+    const ordinary = new TypeRelationsNativeType("Ordinary", TypeKind.Class, SpecialType.None, null, VarianceKind.Out, true);
+    if (TypeRelations.IsDelegateVarianceConvertible(ordinary.Close([text]), ordinary.Close([obj])) ||
+        TypeRelations.ImplicitReferenceConversionExists(ordinary.Close([text]), ordinary.Close([obj])))
+      throw new Exception("Ordinary classes do not gain delegate variance");
+  }
+
+  private static NumericRow(from: SpecialType, targets: SpecialType[]): void {
+    for (const to of Enum.GetValues<SpecialType>()) {
+      let expected = false;
+      for (const target of targets) if (target == to) expected = true;
+      if (TypeRelations.HasImplicitNumeric(from, to) != expected) throw new Exception("Implicit numeric matrix");
+    }
+  }
+}
+
+export sealed class TypeRelationsNativeType extends NamedTypeSymbol {
+  private readonly parameters: ImmutableArray<TypeParameterSymbol>;
+  private interfaces: ImmutableArray<NamedTypeSymbol> = ImmutableArray<NamedTypeSymbol>.Empty;
+  constructor(private readonly name: string, private readonly kind: TypeKind,
+    private readonly special: SpecialType, private readonly baseType: NamedTypeSymbol?,
+    variance: VarianceKind = VarianceKind.None, generic: bool = false, arity: int = 1) {
+    super();
+    const builder = ImmutableArray.CreateBuilder<TypeParameterSymbol>();
+    if (generic) for (let i = 0; i < arity; i++) builder.Add(new TypeParameterSymbol("T" + i, i, this, variance));
+    this.parameters = builder.ToImmutable();
+  }
+  constructor(name: string, kind: TypeKind) {
+    super();
+    this.name = name;
+    this.kind = kind;
+    this.special = SpecialType.None;
+    this.baseType = null;
+    this.parameters = ImmutableArray<TypeParameterSymbol>.Empty;
+  }
+  constructor(name: string, kind: TypeKind, special: SpecialType) {
+    super();
+    this.name = name;
+    this.kind = kind;
+    this.special = special;
+    this.baseType = null;
+    this.parameters = ImmutableArray<TypeParameterSymbol>.Empty;
+  }
+  override get Name(): string { return this.name; }
+  override get TypeKind(): TypeKind { return this.kind; }
+  override get SpecialType(): SpecialType { return this.special; }
+  override get BaseType(): NamedTypeSymbol? { return this.baseType; }
+  override get Interfaces(): ImmutableArray<NamedTypeSymbol> { return this.interfaces; }
+  override get TypeParameters(): ImmutableArray<TypeParameterSymbol> { return this.parameters; }
+  override get TypeArguments(): ImmutableArray<TypeSymbol> {
+    const builder = ImmutableArray.CreateBuilder<TypeSymbol>();
+    for (const parameter of this.parameters) builder.Add(parameter);
+    return builder.ToImmutable();
+  }
+  override ToMetadataString(): string { return this.name; }
+  Close(arguments: TypeSymbol[]): NamedTypeSymbol { return this.Construct(arguments); }
+  AddInterface(type: NamedTypeSymbol): void { this.interfaces = this.interfaces.Add(type); }
+}

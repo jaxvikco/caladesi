@@ -861,6 +861,11 @@ public sealed partial class Binder
     private static ConstantValue? TryFoldConversion(BoundExpression expr, Conversion conv, TypeSymbol target)
     {
         ConstantValue? cv = expr.ConstantValue;
+        if (conv.Kind == ConversionKind.NullLiteral)
+        {
+            return ConstantValue.Null;
+        }
+
         if (!cv.HasValue || cv.Value.Value == null)
         {
             return null;

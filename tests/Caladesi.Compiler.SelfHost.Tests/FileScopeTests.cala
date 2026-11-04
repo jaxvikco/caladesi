@@ -1,0 +1,234 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { Dictionary, List, HashSet } from "System.Collections.Generic";
+import { CompilationOptions, FileScopeContext, FileScope, FileModuleSymbol, SourceFileNames } from "Caladesi.Compiler";
+import { Symbol, SymbolKind, Accessibility, NamedTypeSymbol, NamespaceSymbol, TypeKind,
+  MethodKind, FieldSymbol, ErrorTypeSymbol, ParameterSymbol } from "Caladesi.Compiler.Symbols";
+import { SynthesizedNamedType, SynthesizedMethodSymbol, SynthesizedFieldSymbol } from "Caladesi.Compiler.Symbols.Source";
+import { SyntaxTree, ImportDeclarationSyntax, ImportSpecifierSyntax } from "Caladesi.Compiler.Syntax";
+
+@TestClass
+export class FileScopeTests {
+  @TestMethod
+  declarationsExportsAndAliasFlagsAreCached(): void {
+    const context = new FileScopeNativeContext();
+    const type = new SynthesizedNamedType("Own", ErrorTypeSymbol.Instance, TypeKind.Class, Accessibility.Public);
+    const module = new SynthesizedNamedType("Module", ErrorTypeSymbol.Instance, TypeKind.Class);
+    const method = new SynthesizedMethodSymbol(module, "run", MethodKind.Ordinary, Accessibility.Public,
+      true, ErrorTypeSymbol.Instance, ImmutableArray<ParameterSymbol>.Empty);
+    const constructor = new SynthesizedMethodSymbol(module, ".ctor", MethodKind.Constructor, Accessibility.Public,
+      false, ErrorTypeSymbol.Instance, ImmutableArray<ParameterSymbol>.Empty);
+    const variable = new SynthesizedFieldSymbol(module, "value", ErrorTypeSymbol.Instance, true);
+    const nonvariable = new SynthesizedFieldSymbol(module, "other", ErrorTypeSymbol.Instance, true);
+    module.AddMember(method);
+    module.AddMember(constructor);
+    module.AddMember(variable);
+    module.AddMember(nonvariable);
+    context.Types = ImmutableArray.Create<NamedTypeSymbol>(type);
+    context.Aliases = ImmutableArray.Create<Symbol>(new FileScopeNativeAlias("Exported", true),
+      new FileScopeNativeAlias("Hidden", false));
+    context.Module = module;
+    context.ModuleVariables.Add(variable);
+    const scope = context.GetScope("main");
+    if (!Object.ReferenceEquals(scope.Declared, scope.Declared) || scope.Declared.Count != 5)
+      throw new Exception("Own declarations cache or classification");
+    if (!Object.ReferenceEquals(scope.Lookup("run")[0], method) || context.ImportsRead != 0)
+      throw new Exception("Own lookup must not resolve imports");
+    const exports = ImmutableArray.CreateRange<Symbol>(scope.AllExports());
+    if (exports.Length != 4 || ImmutableArray.CreateRange<Symbol>(scope.GetExports("Hidden")).Length != 0)
+      throw new Exception("Alias export flag and normal accessibility");
+    if (context.TypesRead != 1 || context.ImportsRead != 0) throw new Exception("Declaration cache");
+    scope.Declared["Own"].Clear();
+    if (scope.Lookup("Own").Length != 0 || context.ImportsRead != 1) throw new Exception("Mutable declaration cache");
+  }
+
+  @TestMethod
+  namespaceImportsPreservePrecedenceDuplicatesFallbackAndVisibility(): void {
+    const context = new FileScopeNativeContext();
+    const a = context.GlobalNamespace.GetOrAddNamespace("A");
+    const b = context.GlobalNamespace.GetOrAddNamespace("B");
+    const at = new SynthesizedNamedType("C", a, TypeKind.Class, Accessibility.Public);
+    const bt = new SynthesizedNamedType("C", b, TypeKind.Class, Accessibility.Public);
+    const attribute = new SynthesizedNamedType("TagAttribute", a, TypeKind.Class, Accessibility.Public);
+    a.AddType(at);
+    a.AddType(attribute);
+    b.AddType(bt);
+    context.Options.GlobalImports = ImmutableArray.Create<string>("A", "A", "Missing");
+    context.SetImports("main", `
+      import "B";
+      import { C as Choice, C as Choice, Tag } from "A";
+      import * as Choice from "B";
+      import * as Alias from "A";
+    `);
+    const scope = context.GetScope("main");
+    if (scope.WildcardImports.Count != 3 || !Object.ReferenceEquals(scope.WildcardImports[0], scope.WildcardImports[1]))
+      throw new Exception("Global imports must precede explicit and retain duplicates");
+    const all = scope.Lookup("C");
+    if (all.Length != 2 || !Object.ReferenceEquals(all[0], at) || !Object.ReferenceEquals(all[1], bt))
+      throw new Exception("Wildcard Contains de-duplication and insertion order");
+    const named = scope.Lookup("Choice");
+    if (named.Length != 2 || !Object.ReferenceEquals(named[0], at) || !Object.ReferenceEquals(named[1], at))
+      throw new Exception("Named imports must precede alias and retain duplicates");
+    if (!Object.ReferenceEquals(scope.Lookup("Alias")[0], a) || !Object.ReferenceEquals(scope.Lookup("Tag")[0], attribute))
+      throw new Exception("Namespace alias identity or attribute suffix");
+    let cNames = 0;
+    for (const pair of scope.VisibleNames()) if (pair.Item1 == "C") cNames++;
+    if (cNames != 3) throw new Exception("VisibleNames intentionally does not deduplicate");
+    if (context.Recorded.Count != 0 || context.ImportsRead != 1) throw new Exception("Recording option and cache");
+  }
+
+  @TestMethod
+  sourceModulesExportOnlyPublicAndRemainAbsentFromWildcardVisibleNames(): void {
+    const context = new FileScopeNativeContext();
+    context.SetImports("main", `import "./lib"; import "./lib"; import * as L from "./lib";
+      import { Exported as E, Hidden } from "./lib"; import "../missing";`);
+    context.Aliases = ImmutableArray.Create<Symbol>(new FileScopeNativeAlias("Exported", true),
+      new FileScopeNativeAlias("Hidden", false));
+    context.AliasFile = "lib";
+    const scope = context.GetScope("main");
+    if (scope.Lookup("Exported").Length != 1 || scope.Lookup("Hidden").Length != 0)
+      throw new Exception("Source module export filtering");
+    const alias = scope.Lookup("L")[0] as FileModuleSymbol<string>;
+    if (alias == null || alias.File != "lib" || alias.Name != "L" || alias.Kind != SymbolKind.Alias)
+      throw new Exception("File module alias identity");
+    if (scope.WildcardImports.Count != 2 || Object.ReferenceEquals(scope.WildcardImports[0], scope.WildcardImports[1]))
+      throw new Exception("Distinct file module wrappers must remain distinct");
+    for (const pair of scope.VisibleNames()) {
+      if (pair.Item1 == "Exported") throw new Exception("Source wildcard exports must not be visible names");
+    }
+    const diagnostics = scope.GetImportDiagnostics();
+    if (diagnostics.Length != 2 || diagnostics[0].Id != "CAL0103" || diagnostics[1].Id != "CAL0102")
+      throw new Exception("Source export and module diagnostics");
+    if (diagnostics[0].FilePath != "main.cala") throw new Exception("Diagnostic source path");
+  }
+
+  @TestMethod
+  staticImportsLookupPrivateAndNestedButVisibilityFiltersThem(): void {
+    const context = new FileScopeNativeContext();
+    const ns = context.GlobalNamespace.GetOrAddNamespace("N");
+    const holder = new SynthesizedNamedType("Holder", ns, TypeKind.Class, Accessibility.Public);
+    ns.AddType(holder);
+    const nested = new SynthesizedNamedType("Nested", holder, TypeKind.Class, Accessibility.Private);
+    const method = new SynthesizedMethodSymbol(holder, "secret", MethodKind.Ordinary, Accessibility.Private,
+      true, ErrorTypeSymbol.Instance, ImmutableArray<ParameterSymbol>.Empty);
+    holder.AddMember(nested);
+    holder.AddMember(method);
+    context.SetImports("main", `import "N.Holder"; import "Holder"; import { Nested as Named } from "N.Holder";`);
+    const scope = context.GetScope("main");
+    if (!Object.ReferenceEquals(scope.Lookup("Nested")[0], nested) ||
+        !Object.ReferenceEquals(scope.Lookup("secret")[0], method) ||
+        !Object.ReferenceEquals(scope.Lookup("Named")[0], nested)) throw new Exception("Static module lookup");
+    for (const pair of scope.VisibleNames()) {
+      if (pair.Item1 == "Nested" || pair.Item1 == "secret") throw new Exception("Static wildcard visibility");
+    }
+    if (scope.GetImportDiagnostics().Length != 1) throw new Exception("Full type names require a namespace separator");
+  }
+
+  @TestMethod
+  visiblePrefixAndSemanticRecordingReentryPreserveLazyTiming(): void {
+    const context = new FileScopeNativeContext();
+    const own = new SynthesizedNamedType("Own", ErrorTypeSymbol.Instance, TypeKind.Class, Accessibility.Public);
+    context.Types = ImmutableArray.Create<NamedTypeSymbol>(own);
+    const ns = context.GlobalNamespace.GetOrAddNamespace("N");
+    ns.AddType(new SynthesizedNamedType("A", ns, TypeKind.Class, Accessibility.Public));
+    ns.AddType(new SynthesizedNamedType("B", ns, TypeKind.Class, Accessibility.Public));
+    context.Options.RecordSemanticInfo = true;
+    context.SetImports("main", `import { A, B, Missing } from "N";`);
+    const scope = context.GetScope("main");
+    const names = scope.VisibleNames().GetEnumerator();
+    if (context.ImportsRead != 0 || !names.MoveNext() || names.Current.Item1 != "Own" || context.ImportsRead != 0)
+      throw new Exception("Visible own prefix must be lazy");
+    context.OnRecord = () => {
+      if (scope.GetImportDiagnostics().Length != 0) throw new Exception("Recording must happen before later diagnostics");
+      const count = ImmutableArray.CreateRange<Symbol>(scope.NamedImportSymbols).Length;
+      if (count != context.Recorded.Count - 1) throw new Exception("Recording must precede current insertion");
+    };
+    if (!names.MoveNext() || names.Current.Item1 != "A" || context.Recorded.Count != 2)
+      throw new Exception("Import resolution must occur after own prefix");
+    names.Dispose();
+    if (scope.GetImportDiagnostics().Length != 1 || context.ImportsRead != 1)
+      throw new Exception("Reentry must not enumerate imports again");
+    context.SetImports("main", `import "NotThere";`);
+    if (scope.GetImportDiagnostics().Length != 1 || context.ImportsRead != 1)
+      throw new Exception("Import input is cached after first resolution");
+  }
+
+  @TestMethod
+  sourceFileNamingMatchesOriginalConventions(): void {
+    const options = new CompilationOptions();
+    options.RootNamespace = "Root";
+    options.ProjectDirectory = "/scope";
+    if (SourceFileNames.DeriveNamespace(options, "/scope/data-access/42 things/my_file.cala") != "Root.DataAccess._42Things")
+      throw new Exception("Namespace PascalCase segments");
+    if (SourceFileNames.DeriveNamespace(options, "/elsewhere/file.cala") != "Root" ||
+        SourceFileNames.DeriveNamespace(options, "/scope/..hidden/file.cala") != "Root")
+      throw new Exception("Outside and dot-dot-prefixed paths");
+    if (SourceFileNames.GetModuleClassBaseName(options, "my_file.cala") != "MyFile" ||
+        SourceFileNames.GetModuleClassBaseName(options, "--.cala") != "Program")
+      throw new Exception("Module class PascalCase and fallback");
+    options.ProjectDirectory = "bad\0directory";
+    if (SourceFileNames.DeriveNamespace(options, "file.cala") != "Root") throw new Exception("Invalid project path fallback");
+  }
+}
+
+class FileScopeNativeAlias extends Symbol {
+  constructor(private readonly name: string, public readonly Exported: bool) { super(); }
+  override get Kind(): SymbolKind { return SymbolKind.Alias; }
+  override get Name(): string { return this.name; }
+  override get DeclaredAccessibility(): Accessibility { return Accessibility.Private; }
+}
+
+class FileScopeNativeContext extends FileScopeContext<string> {
+  private readonly options = new CompilationOptions();
+  private readonly global = new NamespaceSymbol("", (null as (NamespaceSymbol | null))!);
+  private readonly imports = new Dictionary<string, ImmutableArray<ImportDeclarationSyntax>>();
+  private readonly scopes = new Dictionary<string, FileScope<string>>();
+  Types: ImmutableArray<NamedTypeSymbol> = ImmutableArray<NamedTypeSymbol>.Empty;
+  Aliases: ImmutableArray<Symbol> = ImmutableArray<Symbol>.Empty;
+  AliasFile = "main";
+  Module: NamedTypeSymbol? = null;
+  readonly ModuleVariables = new HashSet<FieldSymbol>();
+  readonly Recorded = new List<Symbol>();
+  ImportsRead = 0;
+  TypesRead = 0;
+  OnRecord: Action? = null;
+  constructor() { super(); this.options.GlobalImports = ImmutableArray<string>.Empty; }
+  override get Options(): CompilationOptions { return this.options; }
+  override get GlobalNamespace(): NamespaceSymbol { return this.global; }
+  override GetFilePath(file: string): string { return file + ".cala"; }
+  override GetModuleClassBaseName(file: string): string { return "Lib"; }
+  override GetTypes(file: string): ImmutableArray<NamedTypeSymbol> {
+    this.TypesRead++;
+    return file == "main" ? this.Types : ImmutableArray<NamedTypeSymbol>.Empty;
+  }
+  override GetAliases(file: string): ImmutableArray<Symbol> {
+    return file == this.AliasFile ? this.Aliases : ImmutableArray<Symbol>.Empty;
+  }
+  override GetModuleClass(file: string): NamedTypeSymbol? { return this.Module; }
+  override GetImports(file: string): ImmutableArray<ImportDeclarationSyntax> {
+    this.ImportsRead++;
+    return this.imports.ContainsKey(file) ? this.imports[file] : ImmutableArray<ImportDeclarationSyntax>.Empty;
+  }
+  override IsExportedAlias(symbol: Symbol): bool? {
+    if (symbol instanceof FileScopeNativeAlias) return (symbol as FileScopeNativeAlias).Exported;
+    return null;
+  }
+  override IsModuleVariable(field: FieldSymbol): bool { return this.ModuleVariables.Contains(field); }
+  override FindSourceFile(from: string, spec: string): string? { return spec == "./lib" ? "lib" : null; }
+  override GetScope(file: string): FileScope<string> {
+    if (!this.scopes.ContainsKey(file)) this.scopes[file] = new FileScope<string>(this, file);
+    return this.scopes[file];
+  }
+  override RecordImport(specifier: ImportSpecifierSyntax, symbol: Symbol): void {
+    this.Recorded.Add(symbol);
+    if (this.OnRecord != null) this.OnRecord!();
+  }
+  SetImports(file: string, source: string): void {
+    const tree = SyntaxTree.ParseText(source);
+    const result = ImmutableArray.CreateBuilder<ImportDeclarationSyntax>();
+    for (const statement of tree.Root.Statements) {
+      if (statement instanceof ImportDeclarationSyntax) result.Add(statement as ImportDeclarationSyntax);
+    }
+    this.imports[file] = result.ToImmutable();
+  }
+}

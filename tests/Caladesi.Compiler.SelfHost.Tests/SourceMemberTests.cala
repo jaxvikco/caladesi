@@ -1,0 +1,58 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { OverrideResolver, SynthesizedNamedType, SynthesizedMethodSymbol } from "Caladesi.Compiler.Symbols.Source";
+import { ErrorTypeSymbol, NullTypeSymbol, NullableTypeSymbol, TypeParameterSymbol, VarianceKind,
+  TypeKind, Accessibility, MethodKind, ParameterSymbol, RefKind, Symbol } from "Caladesi.Compiler.Symbols";
+
+@TestClass
+export class SourceMemberTests {
+  @TestMethod
+  genericSignaturesComparePositionsAndSkipRefKinds(): void {
+    const owner = new SynthesizedNamedType("C", ErrorTypeSymbol.Instance, TypeKind.Class);
+    const a = new SynthesizedMethodSymbol(owner, "a", MethodKind.Ordinary, Accessibility.Public,
+      false, ErrorTypeSymbol.Instance, ImmutableArray<ParameterSymbol>.Empty);
+    const b = new SynthesizedMethodSymbol(owner, "b", MethodKind.Ordinary, Accessibility.Public,
+      false, ErrorTypeSymbol.Instance, ImmutableArray<ParameterSymbol>.Empty);
+    const ta = new TypeParameterSymbol("T", 0, a, VarianceKind.None);
+    const tb = new TypeParameterSymbol("U", 0, b, VarianceKind.None);
+    a.SetTypeParameters(ImmutableArray.Create<TypeParameterSymbol>(ta));
+    b.SetTypeParameters(ImmutableArray.Create<TypeParameterSymbol>(tb));
+    a.SetParameters(ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("x", ta, 0, a, RefKind.Ref)));
+    b.SetParameters(ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("y", tb, 0, b, RefKind.Out)));
+    if (!OverrideResolver<string>.SignaturesMatch(a, b)) throw new Exception("Generic ordinal/ref-kind parity");
+    const other = new TypeParameterSymbol("V", 1, b, VarianceKind.None);
+    b.SetParameters(ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("y", other, 0, b)));
+    if (OverrideResolver<string>.SignaturesMatch(a, b)) throw new Exception("Different generic ordinal must not match");
+  }
+
+  @TestMethod
+  lookupNamesPreservesExactBeforeFlippedCase(): void {
+    const owner = new SynthesizedNamedType("C", ErrorTypeSymbol.Instance, TypeKind.Class);
+    const first = new SynthesizedMethodSymbol(owner, "run", MethodKind.Ordinary, Accessibility.Public,
+      false, ErrorTypeSymbol.Instance, ImmutableArray<ParameterSymbol>.Empty);
+    const second = new SynthesizedMethodSymbol(owner, "Run", MethodKind.Ordinary, Accessibility.Public,
+      false, ErrorTypeSymbol.Instance, ImmutableArray<ParameterSymbol>.Empty);
+    owner.AddMember(first);
+    owner.AddMember(second);
+    const names = ImmutableArray.CreateRange<Symbol>(OverrideResolver<string>.LookupNames(owner, "run"));
+    if (names.Length != 2 || !Object.ReferenceEquals(names[0], first) || !Object.ReferenceEquals(names[1], second))
+      throw new Exception("Override candidate order");
+    if (ImmutableArray.CreateRange<Symbol>(OverrideResolver<string>.LookupNames(owner, "")).Length != 0)
+      throw new Exception("Empty name lookup");
+  }
+
+  @TestMethod
+  nullableSignaturesStillRequireMatchingRefKind(): void {
+    const owner = new SynthesizedNamedType("C", ErrorTypeSymbol.Instance, TypeKind.Class);
+    const a = new SynthesizedMethodSymbol(owner, "a", MethodKind.Ordinary, Accessibility.Public,
+      false, ErrorTypeSymbol.Instance, ImmutableArray<ParameterSymbol>.Empty);
+    const b = new SynthesizedMethodSymbol(owner, "b", MethodKind.Ordinary, Accessibility.Public,
+      false, ErrorTypeSymbol.Instance, ImmutableArray<ParameterSymbol>.Empty);
+    a.SetParameters(ImmutableArray.Create<ParameterSymbol>(
+      new ParameterSymbol("x", new NullableTypeSymbol(NullTypeSymbol.Instance), 0, a)));
+    b.SetParameters(ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("x", NullTypeSymbol.Instance, 0, b)));
+    if (!OverrideResolver<string>.SignaturesMatch(a, b)) throw new Exception("Nullable stripping");
+    b.SetParameters(ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("x", NullTypeSymbol.Instance, 0, b, RefKind.Ref)));
+    if (OverrideResolver<string>.SignaturesMatch(a, b)) throw new Exception("Non-generic ref-kind comparison");
+  }
+}

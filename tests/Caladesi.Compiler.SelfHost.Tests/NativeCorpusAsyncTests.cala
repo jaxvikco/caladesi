@@ -1,0 +1,74 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { NativeCorpusHarness } from "./NativeCorpusHarness";
+
+@TestClass
+export class NativeCorpusAsyncTests {
+  @TestMethod
+  AsyncReturnsValue(): void {
+    NativeCorpusHarness.Check("async function add(a: int, b: int): Task<int> {\n await Task.Delay(1);\n return a + b;\n}\nConsole.WriteLine(add(2, 3).Result);", "5\n");
+  }
+  @TestMethod
+  AwaitInExpression(): void {
+    NativeCorpusHarness.Check("async function one(): Task<int> { await Task.Yield(); return 1; }\nasync function run(): Task<int> {\n const x = 10 + await one() + (await one()) * 3;\n return x;\n}\nConsole.WriteLine(run().Result);", "14\n");
+  }
+  @TestMethod
+  AwaitInLoopAndTry(): void {
+    NativeCorpusHarness.Check(
+      "async function work(n: int): Task<int> {\n let sum = 0;\n for (let i = 0; i < n; i++) {\n" +
+      " try {\n await Task.Delay(1);\n if (i == 2) throw new Exception(\"two\");\n sum += i;\n" +
+      " } catch (e: Exception) {\n await Task.Delay(1);\n sum += 100;\n" +
+      " } finally {\n await Task.Yield();\n sum += 1000;\n }\n }\n return sum;\n}\nConsole.WriteLine(work(4).Result);", "4104\n");
+  }
+  @TestMethod
+  VoidTaskAsync(): void {
+    NativeCorpusHarness.Check("async function hello(): Task {\n await Task.Delay(1);\n Console.WriteLine(\"hi\");\n}\nhello().Wait();", "hi\n");
+  }
+  @TestMethod
+  AsyncLambdaAndMethod(): void {
+    NativeCorpusHarness.Check(
+      "class Svc {\n name = \"svc\";\n async greet(who: string): Task<string> { await Task.Yield(); return `${this.name} hello ${who}`; }\n}\n" +
+      "const f = async (x: int): Task<int> => { await Task.Yield(); return x * 2; };\n" +
+      "Console.WriteLine(new Svc().greet(\"bob\").Result);\nConsole.WriteLine(f(21).Result);", "svc hello bob\n42\n");
+  }
+  @TestMethod
+  ExceptionPropagatesThroughTask(): void {
+    NativeCorpusHarness.Check("async function boom(): Task<int> { await Task.Yield(); throw new InvalidOperationException(\"bad\"); }\ntry { boom().Wait(); } catch (e: AggregateException) { Console.WriteLine(e.InnerException!.Message); }", "bad\n");
+  }
+  @TestMethod
+  TopLevelAwait(): void {
+    NativeCorpusHarness.Check("async function twice(x: int): Task<int> { await Task.Yield(); return x * 2; }\nconst v = await twice(21);\nConsole.WriteLine(v);", "42\n");
+  }
+  @TestMethod
+  AsyncMainWithExitCode(): void {
+    NativeCorpusHarness.Check("async function main(args: string[]): Task<int> {\n await Task.Delay(1);\n Console.WriteLine(\"main\");\n return 7;\n}", "main\n", 7);
+  }
+  @TestMethod
+  AsyncGeneratorAndForAwait(): void {
+    NativeCorpusHarness.Check("async function* numbers(n: int): IAsyncEnumerable<int> {\n for (let i = 0; i < n; i++) {\n await Task.Delay(1);\n yield i * 10;\n }\n}\nlet total = 0;\nfor await (const x of numbers(4)) total += x;\nConsole.WriteLine(total);", "60\n");
+  }
+  @TestMethod
+  AsyncGeneratorFinallyRunsOnEarlyExit(): void {
+    NativeCorpusHarness.Check("async function* gen(): IAsyncEnumerable<string> {\n try {\n yield \"a\";\n yield \"b\";\n } finally {\n await Task.Yield();\n Console.WriteLine(\"cleanup\");\n }\n}\nfor await (const s of gen()) { Console.WriteLine(s); break; }", "a\ncleanup\n");
+  }
+  @TestMethod
+  AwaitUsing(): void {
+    NativeCorpusHarness.Check("class Res implements IAsyncDisposable {\n async DisposeAsync(): ValueTask { await Task.Yield(); Console.WriteLine(\"disposed\"); }\n}\nasync function run(): Task {\n await using r = new Res();\n Console.WriteLine(\"body\");\n}\nawait run();", "body\ndisposed\n");
+  }
+  @TestMethod
+  AsyncIteratorFinallyRunsOnBreak(): void {
+    NativeCorpusHarness.Check(
+      "async function* aparam(n: int): IAsyncEnumerable<int> { try { yield n; yield n; } finally { Console.WriteLine(\"fin-aparam\"); } }\n" +
+      "async function* a(): IAsyncEnumerable<int> { try { await Task.Delay(1); yield 1; yield 2; } finally { Console.WriteLine(\"fin-a\"); } }\n" +
+      "async function* d(): IAsyncEnumerable<int> { try { for (let i = 0; i < 3; i++) { yield i; await Task.Delay(1); } } finally { Console.WriteLine(\"fin-d\"); } }\n" +
+      "for await (const t of aparam(1)) { break; } Console.WriteLine(\"aparam done\");\n" +
+      "for await (const t of a()) { break; } Console.WriteLine(\"a done\");\n" +
+      "for await (const t of d()) { break; } Console.WriteLine(\"d done\");", "fin-aparam\naparam done\nfin-a\na done\nfin-d\nd done\n");
+  }
+  @TestMethod
+  AsyncOutResultsSurviveSuspension(): void {
+    NativeCorpusHarness.Check(
+      "async function read(): Task<string> {\n const values = new Dictionary<string, string>();\n values[\"present\"] = \"async\";\n await Task.Yield();\n" +
+      " const [found, value] = values.TryGetValue(\"present\");\n await Task.Yield();\n const [parsed, version] = Version.TryParse(\"5.6\");\n await Task.Yield();\n" +
+      " return (value ?? \"<null>\") + \":\" + (version?.ToString() ?? \"<null>\");\n}\nConsole.WriteLine(read().Result);", "async:5.6\n");
+  }
+}

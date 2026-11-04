@@ -1,0 +1,384 @@
+import { Convert, Math, Decimal, OverflowException, InvalidCastException, DivideByZeroException } from "System";
+import { CultureInfo } from "System.Globalization";
+import { BigInteger } from "System.Numerics";
+import { SpecialType } from "./Symbols/SpecialType";
+import { UnaryOperatorKind, BinaryOperatorKind } from "./Bound/BoundNodes";
+
+export static class ConstantFolding {
+  static ConvertNumeric(value: object, to: SpecialType, unchecked_: bool = false): object? {
+    try {
+      let numeric: object = value;
+      if (value instanceof char) numeric = (value as char) as int;
+      if (numeric instanceof bool || numeric instanceof string) return null;
+      if (unchecked_) return ConstantFolding.Unchecked(numeric, to);
+      return ConstantFolding.Checked(numeric, to);
+    } catch (e: OverflowException) {
+      return null;
+    } catch (e: InvalidCastException) {
+      return null;
+    }
+  }
+
+  private static Checked(v: object, to: SpecialType): object? {
+    if (v instanceof double || v instanceof float) {
+      const d = Convert.ToDouble(v, CultureInfo.InvariantCulture);
+      switch (to) {
+        case SpecialType.Single: return d as float;
+        case SpecialType.Double: return d;
+        case SpecialType.Decimal: return d as decimal;
+      }
+      // Caladesi casts emit unchecked IL. Check the truncated value first, including
+      // exclusive powers-of-two bounds where double cannot represent the maximum.
+      const t = Math.Truncate(d);
+      switch (to) {
+        case SpecialType.SByte:
+          if (t >= -128 && t <= 127) return d as sbyte;
+          return null;
+        case SpecialType.Byte:
+          if (t >= 0 && t <= 255) return d as byte;
+          return null;
+        case SpecialType.Int16:
+          if (t >= -32768 && t <= 32767) return d as short;
+          return null;
+        case SpecialType.UInt16:
+          if (t >= 0 && t <= 65535) return d as ushort;
+          return null;
+        case SpecialType.Int32:
+          if (t >= -2147483648.0 && t <= 2147483647.0) return d as int;
+          return null;
+        case SpecialType.UInt32:
+          if (t >= 0 && t <= 4294967295.0) return d as uint;
+          return null;
+        case SpecialType.Int64:
+          if (t >= -9223372036854775808.0 && t < 9223372036854775808.0) return d as long;
+          return null;
+        case SpecialType.UInt64:
+          if (t >= 0 && t < 18446744073709551616.0) return d as ulong;
+          return null;
+        case SpecialType.Char:
+          if (t >= 0 && t <= 65535) return d as char;
+          return null;
+      }
+      return null;
+    }
+    let dec: decimal = 0m;
+    if (v instanceof decimal) dec = v as decimal;
+    else if (!(v instanceof BigInteger)) dec = Convert.ToDecimal(v, CultureInfo.InvariantCulture);
+    switch (to) {
+      case SpecialType.SByte: return Decimal.ToSByte(dec);
+      case SpecialType.Byte: return Decimal.ToByte(dec);
+      case SpecialType.Int16: return Decimal.ToInt16(dec);
+      case SpecialType.UInt16: return Decimal.ToUInt16(dec);
+      case SpecialType.Int32: return Decimal.ToInt32(dec);
+      case SpecialType.UInt32: return Decimal.ToUInt32(dec);
+      case SpecialType.Int64: return Decimal.ToInt64(dec);
+      case SpecialType.UInt64: return Decimal.ToUInt64(dec);
+      case SpecialType.Single: return dec as float;
+      case SpecialType.Double: return dec as double;
+      case SpecialType.Decimal: return dec;
+      case SpecialType.Char: return Decimal.ToUInt16(dec) as char;
+      case SpecialType.IntPtr: return Decimal.ToInt64(dec);
+      case SpecialType.UIntPtr: return Decimal.ToUInt64(dec);
+    }
+    return null;
+  }
+
+  private static Unchecked(v: object, to: SpecialType): object? {
+    if (v instanceof double || v instanceof float || v instanceof decimal) {
+      const d = Convert.ToDouble(v, CultureInfo.InvariantCulture);
+      switch (to) {
+        case SpecialType.Single: return d as float;
+        case SpecialType.Double: return d;
+        case SpecialType.Decimal: return d as decimal;
+        case SpecialType.SByte: return (d as long) as sbyte;
+        case SpecialType.Byte: return (d as long) as byte;
+        case SpecialType.Int16: return (d as long) as short;
+        case SpecialType.UInt16: return (d as long) as ushort;
+        case SpecialType.Int32: return (d as long) as int;
+        case SpecialType.UInt32: return (d as long) as uint;
+        case SpecialType.Int64: return d as long;
+        case SpecialType.UInt64: return d as ulong;
+        case SpecialType.Char: return (d as long) as char;
+      }
+      return null;
+    }
+    let l: long = 0L;
+    if (v instanceof int) l = v as int;
+    else if (v instanceof long) l = v as long;
+    else if (v instanceof uint) l = v as uint;
+    else if (v instanceof short) l = v as short;
+    else if (v instanceof ushort) l = v as ushort;
+    else if (v instanceof byte) l = v as byte;
+    else if (v instanceof sbyte) l = v as sbyte;
+    else if (v instanceof ulong) l = (v as ulong) as long;
+    switch (to) {
+      case SpecialType.SByte: return l as sbyte;
+      case SpecialType.Byte: return l as byte;
+      case SpecialType.Int16: return l as short;
+      case SpecialType.UInt16: return l as ushort;
+      case SpecialType.Int32: return l as int;
+      case SpecialType.UInt32: return l as uint;
+      case SpecialType.Int64: return l;
+      case SpecialType.UInt64: return l as ulong;
+      case SpecialType.Single:
+        if (v instanceof ulong) return (l as ulong) as float;
+        return l as float;
+      case SpecialType.Double:
+        if (v instanceof ulong) return (l as ulong) as double;
+        return l as double;
+      case SpecialType.Decimal:
+        if (v instanceof ulong) return (l as ulong) as decimal;
+        return l as decimal;
+      case SpecialType.Char: return l as char;
+    }
+    return null;
+  }
+
+  static FoldUnary(kind: UnaryOperatorKind, v: object, _1: SpecialType): object? {
+    try {
+      switch (kind) {
+        case UnaryOperatorKind.Not:
+          if (v instanceof bool) return !(v as bool);
+          break;
+        case UnaryOperatorKind.Plus: return v;
+        case UnaryOperatorKind.Minus:
+          if (v instanceof int) return -(v as int);
+          if (v instanceof long) return -(v as long);
+          if (v instanceof double) return -(v as double);
+          if (v instanceof float) return -(v as float);
+          if (v instanceof decimal) return -(v as decimal);
+          break;
+        case UnaryOperatorKind.BitwiseNot:
+          if (v instanceof int) return ~(v as int);
+          if (v instanceof long) return ~(v as long);
+          if (v instanceof uint) return ~(v as uint);
+          if (v instanceof ulong) return ~(v as ulong);
+          break;
+      }
+    } catch (e: OverflowException) {
+    }
+    return null;
+  }
+
+  static FoldBinary(kind: BinaryOperatorKind, l: object, r: object, type: SpecialType): object? {
+    try {
+      switch (type) {
+        case SpecialType.Int32: return ConstantFolding.FoldInt(l as int, r, kind);
+        case SpecialType.Int64: return ConstantFolding.FoldLong(l as long, r, kind);
+        case SpecialType.UInt32: return ConstantFolding.FoldUInt(l as uint, r, kind);
+        case SpecialType.UInt64: return ConstantFolding.FoldULong(l as ulong, r, kind);
+        case SpecialType.Double: return ConstantFolding.FoldDouble(l as double, r as double, kind);
+        case SpecialType.Single: return ConstantFolding.FoldFloat(l as float, r as float, kind);
+        case SpecialType.Decimal: return ConstantFolding.FoldDecimal(l as decimal, r as decimal, kind);
+        case SpecialType.Boolean:
+          switch (kind) {
+            case BinaryOperatorKind.Equal: return (l as bool) == (r as bool);
+            case BinaryOperatorKind.NotEqual: return (l as bool) != (r as bool);
+            case BinaryOperatorKind.And: return (l as bool) & (r as bool);
+            case BinaryOperatorKind.Or: return (l as bool) | (r as bool);
+            case BinaryOperatorKind.Xor: return (l as bool) ^ (r as bool);
+          }
+          return null;
+        case SpecialType.String:
+          switch (kind) {
+            case BinaryOperatorKind.Add: return (l as string) + (r as string);
+            case BinaryOperatorKind.Equal: return (l as string) == (r as string);
+            case BinaryOperatorKind.NotEqual: return (l as string) != (r as string);
+          }
+          return null;
+        case SpecialType.Char:
+          const result = ConstantFolding.FoldInt((l as char) as int, (r as char) as int, kind);
+          if (kind >= BinaryOperatorKind.Equal && kind <= BinaryOperatorKind.GreaterThanOrEqual) return result;
+          return null;
+      }
+    } catch (e: DivideByZeroException) {
+    } catch (e: OverflowException) {
+    }
+    return null;
+  }
+
+  private static IsShift(k: BinaryOperatorKind): bool {
+    return k == BinaryOperatorKind.ShiftLeft || k == BinaryOperatorKind.ShiftRight || k == BinaryOperatorKind.UnsignedShiftRight;
+  }
+
+  private static FoldInt(a: int, ro: object, k: BinaryOperatorKind): object? {
+    if (ConstantFolding.IsShift(k)) {
+      const sh = Convert.ToInt32(ro, CultureInfo.InvariantCulture) & 31;
+      if (k == BinaryOperatorKind.ShiftLeft) return a << sh;
+      if (k == BinaryOperatorKind.ShiftRight) return a >> sh;
+      return ((a as uint) >> sh) as int;
+    }
+    const b = Convert.ToInt32(ro, CultureInfo.InvariantCulture);
+    switch (k) {
+      case BinaryOperatorKind.Add: return a + b;
+      case BinaryOperatorKind.Subtract: return a - b;
+      case BinaryOperatorKind.Multiply: return a * b;
+      case BinaryOperatorKind.Divide:
+        if (b == 0 || (a == int.MinValue && b == -1)) return null;
+        return a / b;
+      case BinaryOperatorKind.Remainder:
+        if (b == 0) return null;
+        if (b == -1) return 0;
+        return a % b;
+      case BinaryOperatorKind.And: return a & b;
+      case BinaryOperatorKind.Or: return a | b;
+      case BinaryOperatorKind.Xor: return a ^ b;
+      case BinaryOperatorKind.Equal: return a == b;
+      case BinaryOperatorKind.NotEqual: return a != b;
+      case BinaryOperatorKind.LessThan: return a < b;
+      case BinaryOperatorKind.LessThanOrEqual: return a <= b;
+      case BinaryOperatorKind.GreaterThan: return a > b;
+      case BinaryOperatorKind.GreaterThanOrEqual: return a >= b;
+    }
+    return null;
+  }
+
+  private static FoldLong(a: long, ro: object, k: BinaryOperatorKind): object? {
+    if (ConstantFolding.IsShift(k)) {
+      const sh = Convert.ToInt32(ro, CultureInfo.InvariantCulture) & 63;
+      if (k == BinaryOperatorKind.ShiftLeft) return a << sh;
+      if (k == BinaryOperatorKind.ShiftRight) return a >> sh;
+      return ((a as ulong) >> sh) as long;
+    }
+    const b = Convert.ToInt64(ro, CultureInfo.InvariantCulture);
+    switch (k) {
+      case BinaryOperatorKind.Add: return a + b;
+      case BinaryOperatorKind.Subtract: return a - b;
+      case BinaryOperatorKind.Multiply: return a * b;
+      case BinaryOperatorKind.Divide:
+        if (b == 0 || (a == long.MinValue && b == -1)) return null;
+        return a / b;
+      case BinaryOperatorKind.Remainder:
+        if (b == 0) return null;
+        if (b == -1) return 0L;
+        return a % b;
+      case BinaryOperatorKind.And: return a & b;
+      case BinaryOperatorKind.Or: return a | b;
+      case BinaryOperatorKind.Xor: return a ^ b;
+      case BinaryOperatorKind.Equal: return a == b;
+      case BinaryOperatorKind.NotEqual: return a != b;
+      case BinaryOperatorKind.LessThan: return a < b;
+      case BinaryOperatorKind.LessThanOrEqual: return a <= b;
+      case BinaryOperatorKind.GreaterThan: return a > b;
+      case BinaryOperatorKind.GreaterThanOrEqual: return a >= b;
+    }
+    return null;
+  }
+
+  private static FoldUInt(a: uint, ro: object, k: BinaryOperatorKind): object? {
+    if (ConstantFolding.IsShift(k)) {
+      const sh = Convert.ToInt32(ro, CultureInfo.InvariantCulture) & 31;
+      if (k == BinaryOperatorKind.ShiftLeft) return a << sh;
+      return a >> sh;
+    }
+    const b = Convert.ToUInt32(ro, CultureInfo.InvariantCulture);
+    switch (k) {
+      case BinaryOperatorKind.Add: return a + b;
+      case BinaryOperatorKind.Subtract: return a - b;
+      case BinaryOperatorKind.Multiply: return a * b;
+      case BinaryOperatorKind.Divide:
+        if (b == 0) return null;
+        return a / b;
+      case BinaryOperatorKind.Remainder:
+        if (b == 0) return null;
+        return a % b;
+      case BinaryOperatorKind.And: return a & b;
+      case BinaryOperatorKind.Or: return a | b;
+      case BinaryOperatorKind.Xor: return a ^ b;
+      case BinaryOperatorKind.Equal: return a == b;
+      case BinaryOperatorKind.NotEqual: return a != b;
+      case BinaryOperatorKind.LessThan: return a < b;
+      case BinaryOperatorKind.LessThanOrEqual: return a <= b;
+      case BinaryOperatorKind.GreaterThan: return a > b;
+      case BinaryOperatorKind.GreaterThanOrEqual: return a >= b;
+    }
+    return null;
+  }
+
+  private static FoldULong(a: ulong, ro: object, k: BinaryOperatorKind): object? {
+    if (ConstantFolding.IsShift(k)) {
+      const sh = Convert.ToInt32(ro, CultureInfo.InvariantCulture) & 63;
+      if (k == BinaryOperatorKind.ShiftLeft) return a << sh;
+      return a >> sh;
+    }
+    const b = Convert.ToUInt64(ro, CultureInfo.InvariantCulture);
+    switch (k) {
+      case BinaryOperatorKind.Add: return a + b;
+      case BinaryOperatorKind.Subtract: return a - b;
+      case BinaryOperatorKind.Multiply: return a * b;
+      case BinaryOperatorKind.Divide:
+        if (b == 0) return null;
+        return a / b;
+      case BinaryOperatorKind.Remainder:
+        if (b == 0) return null;
+        return a % b;
+      case BinaryOperatorKind.And: return a & b;
+      case BinaryOperatorKind.Or: return a | b;
+      case BinaryOperatorKind.Xor: return a ^ b;
+      case BinaryOperatorKind.Equal: return a == b;
+      case BinaryOperatorKind.NotEqual: return a != b;
+      case BinaryOperatorKind.LessThan: return a < b;
+      case BinaryOperatorKind.LessThanOrEqual: return a <= b;
+      case BinaryOperatorKind.GreaterThan: return a > b;
+      case BinaryOperatorKind.GreaterThanOrEqual: return a >= b;
+    }
+    return null;
+  }
+
+  private static FoldDouble(a: double, b: double, k: BinaryOperatorKind): object? {
+    switch (k) {
+      case BinaryOperatorKind.Add: return a + b;
+      case BinaryOperatorKind.Subtract: return a - b;
+      case BinaryOperatorKind.Multiply: return a * b;
+      case BinaryOperatorKind.Divide: return a / b;
+      case BinaryOperatorKind.Remainder:
+        Math.IEEERemainder(a, b);
+        return a % b;
+      case BinaryOperatorKind.Equal: return a == b;
+      case BinaryOperatorKind.NotEqual: return a != b;
+      case BinaryOperatorKind.LessThan: return a < b;
+      case BinaryOperatorKind.LessThanOrEqual: return a <= b;
+      case BinaryOperatorKind.GreaterThan: return a > b;
+      case BinaryOperatorKind.GreaterThanOrEqual: return a >= b;
+    }
+    return null;
+  }
+
+  private static FoldFloat(a: float, b: float, k: BinaryOperatorKind): object? {
+    switch (k) {
+      case BinaryOperatorKind.Add: return a + b;
+      case BinaryOperatorKind.Subtract: return a - b;
+      case BinaryOperatorKind.Multiply: return a * b;
+      case BinaryOperatorKind.Divide: return a / b;
+      case BinaryOperatorKind.Remainder: return a % b;
+      case BinaryOperatorKind.Equal: return a == b;
+      case BinaryOperatorKind.NotEqual: return a != b;
+      case BinaryOperatorKind.LessThan: return a < b;
+      case BinaryOperatorKind.LessThanOrEqual: return a <= b;
+      case BinaryOperatorKind.GreaterThan: return a > b;
+      case BinaryOperatorKind.GreaterThanOrEqual: return a >= b;
+    }
+    return null;
+  }
+
+  private static FoldDecimal(a: decimal, b: decimal, k: BinaryOperatorKind): object? {
+    switch (k) {
+      case BinaryOperatorKind.Add: return a + b;
+      case BinaryOperatorKind.Subtract: return a - b;
+      case BinaryOperatorKind.Multiply: return a * b;
+      case BinaryOperatorKind.Divide:
+        if (b == 0) return null;
+        return a / b;
+      case BinaryOperatorKind.Remainder:
+        if (b == 0) return null;
+        return a % b;
+      case BinaryOperatorKind.Equal: return a == b;
+      case BinaryOperatorKind.NotEqual: return a != b;
+      case BinaryOperatorKind.LessThan: return a < b;
+      case BinaryOperatorKind.LessThanOrEqual: return a <= b;
+      case BinaryOperatorKind.GreaterThan: return a > b;
+      case BinaryOperatorKind.GreaterThanOrEqual: return a >= b;
+    }
+    return null;
+  }
+}

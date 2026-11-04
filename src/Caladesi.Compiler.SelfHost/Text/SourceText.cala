@@ -1,0 +1,96 @@
+import { List } from "System.Collections.Generic";
+import { TextSpan, TextSpans, LinePosition, LinePositionSpan } from "./TextSpan";
+
+export sealed class SourceText {
+  private readonly lineStarts: int[];
+
+  private constructor(public readonly Text: string) {
+    this.lineStarts = SourceText.ComputeLineStarts(Text);
+  }
+
+  get Length(): int { return this.Text.Length; }
+  get LineCount(): int { return this.lineStarts.Length; }
+
+  // Caladesi does not declare indexers; callers use the explicit character accessor.
+  GetCharacter(index: int): char { return this.Text[index]; }
+
+  static From(text: string): SourceText { return new SourceText(text); }
+
+  override ToString(): string { return this.Text; }
+
+  ToString(span: TextSpan): string {
+    return this.Text.Substring(span.Start, span.Length);
+  }
+
+  WithChanges(span: TextSpan, newText: string): SourceText {
+    const end = TextSpans.End(span);
+    // Match the bootstrap's two AsSpan slices, including their validation order.
+    if (span.Start < 0 || span.Start > this.Text.Length) {
+      throw new ArgumentOutOfRangeException("start");
+    }
+    if (end < 0 || end > this.Text.Length) {
+      throw new ArgumentOutOfRangeException("start");
+    }
+    return SourceText.From(this.Text.Substring(0, span.Start) + newText + this.Text.Substring(end));
+  }
+
+  private static ComputeLineStarts(text: string): int[] {
+    const starts = new List<int>();
+    starts.Add(0);
+    for (let i = 0; i < text.Length; i++) {
+      const c = text[i];
+      if (c == '\r') {
+        if (i + 1 < text.Length && text[i + 1] == '\n') {
+          i++;
+        }
+        starts.Add(i + 1);
+      } else if (c == '\n') {
+        starts.Add(i + 1);
+      }
+    }
+    return starts.ToArray();
+  }
+
+  GetLineIndex(position: int): int {
+    if (position < 0) position = 0;
+    if (position > this.Text.Length) position = this.Text.Length;
+
+    let low = 0;
+    let high = this.lineStarts.Length - 1;
+    while (low <= high) {
+      const middle = low + (high - low) / 2;
+      const start = this.lineStarts[middle];
+      if (start == position) return middle;
+      if (start < position) low = middle + 1;
+      else high = middle - 1;
+    }
+    return high;
+  }
+
+  GetLinePosition(position: int): LinePosition {
+    const line = this.GetLineIndex(position);
+    return new LinePosition(line, Math.Min(position, this.Text.Length) - this.lineStarts[line]);
+  }
+
+  GetLinePositionSpan(span: TextSpan): LinePositionSpan {
+    return new LinePositionSpan(this.GetLinePosition(span.Start), this.GetLinePosition(TextSpans.End(span)));
+  }
+
+  GetLineStart(line: int): int { return this.lineStarts[line]; }
+
+  GetLineEnd(line: int): int {
+    return line + 1 < this.lineStarts.Length ? this.lineStarts[line + 1] : this.Text.Length;
+  }
+
+  GetPosition(position: LinePosition): int {
+    if (position.Line < 0) return 0;
+    if (position.Line >= this.lineStarts.Length) return this.Text.Length;
+
+    const start = this.lineStarts[position.Line];
+    let end = this.GetLineEnd(position.Line);
+    while (end > start && (this.Text[end - 1] == '\n' || this.Text[end - 1] == '\r')) {
+      end--;
+    }
+    return Math.Min(start + position.Character, end);
+  }
+}

@@ -27,6 +27,7 @@ public sealed class CaladesiCompile : ToolTask
     public bool TreatWarningsAsErrors { get; set; }
     public string? NoWarn { get; set; }
     public string? Version { get; set; }
+    public string? InformationalVersion { get; set; }
     public string? TargetFrameworkMoniker { get; set; }
     public string? TargetFrameworkDisplayName { get; set; }
     public bool Optimize { get; set; }
@@ -123,6 +124,11 @@ public sealed class CaladesiCompile : ToolTask
         if (!string.IsNullOrEmpty(Version))
         {
             Add("-version:" + Version);
+        }
+
+        if (!string.IsNullOrEmpty(InformationalVersion))
+        {
+            Add("-informationalversion:" + InformationalVersion);
         }
 
         if (!string.IsNullOrEmpty(TargetFrameworkMoniker))

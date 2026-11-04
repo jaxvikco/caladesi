@@ -1,0 +1,48 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { SyntaxFacts, SyntaxKind } from "Caladesi.Compiler.Syntax";
+
+@TestClass
+export class SyntaxFactsTests {
+  @TestMethod
+  reservedKeywords(): void {
+    if (SyntaxFacts.GetKeywordKind("class") != SyntaxKind.ClassKeyword || !SyntaxFacts.IsReservedKeyword(SyntaxKind.ClassKeyword) || SyntaxFacts.IsIdentifierLike(SyntaxKind.ClassKeyword)) throw new Exception("Reserved keyword");
+  }
+
+  @TestMethod
+  contextualKeywords(): void {
+    if (SyntaxFacts.GetKeywordKind("async") != SyntaxKind.AsyncKeyword || !SyntaxFacts.IsContextualKeyword(SyntaxKind.AsyncKeyword) || !SyntaxFacts.IsIdentifierLike(SyntaxKind.AsyncKeyword)) throw new Exception("Contextual keyword");
+  }
+
+  @TestMethod
+  keywordLookupIsExact(): void {
+    const identifiers: string[] = ["Class", "CLASS", "classx", " class", "class ", "", "namespace", "var", "==="];
+    for (const identifier of identifiers) {
+      if (SyntaxFacts.GetKeywordKind(identifier) != SyntaxKind.IdentifierToken) throw new Exception("Exact lookup: " + identifier);
+    }
+  }
+
+  @TestMethod
+  fixedTokenSpelling(): void {
+    if (SyntaxFacts.GetText(SyntaxKind.QuestionQuestionEqualsToken) != "??=" || SyntaxFacts.GetText(SyntaxKind.GreaterThanGreaterThanGreaterThanToken) != ">>>" || SyntaxFacts.GetText(SyntaxKind.AsteriskAsteriskToken) != "**") throw new Exception("Operator spelling");
+  }
+
+  @TestMethod
+  assignmentClassification(): void {
+    if (!SyntaxFacts.IsAssignmentOperator(SyntaxKind.EqualsToken) || !SyntaxFacts.IsAssignmentOperator(SyntaxKind.QuestionQuestionEqualsToken) || SyntaxFacts.IsAssignmentOperator(SyntaxKind.EqualsEqualsToken)) throw new Exception("Assignment classification");
+  }
+
+  @TestMethod
+  modifierClassification(): void {
+    if (!SyntaxFacts.IsModifier(SyntaxKind.PublicKeyword) || !SyntaxFacts.IsModifier(SyntaxKind.ReadonlyKeyword) || SyntaxFacts.IsModifier(SyntaxKind.ReturnKeyword)) throw new Exception("Modifier classification");
+  }
+
+  @TestMethod
+  arithmeticPrecedence(): void {
+    if (SyntaxFacts.GetBinaryPrecedence(SyntaxKind.PlusToken) != 10 || SyntaxFacts.GetBinaryPrecedence(SyntaxKind.AsteriskToken) != 11 || SyntaxFacts.GetBinaryPrecedence(SyntaxKind.AsteriskAsteriskToken) != 12) throw new Exception("Arithmetic precedence");
+  }
+
+  @TestMethod
+  logicalPrecedence(): void {
+    if (SyntaxFacts.GetBinaryPrecedence(SyntaxKind.QuestionQuestionToken) != 1 || SyntaxFacts.GetBinaryPrecedence(SyntaxKind.BarBarToken) != 2 || SyntaxFacts.GetBinaryPrecedence(SyntaxKind.AmpersandAmpersandToken) != 3 || SyntaxFacts.GetBinaryPrecedence(SyntaxKind.IdentifierToken) != 0) throw new Exception("Logical precedence");
+  }
+}

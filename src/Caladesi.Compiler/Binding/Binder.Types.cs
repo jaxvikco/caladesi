@@ -43,7 +43,7 @@ public sealed partial class Binder
     public TypeSymbol BindType(TypeSyntax syntax, bool allowVoid = false)
     {
         TypeSymbol t = BindTypeCore(syntax, allowVoid);
-        TypeMap?[syntax] = t;
+        _ = (TypeMap?[syntax] = t);
         return t;
     }
 
@@ -543,7 +543,7 @@ public sealed partial class Binder
 
     private void Record(SyntaxNode syntax, Symbol symbol)
     {
-        SymbolMap?[syntax] = symbol;
+        _ = (SymbolMap?[syntax] = symbol);
     }
 
     // ------------------------------------------------------------------ constraints
@@ -810,7 +810,7 @@ public sealed partial class Binder
         {
             foreach (SourceFieldSymbol p in previous)
             {
-                _scope.Symbols[p.Name] = p;
+                _scope.Symbols[p.Name] = new LocalSymbol(p.Name, IntType, true, _1) { ConstantValue = p.ConstantValue };
             }
 
             return TryEvaluateConstant(expr, IntType);

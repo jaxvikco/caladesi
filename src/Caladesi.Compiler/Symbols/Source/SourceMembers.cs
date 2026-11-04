@@ -36,6 +36,8 @@ public enum SynthesizedBodyKind
     StaticConstructor,
     EntryPointBridge,
     Custom,
+    UnionEqualsOperator,
+    UnionNotEqualsOperator,
 }
 
 /// <summary>A method, function, constructor or accessor declared in source or synthesized by the compiler.</summary>

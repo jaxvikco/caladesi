@@ -1,0 +1,48 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { NativeCorpusHarness } from "./NativeCorpusHarness";
+
+@TestClass
+export class NativeCorpusIteratorTests {
+  @TestMethod
+  SimpleGenerator(): void {
+    NativeCorpusHarness.Check("function* count(n: int): IEnumerable<int> {\n for (let i = 0; i < n; i++) yield i * i;\n}\nfor (const x of count(4)) Console.WriteLine(x);\nConsole.WriteLine(count(5).Sum());", "0\n1\n4\n9\n30\n");
+  }
+  @TestMethod
+  GeneratorWithFinallyAndEarlyExit(): void {
+    NativeCorpusHarness.Check("function* gen(): IEnumerable<string> {\n try {\n yield \"a\";\n yield \"b\";\n yield \"c\";\n } finally {\n Console.WriteLine(\"cleanup\");\n }\n}\nfor (const s of gen()) { Console.WriteLine(s); if (s == \"b\") break; }", "a\nb\ncleanup\n");
+  }
+  @TestMethod
+  GeneratorMethodCapturesThis(): void {
+    NativeCorpusHarness.Check("class Bag {\n items = [\"x\", \"y\"];\n *all(): IEnumerable<string> { for (const i of this.items) yield i; yield \"end\"; }\n}\nConsole.WriteLine(string.Join(\",\", new Bag().all()));", "x,y,end\n");
+  }
+  @TestMethod
+  EnumerableIsReenumerable(): void {
+    NativeCorpusHarness.Check("function* two(): IEnumerable<int> { yield 1; yield 2; }\nconst e = two();\nConsole.WriteLine(e.Count() + e.Count());", "4\n");
+  }
+  @TestMethod
+  IteratorFinallyRunsOnBreakSync(): void {
+    NativeCorpusHarness.Check(
+      "function* sf(): IEnumerable<int> { try { for (let i = 0; i < 3; i++) { yield i; } } finally { Console.WriteLine(\"fin-sf\"); } }\n" +
+      "function* sw(): IEnumerable<int> { try { let i = 0; while (i < 3) { yield i; i++; } } finally { Console.WriteLine(\"fin-sw\"); } }\n" +
+      "function* sfo(): IEnumerable<int> { try { for (const x of [1, 2, 3]) { yield x; } } finally { Console.WriteLine(\"fin-sfo\"); } }\n" +
+      "for (const t of sf()) { break; } Console.WriteLine(\"sf done\");\n" +
+      "for (const t of sw()) { break; } Console.WriteLine(\"sw done\");\n" +
+      "for (const t of sfo()) { break; } Console.WriteLine(\"sfo done\");\n" +
+      "const en = sf().GetEnumerator();\nen.MoveNext(); en.Dispose(); Console.WriteLine(\"manual done\");",
+      "fin-sf\nsf done\nfin-sw\nsw done\nfin-sfo\nsfo done\nfin-sf\nmanual done\n");
+  }
+  @TestMethod
+  IteratorFinallyRunsWhenYieldOperandIsHoisted(): void {
+    NativeCorpusHarness.Check(
+      "class D implements IDisposable { constructor(public name: string) {} Dispose(): void { Console.WriteLine(\"disposed \" + this.name); } }\n" +
+      "function* param(n: int): IEnumerable<int> { try { yield n; yield n; } finally { Console.WriteLine(\"fin-param\"); } }\n" +
+      "function* hoisted(): IEnumerable<int> { try { let i = 5; yield i; i++; yield i; } finally { Console.WriteLine(\"fin-hoisted\"); } }\n" +
+      "class H { v = 9; *m(): IEnumerable<int> { try { yield this.v; yield 1; } finally { Console.WriteLine(\"fin-this\"); } } }\n" +
+      "function* usingIt(): IEnumerable<int> { using d = new D(\"iter\"); yield 1; yield 2; }\n" +
+      "for (const t of param(1)) { break; } Console.WriteLine(\"param done\");\n" +
+      "for (const t of hoisted()) { break; } Console.WriteLine(\"hoisted done\");\n" +
+      "for (const t of new H().m()) { break; } Console.WriteLine(\"this done\");\n" +
+      "for (const t of usingIt()) { break; } Console.WriteLine(\"usingIt done\");",
+      "fin-param\nparam done\nfin-hoisted\nhoisted done\nfin-this\nthis done\ndisposed iter\nusingIt done\n");
+  }
+}

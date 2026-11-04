@@ -1,0 +1,258 @@
+import { IEnumerable, IEnumerator } from "System.Collections.Generic";
+import { StringBuilder } from "System.Text";
+import { TextSpan } from "../Text/TextSpan";
+import { SyntaxKind } from "./SyntaxKind";
+import { SyntaxToken } from "./SyntaxToken";
+import { SyntaxTree } from "./SyntaxTree";
+import { SyntaxNodeHelpers } from "./SyntaxNodeHelpers";
+
+export abstract class SyntaxElement {
+  Parent: SyntaxNode? = null;
+  IndexInParent: int = 0;
+
+  constructor(public readonly Kind: SyntaxKind) {}
+
+  abstract get FullWidth(): int;
+  abstract get FullStart(): int;
+  abstract get Start(): int;
+  abstract get IsMissing(): bool;
+  abstract get TrailingWidth(): int;
+  abstract WriteTo(builder: StringBuilder): void;
+
+  get FullEnd(): int { return this.FullStart + this.FullWidth; }
+  get FullSpan(): TextSpan { return new TextSpan(this.FullStart, this.FullWidth); }
+  get End(): int { return this.Start + this.Width; }
+  get Width(): int { return this.FullEnd - this.Start - this.TrailingWidth; }
+  get Span(): TextSpan { return new TextSpan(this.Start, this.Width); }
+
+  ToFullString(): string {
+    const builder = new StringBuilder(this.FullWidth);
+    this.WriteTo(builder);
+    return builder.ToString();
+  }
+
+  get SyntaxTree(): SyntaxTree? {
+    let element: SyntaxElement = this;
+    while (element.Parent != null) element = element.Parent;
+    if (element instanceof SyntaxNode) return (element as SyntaxNode).OwnerTree;
+    return null;
+  }
+
+  FirstAncestorOrSelf(predicate: Func<SyntaxNode, bool>): SyntaxNode? {
+    ArgumentNullException.ThrowIfNull(predicate);
+    let element: SyntaxElement? = this;
+    while (element != null) {
+      if (element instanceof SyntaxNode && predicate(element as SyntaxNode)) return element as SyntaxNode;
+      element = element.Parent;
+    }
+    return null;
+  }
+
+  FirstAncestorOrSelf<T extends SyntaxNode>(): T? {
+    let element: SyntaxElement? = this;
+    while (element != null) {
+      if (element instanceof T) return element as T;
+      element = element.Parent;
+    }
+    return null;
+  }
+}
+
+export sealed class SyntaxList<T extends SyntaxElement> {
+  constructor(public readonly Node: SyntaxNode?) {}
+  get Count(): int { return this.Node == null ? 0 : this.Node.SlotCount; }
+  Get(index: int): T { return this.Node!.Slot(index) as T; }
+  Any(): bool { return this.Count > 0; }
+  FirstOrDefault(): T? { return this.Count > 0 ? this.Get(0) : null; }
+  LastOrDefault(): T? { return this.Count > 0 ? this.Get(this.Count - 1) : null; }
+  *GetEnumerator(): IEnumerator<T> {
+    for (let i = 0; i < this.Count; i++) yield this.Get(i);
+  }
+}
+
+export sealed class SeparatedSyntaxList<T extends SyntaxElement> {
+  constructor(public readonly Node: SyntaxNode?) {}
+  get Count(): int { return ((this.Node == null ? 0 : this.Node.SlotCount) + 1) / 2; }
+  get SeparatorCount(): int { return (this.Node == null ? 0 : this.Node.SlotCount) / 2; }
+  Get(index: int): T { return this.Node!.Slot(index * 2) as T; }
+  GetSeparator(index: int): SyntaxToken { return this.Node!.Slot(index * 2 + 1) as SyntaxToken; }
+  *GetEnumerator(): IEnumerator<T> {
+    for (let i = 0; i < this.Count; i++) yield this.Get(i);
+  }
+}
+
+export abstract class SyntaxNode extends SyntaxElement {
+  private readonly slots: SyntaxElement?[];
+  private readonly fullWidth: int;
+  private cachedFullStart: int = -1;
+  OwnerTree: SyntaxTree? = null;
+
+  constructor(kind: SyntaxKind, slots: SyntaxElement?[]) {
+    super(kind);
+    ArgumentNullException.ThrowIfNull(slots);
+    this.slots = slots;
+    let width = 0;
+    for (let i = 0; i < slots.Length; i++) {
+      const child = slots[i];
+      if (child == null) continue;
+      child.Parent = this;
+      child.IndexInParent = i;
+      width += child.FullWidth;
+    }
+    this.fullWidth = width;
+  }
+
+  get SlotCount(): int { return this.slots.Length; }
+  Slot(index: int): SyntaxElement? { return this.slots[index]; }
+  override get FullWidth(): int { return this.fullWidth; }
+
+  override get FullStart(): int {
+    if (this.cachedFullStart >= 0) return this.cachedFullStart;
+    let position = 0;
+    const first = this.FirstChild();
+    if (first != null) position = first.FullStart;
+    else if (this.Parent != null) {
+      // Empty nodes sit after their previous sibling without recursing into the parent's first child.
+      position = this.Parent.FullStart;
+      for (let i = 0; i < this.IndexInParent; i++) {
+        const sibling = this.Parent.Slot(i);
+        if (sibling != null) position = sibling.FullEnd;
+      }
+    }
+    this.cachedFullStart = position;
+    return position;
+  }
+
+  private FirstChild(): SyntaxElement? {
+    for (const child of this.slots) {
+      if (child == null) continue;
+      if (child instanceof SyntaxNode) {
+        const node = child as SyntaxNode;
+        if (node.FullWidth == 0 && node.FirstChild() == null) continue;
+      }
+      return child;
+    }
+    return null;
+  }
+
+  override get Start(): int {
+    const token = this.GetFirstToken();
+    return token == null ? this.FullStart : token.Start;
+  }
+  override get TrailingWidth(): int {
+    const token = this.GetLastToken();
+    return token == null ? 0 : token.TrailingWidthValue;
+  }
+  override get IsMissing(): bool {
+    let any = false;
+    for (const token of this.DescendantTokens()) {
+      any = true;
+      if (!token.IsMissing) return false;
+    }
+    return any;
+  }
+  override WriteTo(builder: StringBuilder): void {
+    for (const child of this.slots) {
+      if (child != null) child.WriteTo(builder);
+    }
+  }
+
+  *Children(): IEnumerable<SyntaxElement> {
+    for (const child of this.slots) {
+      if (child != null) yield child;
+    }
+  }
+  *ChildNodes(): IEnumerable<SyntaxNode> {
+    for (const child of this.slots) {
+      if (child instanceof SyntaxNode) yield child as SyntaxNode;
+    }
+  }
+  GetFirstToken(): SyntaxToken? {
+    for (const child of this.slots) {
+      if (child instanceof SyntaxToken) return child as SyntaxToken;
+      if (child instanceof SyntaxNode) {
+        const result = (child as SyntaxNode).GetFirstToken();
+        if (result != null) return result;
+      }
+    }
+    return null;
+  }
+  GetLastToken(): SyntaxToken? {
+    for (let i = this.slots.Length - 1; i >= 0; i--) {
+      const child = this.slots[i];
+      if (child instanceof SyntaxToken) return child as SyntaxToken;
+      if (child instanceof SyntaxNode) {
+        const result = (child as SyntaxNode).GetLastToken();
+        if (result != null) return result;
+      }
+    }
+    return null;
+  }
+  *DescendantTokens(): IEnumerable<SyntaxToken> {
+    for (const child of this.slots) {
+      if (child instanceof SyntaxToken) yield child as SyntaxToken;
+      else if (child instanceof SyntaxNode) {
+        for (const token of (child as SyntaxNode).DescendantTokens()) yield token;
+      }
+    }
+  }
+  *DescendantNodes(): IEnumerable<SyntaxNode> {
+    for (const child of this.slots) {
+      if (child instanceof SyntaxNode) {
+        const node = child as SyntaxNode;
+        yield node;
+        for (const descendant of node.DescendantNodes()) yield descendant;
+      }
+    }
+  }
+  *DescendantNodesAndSelf(): IEnumerable<SyntaxNode> {
+    yield this;
+    for (const node of this.DescendantNodes()) yield node;
+  }
+
+  FindToken(position: int): SyntaxToken? {
+    if (position < this.FullStart || position > this.FullEnd) return null;
+    let last: SyntaxToken? = null;
+    for (const child of this.slots) {
+      if (child instanceof SyntaxToken) {
+        const token = child as SyntaxToken;
+        if (position < token.FullEnd) return token;
+        last = token;
+      } else if (child instanceof SyntaxNode) {
+        const node = child as SyntaxNode;
+        if (node.FullWidth == 0) continue;
+        if (position < node.FullEnd) return node.FindToken(position);
+        last = node.GetLastToken() ?? last;
+      }
+    }
+    return last;
+  }
+  FindNode(span: TextSpan): SyntaxNode {
+    let node: SyntaxNode = this;
+    while (true) {
+      let next: SyntaxNode? = null;
+      for (const child of node.ChildNodes()) {
+        if (child.FullWidth == 0) continue;
+        if (child.Span.Start <= span.Start && child.End >= span.Start + span.Length &&
+            (child.Width > 0 || span.Length == 0)) {
+          next = child;
+          break;
+        }
+      }
+      if (next == null) return node;
+      node = next;
+    }
+  }
+
+  protected Node<T extends SyntaxNode>(index: int): T { return SyntaxNodeHelpers.Node<T>(this, index); }
+  protected NodeOpt<T extends SyntaxNode>(index: int): T? { return SyntaxNodeHelpers.NodeOpt<T>(this, index); }
+  protected Tok(index: int): SyntaxToken { return SyntaxNodeHelpers.Tok(this, index); }
+  protected TokOpt(index: int): SyntaxToken? { return SyntaxNodeHelpers.TokOpt(this, index); }
+  protected L<T extends SyntaxElement>(index: int): SyntaxList<T> { return SyntaxNodeHelpers.L<T>(this, index); }
+  protected SL<T extends SyntaxElement>(index: int): SeparatedSyntaxList<T> { return SyntaxNodeHelpers.SL<T>(this, index); }
+  override ToString(): string { return this.Kind.ToString(); }
+}
+
+export sealed class ListNode extends SyntaxNode {
+  constructor(kind: SyntaxKind, items: SyntaxElement?[]) { super(kind, items); }
+}

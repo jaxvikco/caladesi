@@ -155,6 +155,8 @@ function f(x: int | string) { … }                        // inline union: Cala
   union and over `null`-able unions must be exhaustive unless it has `default` (`CAL0266`).
 * The union encoding (`Tag` + `Value` fields, one constructor per case, implicit conversions, `[CaladesiUnion]`) is chosen so it
   can migrate to C# unions later (see DECISIONS.md).
+* Named unions implement `IEquatable<T>` and provide typed and object equality, `==`, `!=`, `GetHashCode` and `ToString`.
+  Equality compares both the case tag and the boxed value; the default union has tag zero and a null value.
 
 ### Collections
 

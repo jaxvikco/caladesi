@@ -1,0 +1,105 @@
+import { Dictionary } from "System.Collections.Generic";
+import { TypeAttributes } from "System.Reflection";
+import { MetadataReader, TypeDefinitionHandle, TypeReferenceHandle, AssemblyReferenceHandle, HandleKind, PEReaderExtensions } from "System.Reflection.Metadata";
+import { PEReader } from "System.Reflection.PortableExecutable";
+import { AssemblySymbol } from "../Symbol";
+import { NamedTypeSymbol } from "../NamedTypeSymbol";
+import { ErrorTypeSymbol } from "../TypeSymbols";
+import { NamespaceSymbol } from "../NamespaceSymbol";
+import { MetadataNamedType } from "./MetadataNamedType";
+import { MetadataTypeProvider } from "./MetadataTypeProvider";
+import { ReferenceSet } from "./ReferenceSet";
+
+export sealed class MetadataAssemblySymbol extends AssemblySymbol {
+  // The reader borrows the PE image: retain its owner for this symbol's lifetime.
+  private readonly pe: PEReader;
+  private readonly types: Dictionary<TypeDefinitionHandle, MetadataNamedType> = new Dictionary<TypeDefinitionHandle, MetadataNamedType>();
+  private ownGlobal: NamespaceSymbol? = null;
+  private readonly name: string;
+  private readonly version: Version;
+  readonly Reader: MetadataReader;
+  readonly Provider: MetadataTypeProvider;
+  private definitionIndex: Dictionary<string, Dictionary<string, TypeDefinitionHandle>>? = null;
+
+  constructor(public readonly ReferenceSet: ReferenceSet, pe: PEReader, public readonly Path: string) {
+    super();
+    this.pe = pe;
+    this.Reader = PEReaderExtensions.GetMetadataReader(pe);
+    const definition = this.Reader.GetAssemblyDefinition();
+    this.name = this.Reader.GetString(definition.Name);
+    this.version = definition.Version;
+    this.Provider = new MetadataTypeProvider(this);
+  }
+
+  override get Name(): string { return this.name; }
+  override get Version(): Version { return this.version; }
+  override get GlobalNamespace(): NamespaceSymbol { return this.ownGlobal ?? this.ReferenceSet.GlobalNamespace; }
+
+  PopulateNamespaces(global: NamespaceSymbol): void {
+    this.ownGlobal = global;
+    for (const handle of this.Reader.TypeDefinitions) {
+      const definition = this.Reader.GetTypeDefinition(handle);
+      if ((definition.Attributes & TypeAttributes.VisibilityMask) != TypeAttributes.Public) continue;
+      const ns = global.GetOrAddNamespace(this.Reader.GetString(definition.Namespace));
+      const type = this.GetTypeDefinition(handle);
+      if (ns.GetTypeMember(type.Name, type.OwnArity) == null) ns.AddType(type);
+    }
+  }
+
+  GetTypeDefinition(handle: TypeDefinitionHandle): MetadataNamedType {
+    const [found, cached] = this.types.TryGetValue(handle);
+    if (found) return cached;
+    const type = new MetadataNamedType(this, handle);
+    this.types[handle] = type;
+    return type;
+  }
+
+  ResolveTypeReference(handle: TypeReferenceHandle): NamedTypeSymbol {
+    const reference = this.Reader.GetTypeReference(handle);
+    const name = this.Reader.GetString(reference.Name);
+    const scope = reference.ResolutionScope;
+    if (scope.Kind == HandleKind.TypeReference) {
+      const outer = this.ResolveTypeReference(scope as TypeReferenceHandle);
+      for (const member of outer.GetMembers()) {
+        if (member instanceof NamedTypeSymbol && member.MetadataName == name) return member as NamedTypeSymbol;
+      }
+      return new ErrorTypeSymbol(name);
+    }
+    const ns = this.Reader.GetString(reference.Namespace);
+    const full = ns.Length == 0 ? name : ns + "." + name;
+    let assemblyName: string? = null;
+    if (scope.Kind == HandleKind.AssemblyReference) {
+      assemblyName = this.Reader.GetString(this.Reader.GetAssemblyReference(scope as AssemblyReferenceHandle).Name);
+    } else if (scope.Kind == HandleKind.ModuleDefinition || scope.Kind == HandleKind.ModuleReference) {
+      assemblyName = this.name;
+    }
+    if (assemblyName != null) {
+      const assembly = this.ReferenceSet.FindAssembly(assemblyName);
+      if (assembly != null) {
+        const type = assembly.FindDefinedType(ns, name);
+        if (type != null) return type;
+      }
+    }
+    return this.ReferenceSet.FindType(full) ?? new ErrorTypeSymbol(full);
+  }
+
+  FindDefinedType(ns: string, metadataName: string): MetadataNamedType? {
+    if (this.definitionIndex == null) {
+      const index = new Dictionary<string, Dictionary<string, TypeDefinitionHandle>>(StringComparer.Ordinal);
+      for (const handle of this.Reader.TypeDefinitions) {
+        const definition = this.Reader.GetTypeDefinition(handle);
+        if (!definition.GetDeclaringType().IsNil) continue;
+        const typeNamespace = this.Reader.GetString(definition.Namespace);
+        const [found, existing] = index.TryGetValue(typeNamespace);
+        const names = found ? existing : new Dictionary<string, TypeDefinitionHandle>(StringComparer.Ordinal);
+        if (!found) index[typeNamespace] = names;
+        names.TryAdd(this.Reader.GetString(definition.Name), handle);
+      }
+      this.definitionIndex = index;
+    }
+    const [foundNamespace, names] = this.definitionIndex!.TryGetValue(ns);
+    if (!foundNamespace) return null;
+    const [foundType, handle] = names.TryGetValue(metadataName);
+    return foundType ? this.GetTypeDefinition(handle) : null;
+  }
+}

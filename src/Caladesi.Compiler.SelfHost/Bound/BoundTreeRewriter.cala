@@ -1,0 +1,495 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import {
+  BoundNode, BoundExpression, BoundStatement, BoundBadExpression, BoundLiteral,
+  BoundLocal, BoundParameter, BoundThis, BoundBaseReference, BoundFieldAccess,
+  BoundPropertyAccess, BoundCall, BoundObjectCreation, BoundMemberInit,
+  BoundDefaultValue, BoundArrayCreation, BoundArrayAccess, BoundConversion,
+  BoundUnary, BoundBinary, BoundLogicalBinary, BoundAssignment, BoundConditional,
+  BoundCoalesce, BoundConditionalReceiver, BoundConditionalAccess, BoundTypeTest,
+  BoundLambda, BoundDelegateCreation, BoundSequence, BoundTypeOf, BoundAddressOf,
+  BoundIsNull, BoundAwait, BoundThrowExpression, BoundTypeExpression,
+  BoundNamespaceExpression, BoundMethodGroup, BoundUnbound,
+  BoundBlock, BoundStatementList, BoundExpressionStatement, BoundLocalDeclaration,
+  BoundIf, BoundWhile, BoundDoWhile, BoundFor, BoundYieldBreak, BoundGoto,
+  BoundLabel, BoundNoOp, BoundConditionalGoto, BoundReturn, BoundThrow, BoundTry,
+  BoundCatch, BoundYieldReturn, BoundSequencePoint
+} from "./BoundNodes";
+
+export abstract class BoundTreeRewriter {
+  Visit(node: BoundNode?): BoundNode? {
+    if (node == null) return null;
+    if (node instanceof BoundBadExpression) return this.VisitBad(node as BoundBadExpression);
+    if (node instanceof BoundLiteral) return this.VisitLiteral(node as BoundLiteral);
+    if (node instanceof BoundLocal) return this.VisitLocal(node as BoundLocal);
+    if (node instanceof BoundParameter) return this.VisitParameter(node as BoundParameter);
+    if (node instanceof BoundThis) return this.VisitThis(node as BoundThis);
+    if (node instanceof BoundBaseReference) return node;
+    if (node instanceof BoundFieldAccess) return this.VisitFieldAccess(node as BoundFieldAccess);
+    if (node instanceof BoundPropertyAccess) return this.VisitPropertyAccess(node as BoundPropertyAccess);
+    if (node instanceof BoundCall) return this.VisitCall(node as BoundCall);
+    if (node instanceof BoundObjectCreation) return this.VisitObjectCreation(node as BoundObjectCreation);
+    if (node instanceof BoundDefaultValue) return node;
+    if (node instanceof BoundArrayCreation) return this.VisitArrayCreation(node as BoundArrayCreation);
+    if (node instanceof BoundArrayAccess) return this.VisitArrayAccess(node as BoundArrayAccess);
+    if (node instanceof BoundConversion) return this.VisitConversion(node as BoundConversion);
+    if (node instanceof BoundUnary) return this.VisitUnary(node as BoundUnary);
+    if (node instanceof BoundBinary) return this.VisitBinary(node as BoundBinary);
+    if (node instanceof BoundLogicalBinary) return this.VisitLogical(node as BoundLogicalBinary);
+    if (node instanceof BoundAssignment) return this.VisitAssignment(node as BoundAssignment);
+    if (node instanceof BoundConditional) return this.VisitConditional(node as BoundConditional);
+    if (node instanceof BoundCoalesce) return this.VisitCoalesce(node as BoundCoalesce);
+    if (node instanceof BoundConditionalReceiver) return this.VisitConditionalReceiver(node as BoundConditionalReceiver);
+    if (node instanceof BoundConditionalAccess) return this.VisitConditionalAccess(node as BoundConditionalAccess);
+    if (node instanceof BoundTypeTest) return this.VisitTypeTest(node as BoundTypeTest);
+    if (node instanceof BoundLambda) return this.VisitLambda(node as BoundLambda);
+    if (node instanceof BoundDelegateCreation) return this.VisitDelegateCreation(node as BoundDelegateCreation);
+    if (node instanceof BoundSequence) return this.VisitSequence(node as BoundSequence);
+    if (node instanceof BoundTypeOf) return node;
+    if (node instanceof BoundAddressOf) return this.VisitAddressOf(node as BoundAddressOf);
+    if (node instanceof BoundIsNull) return this.VisitIsNull(node as BoundIsNull);
+    if (node instanceof BoundAwait) return this.VisitAwait(node as BoundAwait);
+    if (node instanceof BoundThrowExpression) return this.VisitThrowExpression(node as BoundThrowExpression);
+    // BoundModuleExpression is deferred with the SourceFile/Compilation migration.
+    if (node instanceof BoundTypeExpression || node instanceof BoundNamespaceExpression ||
+        node instanceof BoundMethodGroup || node instanceof BoundUnbound) return node;
+    if (node instanceof BoundBlock) return this.VisitBlock(node as BoundBlock);
+    if (node instanceof BoundStatementList) return this.VisitStatementList(node as BoundStatementList);
+    if (node instanceof BoundExpressionStatement) return this.VisitExpressionStatement(node as BoundExpressionStatement);
+    if (node instanceof BoundLocalDeclaration) return this.VisitLocalDeclaration(node as BoundLocalDeclaration);
+    if (node instanceof BoundIf) return this.VisitIf(node as BoundIf);
+    if (node instanceof BoundWhile) return this.VisitWhile(node as BoundWhile);
+    if (node instanceof BoundDoWhile) return this.VisitDoWhile(node as BoundDoWhile);
+    if (node instanceof BoundFor) return this.VisitFor(node as BoundFor);
+    if (node instanceof BoundYieldBreak) return this.VisitYieldBreak(node as BoundYieldBreak);
+    if (node instanceof BoundGoto || node instanceof BoundLabel || node instanceof BoundNoOp) return node;
+    if (node instanceof BoundConditionalGoto) return this.VisitConditionalGoto(node as BoundConditionalGoto);
+    if (node instanceof BoundReturn) return this.VisitReturn(node as BoundReturn);
+    if (node instanceof BoundThrow) return this.VisitThrow(node as BoundThrow);
+    if (node instanceof BoundTry) return this.VisitTry(node as BoundTry);
+    if (node instanceof BoundYieldReturn) return this.VisitYieldReturn(node as BoundYieldReturn);
+    if (node instanceof BoundSequencePoint) return this.VisitSequencePoint(node as BoundSequencePoint);
+    throw new InvalidOperationException("Unhandled bound node " + node.GetType().Name);
+  }
+
+  VisitExpr(e: BoundExpression): BoundExpression { return this.Visit(e)! as BoundExpression; }
+  VisitExprOpt(e: BoundExpression?): BoundExpression? { return e == null ? null : this.Visit(e)! as BoundExpression; }
+  VisitStmt(s: BoundStatement): BoundStatement { return this.Visit(s)! as BoundStatement; }
+  VisitStmtOpt(s: BoundStatement?): BoundStatement? { return s == null ? null : this.Visit(s)! as BoundStatement; }
+
+  protected VisitExprs(list: ImmutableArray<BoundExpression>): ImmutableArray<BoundExpression> {
+    if (list.IsDefaultOrEmpty) return list;
+    for (let i = 0; i < list.Length; i++) {
+      const n = this.VisitExpr(list[i]);
+      if (!Object.ReferenceEquals(n, list[i])) {
+        const builder = ImmutableArray.CreateBuilder<BoundExpression>(list.Length);
+        for (let j = 0; j < i; j++) builder.Add(list[j]);
+        builder.Add(n);
+        for (let j = i + 1; j < list.Length; j++) builder.Add(this.VisitExpr(list[j]));
+        return builder.MoveToImmutable();
+      }
+    }
+    return list;
+  }
+
+  protected VisitStmts(list: ImmutableArray<BoundStatement>): ImmutableArray<BoundStatement> {
+    if (list.IsDefaultOrEmpty) return list;
+    for (let i = 0; i < list.Length; i++) {
+      const n = this.VisitStmt(list[i]);
+      if (!Object.ReferenceEquals(n, list[i])) {
+        const builder = ImmutableArray.CreateBuilder<BoundStatement>(list.Length);
+        for (let j = 0; j < i; j++) builder.Add(list[j]);
+        builder.Add(n);
+        for (let j = i + 1; j < list.Length; j++) builder.Add(this.VisitStmt(list[j]));
+        return builder.MoveToImmutable();
+      }
+    }
+    return list;
+  }
+
+  protected VisitBad(n: BoundBadExpression): BoundNode { return n; }
+  protected VisitLiteral(n: BoundLiteral): BoundNode { return n; }
+  protected VisitLocal(n: BoundLocal): BoundNode { return n; }
+  protected VisitParameter(n: BoundParameter): BoundNode { return n; }
+  protected VisitThis(n: BoundThis): BoundNode { return n; }
+
+  protected VisitFieldAccess(n: BoundFieldAccess): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const r = this.VisitExprOpt(n.Receiver);
+    if (Object.ReferenceEquals(r, n.Receiver)) return n;
+    const result = new BoundFieldAccess(r, n.Field);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitPropertyAccess(n: BoundPropertyAccess): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const r = this.VisitExprOpt(n.Receiver);
+    const a = this.VisitExprs(n.Arguments);
+    if (Object.ReferenceEquals(r, n.Receiver) && a == n.Arguments) return n;
+    const result = new BoundPropertyAccess(r, n.Property, a);
+    result.Syntax = n.Syntax;
+    result.IsBaseAccess = n.IsBaseAccess;
+    return result;
+  }
+
+  protected VisitCall(n: BoundCall): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const r = this.VisitExprOpt(n.Receiver);
+    const a = this.VisitExprs(n.Arguments);
+    if (Object.ReferenceEquals(r, n.Receiver) && a == n.Arguments) return n;
+    const result = new BoundCall(r, n.Method, a, n.Type);
+    result.Syntax = n.Syntax;
+    result.IsBaseCall = n.IsBaseCall;
+    return result;
+  }
+
+  protected VisitObjectCreation(n: BoundObjectCreation): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const a = this.VisitExprs(n.Arguments);
+    let changed = a != n.Arguments;
+    let inits = n.Initializers;
+    if (!inits.IsDefaultOrEmpty) {
+      const builder = ImmutableArray.CreateBuilder<BoundMemberInit>(inits.Length);
+      for (const i of inits) {
+        const v = this.VisitExpr(i.Value);
+        if (!Object.ReferenceEquals(v, i.Value)) {
+          changed = true;
+          builder.Add(new BoundMemberInit(i.Member, v));
+        } else builder.Add(i);
+      }
+      inits = builder.MoveToImmutable();
+    }
+    if (!changed) return n;
+    const result = new BoundObjectCreation(n.Constructor, n.Type!, a, inits);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitArrayCreation(n: BoundArrayCreation): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const l = this.VisitExprOpt(n.Length);
+    const i = this.VisitExprs(n.Initializers);
+    if (Object.ReferenceEquals(l, n.Length) && i == n.Initializers) return n;
+    const result = new BoundArrayCreation(n.Type, l, i);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitArrayAccess(n: BoundArrayAccess): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const a = this.VisitExpr(n.Array);
+    const i = this.VisitExpr(n.Index);
+    if (Object.ReferenceEquals(a, n.Array) && Object.ReferenceEquals(i, n.Index)) return n;
+    const result = new BoundArrayAccess(a, i, n.Type!);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitConversion(n: BoundConversion): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const o = this.VisitExpr(n.Operand);
+    if (Object.ReferenceEquals(o, n.Operand)) return n;
+    const result = new BoundConversion(o, n.Kind, n.Type!, n.Method);
+    result.Syntax = n.Syntax;
+    result.CaseIndex = n.CaseIndex;
+    result.ConstantFolded = n.ConstantFolded;
+    return result;
+  }
+
+  protected VisitUnary(n: BoundUnary): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const o = this.VisitExpr(n.Operand);
+    if (Object.ReferenceEquals(o, n.Operand)) return n;
+    const result = new BoundUnary(n.Kind, o, n.Type!, n.Method);
+    result.Syntax = n.Syntax;
+    result.Folded = n.Folded;
+    return result;
+  }
+
+  protected VisitBinary(n: BoundBinary): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const l = this.VisitExpr(n.Left);
+    const r = this.VisitExpr(n.Right);
+    if (Object.ReferenceEquals(l, n.Left) && Object.ReferenceEquals(r, n.Right)) return n;
+    const result = new BoundBinary(n.Kind, l, r, n.Type!, n.OperandType, n.Method);
+    result.Syntax = n.Syntax;
+    result.Folded = n.Folded;
+    return result;
+  }
+
+  protected VisitLogical(n: BoundLogicalBinary): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const l = this.VisitExpr(n.Left);
+    const r = this.VisitExpr(n.Right);
+    if (Object.ReferenceEquals(l, n.Left) && Object.ReferenceEquals(r, n.Right)) return n;
+    const result = new BoundLogicalBinary(n.IsAnd, l, r, n.Type!);
+    result.Syntax = n.Syntax;
+    result.Folded = n.Folded;
+    return result;
+  }
+
+  protected VisitAssignment(n: BoundAssignment): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const t = this.VisitExpr(n.Target);
+    const v = this.VisitExpr(n.Value);
+    if (Object.ReferenceEquals(t, n.Target) && Object.ReferenceEquals(v, n.Value)) return n;
+    const result = new BoundAssignment(t, v);
+    result.Syntax = n.Syntax;
+    result.IsDiscarded = n.IsDiscarded;
+    return result;
+  }
+
+  protected VisitConditional(n: BoundConditional): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const c = this.VisitExpr(n.Condition);
+    const a = this.VisitExpr(n.WhenTrue);
+    const b = this.VisitExpr(n.WhenFalse);
+    if (Object.ReferenceEquals(c, n.Condition) && Object.ReferenceEquals(a, n.WhenTrue) && Object.ReferenceEquals(b, n.WhenFalse)) return n;
+    const result = new BoundConditional(c, a, b, n.Type!);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitCoalesce(n: BoundCoalesce): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const l = this.VisitExpr(n.Left);
+    const r = this.VisitExpr(n.Right);
+    if (Object.ReferenceEquals(l, n.Left) && Object.ReferenceEquals(r, n.Right)) return n;
+    const result = new BoundCoalesce(l, r, n.Type!);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitConditionalReceiver(n: BoundConditionalReceiver): BoundNode { return n; }
+
+  protected VisitConditionalAccess(n: BoundConditionalAccess): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const r = this.VisitExpr(n.Receiver);
+    const w = this.VisitExpr(n.WhenNotNull);
+    if (Object.ReferenceEquals(r, n.Receiver) && Object.ReferenceEquals(w, n.WhenNotNull)) return n;
+    const result = new BoundConditionalAccess(r, n.Placeholder, w, n.Type!);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitTypeTest(n: BoundTypeTest): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const o = this.VisitExpr(n.Operand);
+    if (Object.ReferenceEquals(o, n.Operand)) return n;
+    const result = new BoundTypeTest(o, n.Target, n.Type!, n.Kind, n.CaseIndex);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitLambda(n: BoundLambda): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const b = this.Visit(n.Body)! as BoundBlock;
+    if (Object.ReferenceEquals(b, n.Body)) return n;
+    const result = new BoundLambda(n.Symbol, b, n.Type!);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitDelegateCreation(n: BoundDelegateCreation): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const r = this.VisitExprOpt(n.Receiver);
+    if (Object.ReferenceEquals(r, n.Receiver)) return n;
+    const result = new BoundDelegateCreation(r, n.Method, n.Type!);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitSequence(n: BoundSequence): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const s = this.VisitStmts(n.SideEffects);
+    const v = this.VisitExpr(n.Value);
+    if (s == n.SideEffects && Object.ReferenceEquals(v, n.Value)) return n;
+    const result = new BoundSequence(n.Locals, s, v);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitIsNull(n: BoundIsNull): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const o = this.VisitExpr(n.Operand);
+    if (Object.ReferenceEquals(o, n.Operand)) return n;
+    const result = new BoundIsNull(o, n.Type!);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitAddressOf(n: BoundAddressOf): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const o = this.VisitExpr(n.Operand);
+    if (Object.ReferenceEquals(o, n.Operand)) return n;
+    const result = new BoundAddressOf(o);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitAwait(n: BoundAwait): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const o = this.VisitExpr(n.Operand);
+    if (Object.ReferenceEquals(o, n.Operand)) return n;
+    const result = new BoundAwait(o, n.Info, n.Type!);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitThrowExpression(n: BoundThrowExpression): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const o = this.VisitExpr(n.Operand);
+    if (Object.ReferenceEquals(o, n.Operand)) return n;
+    const result = new BoundThrowExpression(o, n.Type!);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitBlock(n: BoundBlock): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const s = this.VisitStmts(n.Statements);
+    if (s == n.Statements) return n;
+    const result = new BoundBlock(n.Locals, s);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitStatementList(n: BoundStatementList): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const s = this.VisitStmts(n.Statements);
+    if (s == n.Statements) return n;
+    const result = new BoundStatementList(s);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitExpressionStatement(n: BoundExpressionStatement): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const e = this.VisitExpr(n.Expression);
+    if (Object.ReferenceEquals(e, n.Expression)) return n;
+    const result = new BoundExpressionStatement(e);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitLocalDeclaration(n: BoundLocalDeclaration): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const i = this.VisitExprOpt(n.Initializer);
+    if (Object.ReferenceEquals(i, n.Initializer)) return n;
+    const result = new BoundLocalDeclaration(n.Local, i);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitIf(n: BoundIf): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const c = this.VisitExpr(n.Condition);
+    const a = this.VisitStmt(n.Consequence);
+    const b = this.VisitStmtOpt(n.Alternative);
+    if (Object.ReferenceEquals(c, n.Condition) && Object.ReferenceEquals(a, n.Consequence) && Object.ReferenceEquals(b, n.Alternative)) return n;
+    const result = new BoundIf(c, a, b);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitWhile(n: BoundWhile): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const c = this.VisitExpr(n.Condition);
+    const b = this.VisitStmt(n.Body);
+    if (Object.ReferenceEquals(c, n.Condition) && Object.ReferenceEquals(b, n.Body)) return n;
+    const result = new BoundWhile(c, b, n.BreakLabel, n.ContinueLabel);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitDoWhile(n: BoundDoWhile): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const c = this.VisitExpr(n.Condition);
+    const b = this.VisitStmt(n.Body);
+    if (Object.ReferenceEquals(c, n.Condition) && Object.ReferenceEquals(b, n.Body)) return n;
+    const result = new BoundDoWhile(c, b, n.BreakLabel, n.ContinueLabel);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitFor(n: BoundFor): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const i = this.VisitStmtOpt(n.Initializer);
+    const c = this.VisitExprOpt(n.Condition);
+    const inc = this.VisitStmtOpt(n.Increment);
+    const b = this.VisitStmt(n.Body);
+    if (Object.ReferenceEquals(i, n.Initializer) && Object.ReferenceEquals(c, n.Condition) &&
+        Object.ReferenceEquals(inc, n.Increment) && Object.ReferenceEquals(b, n.Body)) return n;
+    const result = new BoundFor(n.Locals, i, c, inc, b, n.BreakLabel, n.ContinueLabel);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitConditionalGoto(n: BoundConditionalGoto): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const c = this.VisitExpr(n.Condition);
+    if (Object.ReferenceEquals(c, n.Condition)) return n;
+    const result = new BoundConditionalGoto(c, n.Label, n.JumpIfTrue);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitReturn(n: BoundReturn): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const e = this.VisitExprOpt(n.Expression);
+    if (Object.ReferenceEquals(e, n.Expression)) return n;
+    const result = new BoundReturn(e);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitThrow(n: BoundThrow): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const e = this.VisitExprOpt(n.Expression);
+    if (Object.ReferenceEquals(e, n.Expression)) return n;
+    const result = new BoundThrow(e);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitTry(n: BoundTry): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const body = this.Visit(n.Body)! as BoundBlock;
+    let changed = !Object.ReferenceEquals(body, n.Body);
+    const catches = ImmutableArray.CreateBuilder<BoundCatch>(n.Catches.Length);
+    for (const c of n.Catches) {
+      const cb = this.Visit(c.Body)! as BoundBlock;
+      if (!Object.ReferenceEquals(cb, c.Body)) {
+        changed = true;
+        catches.Add(new BoundCatch(c.Local, c.ExceptionType, cb));
+      } else catches.Add(c);
+    }
+    const fin = n.Finally == null ? null : this.Visit(n.Finally)! as BoundBlock;
+    if (!Object.ReferenceEquals(fin, n.Finally)) changed = true;
+    if (!changed) return n;
+    const result = new BoundTry(body, catches.MoveToImmutable(), fin);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+
+  protected VisitYieldBreak(n: BoundYieldBreak): BoundNode { return n; }
+
+  protected VisitYieldReturn(n: BoundYieldReturn): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const e = this.VisitExpr(n.Expression);
+    if (Object.ReferenceEquals(e, n.Expression)) return n;
+    const result = new BoundYieldReturn(e);
+    result.Syntax = n.Syntax;
+    result.DisposeTarget = n.DisposeTarget;
+    return result;
+  }
+
+  protected VisitSequencePoint(n: BoundSequencePoint): BoundNode {
+    ArgumentNullException.ThrowIfNull(n);
+    const s = this.VisitStmt(n.Statement);
+    if (Object.ReferenceEquals(s, n.Statement)) return n;
+    const result = new BoundSequencePoint(s, n.SyntaxNodeForSpan);
+    result.Syntax = n.Syntax;
+    return result;
+  }
+}

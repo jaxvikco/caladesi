@@ -1,0 +1,240 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { List } from "System.Collections.Generic";
+import { StringBuilder } from "System.Text";
+import { RuntimeHelpers } from "System.Runtime.CompilerServices";
+import { Symbol, SymbolKind, Accessibility } from "./Symbol";
+import { SpecialType, SpecialTypes } from "./SpecialType";
+import { NamedTypeSymbol } from "./NamedTypeSymbol";
+import { MethodSymbol } from "./MemberSymbols";
+
+export enum TypeKind { Class, Struct, Interface, Enum, Delegate, Array, TypeParameter, Error, Null, Void, Never, Nullable }
+export enum VarianceKind { None, In, Out }
+
+export abstract class TypeSymbol extends Symbol {
+  private allInterfaces: ImmutableArray<NamedTypeSymbol>;
+  abstract get TypeKind(): TypeKind;
+  get SpecialType(): SpecialType { return SpecialType.None; }
+  abstract get IsReferenceType(): bool;
+  abstract get IsValueType(): bool;
+  get BaseType(): NamedTypeSymbol? { return null; }
+  get Interfaces(): ImmutableArray<NamedTypeSymbol> { return ImmutableArray<NamedTypeSymbol>.Empty; }
+  GetMembers(): ImmutableArray<Symbol> { return ImmutableArray<Symbol>.Empty; }
+  GetMembers(name: string): ImmutableArray<Symbol> {
+    const builder = ImmutableArray.CreateBuilder<Symbol>();
+    for (const member of this.GetMembers()) if (member.Name == name) builder.Add(member);
+    return builder.ToImmutable();
+  }
+  get IsErrorType(): bool { return this.TypeKind == TypeKind.Error; }
+  get IsVoid(): bool { return this.SpecialType == SpecialType.Void; }
+  get IsNullType(): bool { return this.TypeKind == TypeKind.Null; }
+  get IsNeverType(): bool { return this.TypeKind == TypeKind.Never; }
+  get ReturnsNothing(): bool { return this.IsVoid || this.IsNeverType; }
+  private static AddInterface(set: List<NamedTypeSymbol>, type: NamedTypeSymbol): void {
+    for (const item of set) if (item.Equals(type)) return;
+    set.Add(type);
+    for (const parent of type.Interfaces) TypeSymbol.AddInterface(set, parent);
+  }
+  get AllInterfaces(): ImmutableArray<NamedTypeSymbol> {
+    if (!this.allInterfaces.IsDefault) return this.allInterfaces;
+    const set = new List<NamedTypeSymbol>();
+    let type: TypeSymbol? = this;
+    while (type != null) {
+      for (const item of type.Interfaces) TypeSymbol.AddInterface(set, item);
+      type = type.BaseType;
+    }
+    if (this instanceof TypeParameterSymbol) {
+      for (const constraint of (this as TypeParameterSymbol).ConstraintTypes) {
+        if (constraint instanceof NamedTypeSymbol && constraint.TypeKind == TypeKind.Interface)
+          TypeSymbol.AddInterface(set, constraint as NamedTypeSymbol);
+        else for (const item of constraint.AllInterfaces) TypeSymbol.AddInterface(set, item);
+      }
+    }
+    const builder = ImmutableArray.CreateBuilder<NamedTypeSymbol>();
+    builder.AddRange(set);
+    this.allInterfaces = builder.ToImmutable();
+    return this.allInterfaces;
+  }
+  ToDisplayString(): string { return TypeDisplay.Format(this); }
+  ToMetadataString(): string { return this.Name; }
+  override ToString(): string { return this.ToDisplayString(); }
+  abstract Equals(other: TypeSymbol?): bool;
+  override Equals(other: object?): bool { return other instanceof TypeSymbol && this.Equals(other as TypeSymbol); }
+  override GetHashCode(): int { return RuntimeHelpers.GetHashCode(this); }
+  StripNullable(): TypeSymbol { return this instanceof NullableTypeSymbol ? (this as NullableTypeSymbol).Underlying : this; }
+  get IsNullableWrapper(): bool { return this instanceof NullableTypeSymbol; }
+}
+
+export sealed class ErrorTypeSymbol extends NamedTypeSymbol {
+  static readonly Instance: ErrorTypeSymbol = new ErrorTypeSymbol("<error>");
+  constructor(private readonly name: string) { super(); }
+  override get Name(): string { return this.name; }
+  override get TypeKind(): TypeKind { return TypeKind.Error; }
+  override get IsReferenceType(): bool { return true; }
+  override get IsValueType(): bool { return false; }
+  override get Kind(): SymbolKind { return SymbolKind.ErrorType; }
+  override get TypeParameters(): ImmutableArray<TypeParameterSymbol> { return ImmutableArray<TypeParameterSymbol>.Empty; }
+  override get TypeArguments(): ImmutableArray<TypeSymbol> { return ImmutableArray<TypeSymbol>.Empty; }
+  override Equals(other: TypeSymbol?): bool { return other instanceof ErrorTypeSymbol; }
+  override GetHashCode(): int { return 17; }
+  override get DeclaredAccessibility(): Accessibility { return Accessibility.Public; }
+}
+export sealed class NullTypeSymbol extends TypeSymbol {
+  static readonly Instance: NullTypeSymbol = new NullTypeSymbol();
+  override get Kind(): SymbolKind { return SymbolKind.NamedType; }
+  override get Name(): string { return "null"; }
+  override get TypeKind(): TypeKind { return TypeKind.Null; }
+  override get SpecialType(): SpecialType { return SpecialType.Null; }
+  override get IsReferenceType(): bool { return true; }
+  override get IsValueType(): bool { return false; }
+  override Equals(other: TypeSymbol?): bool { return other instanceof NullTypeSymbol; }
+  override GetHashCode(): int { return 3; }
+}
+export sealed class NeverTypeSymbol extends TypeSymbol {
+  static readonly Instance: NeverTypeSymbol = new NeverTypeSymbol();
+  override get Kind(): SymbolKind { return SymbolKind.NamedType; }
+  override get Name(): string { return "never"; }
+  override get TypeKind(): TypeKind { return TypeKind.Never; }
+  override get SpecialType(): SpecialType { return SpecialType.Never; }
+  override get IsReferenceType(): bool { return false; }
+  override get IsValueType(): bool { return false; }
+  override Equals(other: TypeSymbol?): bool { return other instanceof NeverTypeSymbol; }
+  override GetHashCode(): int { return 5; }
+}
+export sealed class NullableTypeSymbol extends TypeSymbol {
+  constructor(public readonly Underlying: TypeSymbol) { super(); }
+  override get Kind(): SymbolKind { return SymbolKind.NullableType; }
+  override get Name(): string { return this.Underlying.Name + "?"; }
+  override get TypeKind(): TypeKind { return TypeKind.Nullable; }
+  override get IsReferenceType(): bool { return !this.Underlying.IsValueType; }
+  override get IsValueType(): bool { return false; }
+  override get BaseType(): NamedTypeSymbol? { return this.Underlying.BaseType; }
+  override get Interfaces(): ImmutableArray<NamedTypeSymbol> { return this.Underlying.Interfaces; }
+  override GetMembers(): ImmutableArray<Symbol> { return this.Underlying.GetMembers(); }
+  override Equals(other: TypeSymbol?): bool {
+    return other instanceof NullableTypeSymbol && (other as NullableTypeSymbol).Underlying.Equals(this.Underlying);
+  }
+  override GetHashCode(): int { return this.Underlying.GetHashCode() * 31 + 7; }
+}
+export sealed class ArrayTypeSymbol extends TypeSymbol {
+  constructor(public readonly ElementType: TypeSymbol, private readonly arrayBase: NamedTypeSymbol?, public readonly Rank: int = 1) { super(); }
+  override get Kind(): SymbolKind { return SymbolKind.ArrayType; }
+  override get Name(): string { return this.ElementType.Name + "[]"; }
+  override get TypeKind(): TypeKind { return TypeKind.Array; }
+  override get IsReferenceType(): bool { return true; }
+  override get IsValueType(): bool { return false; }
+  override get BaseType(): NamedTypeSymbol? { return this.arrayBase; }
+  override get DeclaredAccessibility(): Accessibility { return Accessibility.Public; }
+  override Equals(other: TypeSymbol?): bool {
+    if (!(other instanceof ArrayTypeSymbol)) return false;
+    const array = other as ArrayTypeSymbol;
+    return array.Rank == this.Rank && array.ElementType.Equals(this.ElementType);
+  }
+  override GetHashCode(): int { return this.ElementType.GetHashCode() * 31 + this.Rank; }
+  WithElementType(element: TypeSymbol): ArrayTypeSymbol { return new ArrayTypeSymbol(element, this.arrayBase, this.Rank); }
+}
+export sealed class TypeParameterSymbol extends TypeSymbol {
+  private constraints: TypeParameterConstraints? = null;
+  constructor(private readonly name: string, public readonly Ordinal: int, public readonly Container: Symbol,
+    public readonly Variance: VarianceKind, private readonly constraintFactory: Func<TypeParameterSymbol, TypeParameterConstraints>?) { super(); }
+  constructor(name: string, ordinal: int, container: Symbol, variance: VarianceKind) {
+    super();
+    this.name = name;
+    this.Ordinal = ordinal;
+    this.Container = container;
+    this.Variance = variance;
+    this.constraintFactory = null;
+  }
+  get IsMethodTypeParameter(): bool { return this.Container instanceof MethodSymbol; }
+  override get Kind(): SymbolKind { return SymbolKind.TypeParameter; }
+  override get Name(): string { return this.name; }
+  override get ContainingSymbol(): Symbol? { return this.Container; }
+  override get TypeKind(): TypeKind { return TypeKind.TypeParameter; }
+  override get IsReferenceType(): bool {
+    if (this.HasReferenceTypeConstraint) return true;
+    if (this.HasValueTypeConstraint) return false;
+    for (const constraint of this.ConstraintTypes)
+      if (constraint.IsReferenceType && constraint.TypeKind != TypeKind.TypeParameter && constraint.TypeKind != TypeKind.Interface) return true;
+    return false;
+  }
+  override get IsValueType(): bool { return this.HasValueTypeConstraint; }
+  override get DeclaredAccessibility(): Accessibility { return Accessibility.Public; }
+  private get Constraints(): TypeParameterConstraints {
+    if (this.constraints == null) this.constraints = this.constraintFactory == null ? TypeParameterConstraints.None : this.constraintFactory!(this);
+    return this.constraints!;
+  }
+  get HasReferenceTypeConstraint(): bool { return this.Constraints.HasClass; }
+  get HasValueTypeConstraint(): bool { return this.Constraints.HasStruct; }
+  get HasConstructorConstraint(): bool { return this.Constraints.HasNew || this.Constraints.HasStruct; }
+  get HasNotNullConstraint(): bool { return this.Constraints.HasNotNull; }
+  get ConstraintTypes(): ImmutableArray<TypeSymbol> { return this.Constraints.Types; }
+  override get BaseType(): NamedTypeSymbol? {
+    for (const type of this.ConstraintTypes) if (type instanceof NamedTypeSymbol && type.TypeKind == TypeKind.Class) return type as NamedTypeSymbol;
+    return null;
+  }
+  override get Interfaces(): ImmutableArray<NamedTypeSymbol> {
+    const builder = ImmutableArray.CreateBuilder<NamedTypeSymbol>();
+    for (const type of this.ConstraintTypes) if (type instanceof NamedTypeSymbol && type.TypeKind == TypeKind.Interface) builder.Add(type as NamedTypeSymbol);
+    return builder.ToImmutable();
+  }
+  override GetMembers(): ImmutableArray<Symbol> { return this.BaseType == null ? ImmutableArray<Symbol>.Empty : this.BaseType.GetMembers(); }
+  override Equals(other: TypeSymbol?): bool { return Object.ReferenceEquals(this, other); }
+  override GetHashCode(): int { return RuntimeHelpers.GetHashCode(this); }
+}
+export sealed class TypeParameterConstraints {
+  static readonly None: TypeParameterConstraints = new TypeParameterConstraints(false, false, false, false, ImmutableArray<TypeSymbol>.Empty);
+  constructor(public readonly HasClass: bool, public readonly HasStruct: bool, public readonly HasNew: bool,
+    public readonly HasNotNull: bool, public readonly Types: ImmutableArray<TypeSymbol>) {}
+}
+export static class TypeDisplay {
+  static Format(type: TypeSymbol): string {
+    const builder = new StringBuilder();
+    TypeDisplay.Write(builder, type);
+    return builder.ToString();
+  }
+  static Write(builder: StringBuilder, type: TypeSymbol): void {
+    ArgumentNullException.ThrowIfNull(builder);
+    ArgumentNullException.ThrowIfNull(type);
+    if (type instanceof ArrayTypeSymbol) {
+      const array = type as ArrayTypeSymbol;
+      TypeDisplay.Write(builder, array.ElementType);
+      builder.Append('[').Append(',', array.Rank - 1).Append(']');
+    } else if (type instanceof NullableTypeSymbol) {
+      const underlying = (type as NullableTypeSymbol).Underlying;
+      const parentheses = underlying instanceof ArrayTypeSymbol || underlying instanceof NullableTypeSymbol ||
+        (underlying instanceof NamedTypeSymbol && (underlying as NamedTypeSymbol).IsAnonymousUnion);
+      if (parentheses) builder.Append('(');
+      TypeDisplay.Write(builder, underlying);
+      if (parentheses) builder.Append(')');
+      builder.Append(" | null");
+    } else if (type instanceof NamedTypeSymbol) TypeDisplay.WriteNamed(builder, type as NamedTypeSymbol);
+    else builder.Append(type.Name);
+  }
+  private static WriteNamed(builder: StringBuilder, type: NamedTypeSymbol): void {
+    const keyword = SpecialTypes.Keyword(type.SpecialType);
+    if (keyword != null) { builder.Append(keyword); return; }
+    if (type.IsAnonymousUnion || type.IsTuple) {
+      if (type.IsTuple) builder.Append('[');
+      for (let i = 0; i < type.TypeArguments.Length; i++) {
+        if (i > 0) builder.Append(type.IsTuple ? ", " : " | ");
+        const names = type.TupleElementNames;
+        if (type.IsTuple && !names.IsDefault && i < names.Length && names[i] != null) builder.Append(names[i]).Append(": ");
+        TypeDisplay.Write(builder, type.TypeArguments[i]);
+      }
+      if (type.IsTuple) builder.Append(']');
+      return;
+    }
+    if (type.ContainingType != null && type.SpecialType == SpecialType.None) {
+      TypeDisplay.WriteNamed(builder, type.ContainingType);
+      builder.Append('.');
+    }
+    builder.Append(type.Name);
+    const arguments = type.OwnTypeArguments;
+    if (arguments.Length == 0) return;
+    builder.Append('<');
+    for (let i = 0; i < arguments.Length; i++) {
+      if (i > 0) builder.Append(", ");
+      TypeDisplay.Write(builder, arguments[i]);
+    }
+    builder.Append('>');
+  }
+}

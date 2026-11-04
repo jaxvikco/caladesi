@@ -1,0 +1,38 @@
+import { List, Dictionary } from "System.Collections.Generic";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { CompilationOptions } from "../CompilationOptions";
+import { Diagnostic } from "../Diagnostics/Diagnostic";
+import { BoundBlock } from "../Bound/BoundNodes";
+import { BoundAttribute } from "../BoundAttribute";
+import { Symbol } from "../Symbols/Symbol";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { MethodSymbol } from "../Symbols/MemberSymbols";
+import { SpecialType } from "../Symbols/SpecialType";
+import { DecoratorSyntax } from "../Syntax/Nodes.Core";
+import { SourceText } from "../Text/SourceText";
+import { SourceDebugDocument } from "./PortableDebugEmitter";
+
+// Compilation supplies ownership and binding services, never metadata or PE algorithms.
+export sealed class EmissionContext<TSourceFile> {
+  readonly Types: List<NamedTypeSymbol> = new List<NamedTypeSymbol>();
+  readonly Bodies: Dictionary<MethodSymbol, BoundBlock> = new Dictionary<MethodSymbol, BoundBlock>();
+  readonly MethodFiles: Dictionary<MethodSymbol, TSourceFile> = new Dictionary<MethodSymbol, TSourceFile>();
+  readonly Documents: List<SourceDebugDocument<TSourceFile>> = new List<SourceDebugDocument<TSourceFile>>();
+  readonly SourceTexts: Dictionary<TSourceFile, SourceText> = new Dictionary<TSourceFile, SourceText>();
+  BindAttribute: Func<TSourceFile, DecoratorSyntax, Symbol?, BoundAttribute?>? = null;
+  GetAssemblyName: Func<NamedTypeSymbol, string?> = type => null;
+  constructor(public readonly Options: CompilationOptions,
+    public readonly GetSpecialType: Func<SpecialType, NamedTypeSymbol>,
+    public readonly GetWellKnownType: Func<string, NamedTypeSymbol?>,
+    public readonly GetDiagnostics: Func<ImmutableArray<Diagnostic>>,
+    public readonly FindEntryPoint: Func<MethodSymbol?>) {}
+
+  AddDocument(file: TSourceFile, path: string, text: SourceText): void {
+    this.SourceTexts[file] = text;
+    this.Documents.Add(new SourceDebugDocument<TSourceFile>(file, path, text.Text));
+  }
+}
+
+export sealed class EmitResult {
+  constructor(public readonly Success: bool, public readonly Diagnostics: ImmutableArray<Diagnostic>) {}
+}

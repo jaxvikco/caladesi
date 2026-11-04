@@ -11,6 +11,10 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Caladesi.Compiler\Caladesi.Compiler.csproj" />
+    <ProjectReference Include="..\..\src\Caladesi.Compiler.SelfHost\Caladesi.Compiler.SelfHost.calaproj" Aliases="SelfHost" />
+    <ProjectReference Include="..\..\src\Caladesi.Cli.SelfHost\Caladesi.Cli.SelfHost.calaproj" Aliases="SelfHostCli" />
+    <ProjectReference Include="..\..\src\Caladesi.Build.Tasks.SelfHost\Caladesi.Build.Tasks.SelfHost.calaproj" Aliases="SelfHostBuild" />
+    <ProjectReference Include="..\..\src\Caladesi.Runtime.SelfHost\Caladesi.Runtime.SelfHost.calaproj" Aliases="SelfHostRuntime" />
     <ProjectReference Include="..\..\src\Caladesi.Runtime\Caladesi.Runtime.csproj" />
     <!-- built first so the CLI tests can run calac.dll; nothing from it is referenced -->
     <ProjectReference Include="..\..\src\Caladesi.Cli\Caladesi.Cli.csproj" ReferenceOutputAssembly="false" />

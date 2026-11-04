@@ -5,6 +5,7 @@
     <InternalsVisibleToTests>true</InternalsVisibleToTests>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="Caladesi.Compiler.Tests" />
     <ProjectReference Include="..\Caladesi.Runtime\Caladesi.Runtime.csproj" />
   </ItemGroup>
 </Project>

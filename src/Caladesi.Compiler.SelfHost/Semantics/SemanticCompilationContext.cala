@@ -1,0 +1,24 @@
+import { Dictionary, IReadOnlyList } from "System.Collections.Generic";
+import { SyntaxNode } from "../Syntax/SyntaxElement";
+import { SyntaxTree } from "../Syntax/SyntaxTree";
+import { Symbol } from "../Symbols/Symbol";
+import { TypeSymbol } from "../Symbols/TypeSymbols";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { SpecialType } from "../Symbols/SpecialType";
+import { FileScope } from "../FileScope";
+
+export sealed class SemanticDeclaration {
+  constructor(public readonly Tree: SyntaxTree, public readonly Position: int, public readonly Symbol: Symbol) {}
+}
+
+export abstract class SemanticCompilationContext<TFile> {
+  abstract get RecordSemanticInfo(): bool;
+  abstract BindForSemanticModel(): void;
+  abstract GetDeclarationIndex(): IReadOnlyList<SemanticDeclaration>;
+  abstract get RecordedSymbols(): Dictionary<SyntaxNode, Symbol>?;
+  abstract get RecordedTypes(): Dictionary<SyntaxNode, TypeSymbol>?;
+  abstract GetFile(tree: SyntaxTree): TFile;
+  abstract GetScope(file: TFile): FileScope<TFile>;
+  abstract GetModuleClass(file: TFile): NamedTypeSymbol?;
+  abstract GetSpecialType(type: SpecialType): NamedTypeSymbol;
+}

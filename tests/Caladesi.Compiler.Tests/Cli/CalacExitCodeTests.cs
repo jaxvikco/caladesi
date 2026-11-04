@@ -5,19 +5,6 @@ namespace Caladesi.Compiler.Tests.Cli;
 [TestClass]
 public class CalacExitCodeTests
 {
-    private static string CalacPath()
-    {
-        DirectoryInfo? dir = new(AppContext.BaseDirectory);
-        string tfm = dir.Name;
-        string config = dir.Parent!.Name;
-        while (dir != null && !File.Exists(Path.Join(dir.FullName, "Caladesi.slnx")))
-        {
-            dir = dir.Parent;
-        }
-
-        return Path.Join(dir!.FullName, "src", "Caladesi.Cli", "bin", config, tfm, "calac.dll");
-    }
-
     private static (int ExitCode, string Output, bool OutputWritten) RunCalac(string source, params string[] extraReferences)
     {
         string work = Path.Join(Path.GetTempPath(), "calac-test-" + Guid.NewGuid().ToString("N"));
@@ -28,7 +15,7 @@ public class CalacExitCodeTests
             string output = Path.Join(work, "app.dll");
             File.WriteAllText(main, source);
             ProcessStartInfo psi = new("dotnet") { RedirectStandardOutput = true, RedirectStandardError = true };
-            psi.ArgumentList.Add(CalacPath());
+            psi.ArgumentList.Add(SelfHostCli.CliParityTests.FindCli(selfHost: false));
             psi.ArgumentList.Add("-out:" + output);
             psi.ArgumentList.Add("-assemblyname:app");
             psi.ArgumentList.Add("-rootnamespace:App");

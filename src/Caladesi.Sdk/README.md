@@ -48,6 +48,42 @@ Console.WriteLine("Hello from Caladesi!");
 Run with `dotnet run`. The SDK references `Caladesi.Runtime` automatically.
 Normal `dotnet build/run/test/pack/publish` commands are supported.
 
+## Building release packages from source
+
+Release packaging requires a trusted, already runnable native compiler and native
+MSBuild task, including their dependencies:
+
+```sh
+eng/bootstrap.sh # explicit transition-only trust root; retains and tests the C# oracle
+CALADESI_BOOTSTRAP_DIR=/path/to/native-bootstrap eng/pack.sh
+```
+
+The source-derived seed is written to `artifacts/bootstrap` only after compiler/parity
+and native corpus tests pass, with revision/SDK/payload provenance. CI additionally
+compiles and runs the corpus with the three-stage native toolchain. Release jobs
+consume the tested bootstrap artifact produced from their exact tag.
+
+By default the bootstrap uses the development names (`calac-selfhost.dll`,
+`Caladesi.Compiler.SelfHost.dll`, `Caladesi.Runtime.SelfHost.dll`,
+`Caladesi.Build.Tasks.SelfHost.dll`, plus the CLI's dependency/runtime configuration
+files). Set `CALADESI_BOOTSTRAP_RELEASE_IDENTITY=true` when the trusted bootstrap
+already uses the stable release names instead.
+
+The script builds three isolated native stages with stable release identities,
+requires byte-identical stage2/stage3 outputs, and packs only stage3 assemblies.
+It then builds and runs the console template with the packaged SDK in a private
+NuGet cache before copying packages to `artifacts/packages`. Failure at any step
+leaves the existing output feed unchanged. There is no C# fallback.
+
+`CALADESI_VERSION` overrides the repository version; `CONFIG`,
+`CALADESI_PACK_WORK`, and `CALADESI_PACK_OUT` override the build configuration,
+isolated working directory, and final feed. The SDK/template projects and
+`eng/Caladesi.Runtime.Package.csproj` are source-free packaging wrappers. SDK/runtime
+packages must be packed through this script; the source-only template package can
+also be packed independently. The C# compiler,
+runtime, and task projects remain available as development/bootstrap oracles;
+they are not release package payloads.
+
 ## Learn more
 
 - [Source and documentation](https://github.com/jaxvikco/caladesi)

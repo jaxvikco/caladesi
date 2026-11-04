@@ -1,0 +1,131 @@
+import { IEnumerable, Dictionary } from "System.Collections.Generic";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { File, IOException } from "System.IO";
+import { Monitor } from "System.Threading";
+import { PEReader } from "System.Reflection.PortableExecutable";
+import { DiagnosticBag, Diagnostic } from "../../Diagnostics/Diagnostic";
+import { Descriptors } from "../../Diagnostics/Descriptors";
+import { TextSpan } from "../../Text/TextSpan";
+import { NamespaceSymbol } from "../NamespaceSymbol";
+import { NamedTypeSymbol } from "../NamedTypeSymbol";
+import { SpecialType, SpecialTypes } from "../SpecialType";
+import { MetadataAssemblySymbol } from "./MetadataAssemblySymbol";
+
+export sealed class ReferenceSet {
+  private readonly byName: Dictionary<string, MetadataAssemblySymbol> = new Dictionary<string, MetadataAssemblySymbol>(StringComparer.OrdinalIgnoreCase);
+  private readonly typeCache: Dictionary<string, NamedTypeSymbol?> = new Dictionary<string, NamedTypeSymbol?>(StringComparer.Ordinal);
+  private readonly special: Dictionary<SpecialType, NamedTypeSymbol> = new Dictionary<SpecialType, NamedTypeSymbol>();
+  private readonly gate: object = new object();
+  readonly GlobalNamespace: NamespaceSymbol;
+  private assemblies: ImmutableArray<MetadataAssemblySymbol> = ImmutableArray<MetadataAssemblySymbol>.Empty;
+  private paths: ImmutableArray<string> = ImmutableArray<string>.Empty;
+  private constructor() { this.GlobalNamespace = new NamespaceSymbol("", null); }
+  get Assemblies(): ImmutableArray<MetadataAssemblySymbol> { return this.assemblies; }
+  get Paths(): ImmutableArray<string> { return this.paths; }
+  static readonly Empty: ReferenceSet = new ReferenceSet();
+
+  static Create(paths: IEnumerable<string>): ReferenceSet { return ReferenceSet.Create(paths, null); }
+  static Create(paths: IEnumerable<string>, diagnostics: DiagnosticBag?): ReferenceSet {
+    ArgumentNullException.ThrowIfNull(paths);
+    const set = new ReferenceSet();
+    const assemblies = ImmutableArray.CreateBuilder<MetadataAssemblySymbol>();
+    const pathList = ImmutableArray.CreateBuilder<string>();
+    for (const path of paths) {
+      try {
+        const bytes = File.ReadAllBytes(path);
+        const pe = new PEReader(ImmutableArray.CreateRange<byte>(bytes));
+        if (!pe.HasMetadata) {
+          pe.Dispose();
+          throw new BadImageFormatException("no metadata");
+        }
+        let assembly: MetadataAssemblySymbol;
+        try { assembly = new MetadataAssemblySymbol(set, pe, path); }
+        catch (e: Exception) { pe.Dispose(); throw e; }
+        if (set.byName.ContainsKey(assembly.Name)) {
+          pe.Dispose();
+          continue;
+        }
+        set.byName[assembly.Name] = assembly;
+        assemblies.Add(assembly);
+        pathList.Add(path);
+      } catch (e: IOException) {
+        ReferenceSet.ReportReadFailure(diagnostics, path, e);
+      } catch (e: BadImageFormatException) {
+        ReferenceSet.ReportReadFailure(diagnostics, path, e);
+      } catch (e: UnauthorizedAccessException) {
+        ReferenceSet.ReportReadFailure(diagnostics, path, e);
+      } catch (e: InvalidOperationException) {
+        ReferenceSet.ReportReadFailure(diagnostics, path, e);
+      }
+    }
+    set.assemblies = assemblies.ToImmutable();
+    set.paths = pathList.ToImmutable();
+    for (const assembly of set.Assemblies) assembly.PopulateNamespaces(set.GlobalNamespace);
+    return set;
+  }
+
+  private static ReportReadFailure(diagnostics: DiagnosticBag?, path: string, error: Exception): void {
+    if (diagnostics != null) diagnostics.Add(Diagnostic.Create(
+      Descriptors.CannotReadReference, path, new TextSpan(0, 0), path, error.Message));
+  }
+
+  FindAssembly(name: string): MetadataAssemblySymbol? {
+    const [found, assembly] = this.byName.TryGetValue(name);
+    return found ? assembly : null;
+  }
+
+  FindType(metadataName: string): NamedTypeSymbol? {
+    ArgumentNullException.ThrowIfNull(metadataName);
+    Monitor.Enter(this.gate);
+    try {
+      const [found, cached] = this.typeCache.TryGetValue(metadataName);
+      if (found) return cached;
+      let result: NamedTypeSymbol? = null;
+      const plus = metadataName.LastIndexOf('+');
+      if (plus >= 0) {
+        const outer = this.FindType(metadataName.Substring(0, plus));
+        const inner = metadataName.Substring(plus + 1);
+        if (outer != null) {
+          for (const member of outer.GetMembers()) {
+            if (member instanceof NamedTypeSymbol && member.MetadataName == inner) {
+              result = member as NamedTypeSymbol;
+              break;
+            }
+          }
+        }
+      } else {
+        const lastDot = metadataName.LastIndexOf('.');
+        const ns = lastDot < 0 ? "" : metadataName.Substring(0, lastDot);
+        const name = lastDot < 0 ? metadataName : metadataName.Substring(lastDot + 1);
+        const namespaceSymbol = this.GlobalNamespace.FindNamespace(ns);
+        const tick = name.IndexOf('`');
+        let arity = 0;
+        let simple = name;
+        if (tick >= 0) {
+          arity = int.Parse(name.Substring(tick + 1), System.Globalization.CultureInfo.InvariantCulture);
+          simple = name.Substring(0, tick);
+        }
+        if (namespaceSymbol != null) result = namespaceSymbol.GetTypeMember(simple, arity);
+      }
+      this.typeCache[metadataName] = result;
+      return result;
+    } finally { Monitor.Exit(this.gate); }
+  }
+
+  GetSpecialType(type: SpecialType): NamedTypeSymbol? {
+    Monitor.Enter(this.gate);
+    try {
+      const [found, cached] = this.special.TryGetValue(type);
+      if (found) return cached;
+      const name = SpecialTypes.MetadataName(type);
+      if (name == null) return null;
+      const result = this.FindType(name);
+      if (result != null) this.special[type] = result;
+      return result;
+    } finally { Monitor.Exit(this.gate); }
+  }
+  get CoreLibrary(): MetadataAssemblySymbol? {
+    return this.FindAssembly("System.Runtime") ?? this.FindAssembly("System.Private.CoreLib")
+      ?? this.FindAssembly("mscorlib") ?? this.FindAssembly("netstandard");
+  }
+}

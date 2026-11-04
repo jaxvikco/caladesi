@@ -1,0 +1,54 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { Dictionary } from "System.Collections.Generic";
+import { TypeSymbol, TypeParameterSymbol, ArrayTypeSymbol, NullableTypeSymbol } from "./TypeSymbols";
+import { NamedTypeSymbol, ConstructedNamedType } from "./NamedTypeSymbol";
+
+export sealed class TypeMap {
+  private readonly map: Dictionary<TypeParameterSymbol, TypeSymbol> = new Dictionary<TypeParameterSymbol, TypeSymbol>();
+  constructor(from: ImmutableArray<TypeParameterSymbol>, to: ImmutableArray<TypeSymbol>) {
+    for (let i = 0; i < from.Length && i < to.Length; i++) this.map[from[i]] = to[i];
+  }
+  get IsEmpty(): bool { return this.map.Count == 0; }
+  Extend(from: ImmutableArray<TypeParameterSymbol>, to: ImmutableArray<TypeSymbol>): TypeMap {
+    const result = new TypeMap(from, to);
+    for (const pair of this.map) if (!result.map.ContainsKey(pair.Key)) result.map[pair.Key] = pair.Value;
+    return result;
+  }
+  Get(parameter: TypeParameterSymbol): TypeSymbol? { return this.map.ContainsKey(parameter) ? this.map[parameter] : null; }
+  TryGet(parameter: TypeParameterSymbol): [bool, TypeSymbol?] {
+    const value = this.Get(parameter);
+    return [value != null, value];
+  }
+  Substitute(type: TypeSymbol): TypeSymbol {
+    if (type instanceof TypeParameterSymbol) return this.Get(type as TypeParameterSymbol) ?? type;
+    if (type instanceof ArrayTypeSymbol) {
+      const array = type as ArrayTypeSymbol;
+      const element = this.Substitute(array.ElementType);
+      return Object.ReferenceEquals(element, array.ElementType) ? array : array.WithElementType(element);
+    }
+    if (type instanceof NullableTypeSymbol) {
+      const nullable = type as NullableTypeSymbol;
+      const underlying = this.Substitute(nullable.Underlying);
+      if (Object.ReferenceEquals(underlying, nullable.Underlying)) return nullable;
+      if (underlying instanceof NullableTypeSymbol) return underlying;
+      if (nullable.Underlying instanceof TypeParameterSymbol) {
+        const parameter = nullable.Underlying as TypeParameterSymbol;
+        if (!parameter.HasValueTypeConstraint && !parameter.HasReferenceTypeConstraint && underlying.IsValueType) return underlying;
+      }
+      return new NullableTypeSymbol(underlying);
+    }
+    if (type instanceof NamedTypeSymbol && (type as NamedTypeSymbol).IsGenericType) {
+      const named = type as NamedTypeSymbol;
+      const arguments = named.TypeArguments;
+      const builder = ImmutableArray.CreateBuilder<TypeSymbol>();
+      let changed = false;
+      for (const argument of arguments) {
+        const replacement = this.Substitute(argument);
+        if (!Object.ReferenceEquals(replacement, argument)) changed = true;
+        builder.Add(replacement);
+      }
+      return changed ? new ConstructedNamedType(named.OriginalDefinition, builder.ToImmutable(), named.TupleElementNames) : named;
+    }
+    return type;
+  }
+}

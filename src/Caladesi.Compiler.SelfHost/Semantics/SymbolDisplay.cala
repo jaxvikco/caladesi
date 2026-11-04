@@ -1,0 +1,106 @@
+import { List, IReadOnlyList } from "System.Collections.Generic";
+import { Symbol } from "../Symbols/Symbol";
+import { NamespaceSymbol } from "../Symbols/NamespaceSymbol";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { TypeKind, ArrayTypeSymbol, TypeParameterSymbol } from "../Symbols/TypeSymbols";
+import { MethodSymbol, MethodKind, PropertySymbol, FieldSymbol, ParameterSymbol, LocalSymbol } from "../Symbols/MemberSymbols";
+import { SpecialType } from "../Symbols/SpecialType";
+import { SourceModuleClassSymbol } from "../Symbols/Source/SourceModuleClass";
+import { TypeAliasSymbol } from "../Symbols/Source/SourceTypes";
+import { FileModuleSymbol } from "../FileScope";
+
+export static class SymbolDisplay<TFile> {
+  static Describe(symbol: Symbol): string {
+    ArgumentNullException.ThrowIfNull(symbol);
+    const original = Symbol.OriginalDefinitionOf(symbol);
+    if (original instanceof NamespaceSymbol) return "namespace " + (original as NamespaceSymbol).ToDisplayString();
+    if (original instanceof NamedTypeSymbol) return SymbolDisplay<TFile>.DescribeType(original as NamedTypeSymbol);
+    if (original instanceof MethodSymbol) return SymbolDisplay<TFile>.DescribeMethod(original as MethodSymbol);
+    if (original instanceof PropertySymbol) {
+      const property = original as PropertySymbol;
+      return "(property) " + SymbolDisplay<TFile>.Owner(property) + property.Name + ": " + property.Type.ToDisplayString() +
+        (property.SetMethod == null ? " (readonly)" : "");
+    }
+    if (original instanceof FieldSymbol) {
+      const field = original as FieldSymbol;
+      return (field.IsConst ? "(constant) " : "(field) ") + SymbolDisplay<TFile>.Owner(field) + field.Name + ": " + field.Type.ToDisplayString();
+    }
+    if (original instanceof ParameterSymbol) {
+      const parameter = original as ParameterSymbol;
+      return "(parameter) " + parameter.Name + ": " + parameter.Type.ToDisplayString();
+    }
+    if (original instanceof LocalSymbol) {
+      const local = original as LocalSymbol;
+      return (local.IsConst ? "(constant) " : "(variable) ") + local.Name + ": " + local.Type.ToDisplayString();
+    }
+    if (original instanceof TypeParameterSymbol) return "(type parameter) " + original.Name;
+    if (original instanceof TypeAliasSymbol<TFile>) {
+      const alias = original as TypeAliasSymbol<TFile>;
+      return "type " + alias.Name + " = " + alias.Target.ToDisplayString();
+    }
+    if (original instanceof FileModuleSymbol<TFile>) return "module " + original.Name;
+    return original.Kind.ToString() + " " + original.Name;
+  }
+  private static Owner(symbol: Symbol): string {
+    const owner = symbol.ContainingSymbol;
+    return owner instanceof NamedTypeSymbol && !(owner instanceof SourceModuleClassSymbol<TFile>) &&
+      !(owner as NamedTypeSymbol).IsStaticClass ? owner.Name + "." : "";
+  }
+  private static DescribeType(type: NamedTypeSymbol): string {
+    let kind = "class";
+    if (type.TypeKind == TypeKind.Interface) kind = "interface";
+    else if (type.TypeKind == TypeKind.Enum) kind = "enum";
+    else if (type.TypeKind == TypeKind.Struct) kind = type.IsUnionType ? "union" : "struct";
+    else if (type.TypeKind == TypeKind.Delegate) kind = "delegate";
+    else if (type.IsRecord) kind = "type";
+    else if (type.IsAbstract && !type.IsStatic) kind = "abstract class";
+    let result = kind + " " + type.ToDisplayString();
+    const baseType = type.BaseType;
+    if (type.TypeKind == TypeKind.Class && baseType != null && baseType.SpecialType != SpecialType.Object)
+      result += " extends " + baseType.ToDisplayString();
+    if (type.IsUnionType) {
+      const cases = new List<string>();
+      for (const item of type.UnionCases) cases.Add(item.ToDisplayString());
+      result += " = " + string.Join(" | ", cases);
+    }
+    return result;
+  }
+  static DescribeMethod(method: MethodSymbol): string {
+    ArgumentNullException.ThrowIfNull(method);
+    let result: string;
+    const owner = method.ContainingType;
+    if (method.MethodKind == MethodKind.Constructor) result = "constructor " + (owner == null ? "" : owner.Name);
+    else if (method.MethodKind == MethodKind.PropertyGet || method.MethodKind == MethodKind.PropertySet)
+      result = "(accessor) " + method.Name;
+    else result = (method.ContainingSymbol instanceof SourceModuleClassSymbol<TFile> || owner == null ?
+      "function " : "(method) " + owner.Name + ".") + method.Name;
+    if (method.TypeParameters.Length > 0) {
+      const names = new List<string>();
+      for (const parameter of method.TypeParameters) names.Add(parameter.Name);
+      result += "<" + string.Join(", ", names) + ">";
+    }
+    result += "(" + string.Join(", ", SymbolDisplay<TFile>.Parameters(method)) + ")";
+    if (method.MethodKind != MethodKind.Constructor) result += ": " + method.ReturnType.ToDisplayString();
+    return result;
+  }
+  static Parameters(method: MethodSymbol): IReadOnlyList<string> {
+    ArgumentNullException.ThrowIfNull(method);
+    const result = new List<string>();
+    for (const parameter of method.Parameters) {
+      const type = parameter.Type;
+      result.Add((parameter.IsParams ? "..." : "") + parameter.Name +
+        (parameter.IsOptional && !parameter.IsParams ? "?" : "") + ": " +
+        (parameter.IsParams && type instanceof ArrayTypeSymbol ?
+          (type as ArrayTypeSymbol).ElementType.ToDisplayString() + "[]" : type.ToDisplayString()));
+    }
+    return result;
+  }
+  static Signature(method: MethodSymbol): string {
+    ArgumentNullException.ThrowIfNull(method);
+    const owner = method.ContainingType;
+    const constructor = method.MethodKind == MethodKind.Constructor;
+    return (constructor ? "new " + (owner == null ? "" : owner.Name) : method.Name) +
+      "(" + string.Join(", ", SymbolDisplay<TFile>.Parameters(method)) + ")" +
+      (constructor ? "" : ": " + method.ReturnType.ToDisplayString());
+  }
+}

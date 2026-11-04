@@ -1,5 +1,5 @@
 <Project>
-  <!-- Imported by every C# tooling project that must be fully AOT and trim compatible. -->
+  <!-- Imported by native tooling projects and their C# bootstrap oracles to enforce AOT and trim compatibility. -->
   <PropertyGroup>
     <IsAotCompatible>true</IsAotCompatible>
     <IsTrimmable>true</IsTrimmable>

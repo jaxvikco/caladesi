@@ -1,0 +1,85 @@
+import { Dictionary, List, HashSet, IEnumerable } from "System.Collections.Generic";
+import { Symbol, SymbolKind, Accessibility } from "./Symbol";
+import { NamedTypeSymbol } from "./NamedTypeSymbol";
+
+export sealed class NamespaceSymbol extends Symbol {
+  private readonly children: Dictionary<string, NamespaceSymbol> = new Dictionary<string, NamespaceSymbol>(StringComparer.Ordinal);
+  private readonly types: Dictionary<string, List<NamedTypeSymbol>> = new Dictionary<string, List<NamedTypeSymbol>>(StringComparer.Ordinal);
+  constructor(private readonly name: string, private readonly parent: NamespaceSymbol?, private readonly underlying: NamespaceSymbol?) { super(); }
+  constructor(name: string, parent: NamespaceSymbol?) {
+    super();
+    this.name = name;
+    this.parent = parent;
+    this.underlying = null;
+  }
+  override get Kind(): SymbolKind { return SymbolKind.Namespace; }
+  override get Name(): string { return this.name; }
+  override get ContainingSymbol(): Symbol? { return this.parent; }
+  override get ContainingNamespace(): NamespaceSymbol? { return this.parent; }
+  override get DeclaredAccessibility(): Accessibility { return Accessibility.Public; }
+  get IsGlobalNamespace(): bool { return this.parent == null; }
+  GetOrAddNamespace(dottedName: string): NamespaceSymbol {
+    ArgumentNullException.ThrowIfNull(dottedName);
+    let ns: NamespaceSymbol = this;
+    if (dottedName.Length == 0) return ns;
+    for (const part of dottedName.Split('.')) {
+      let child = ns.GetNamespaceMember(part);
+      if (child == null) {
+        child = new NamespaceSymbol(part, ns);
+        ns.children[part] = child;
+      }
+      ns = child;
+    }
+    return ns;
+  }
+  FindNamespace(dottedName: string): NamespaceSymbol? {
+    ArgumentNullException.ThrowIfNull(dottedName);
+    let ns: NamespaceSymbol? = this;
+    if (dottedName.Length == 0) return ns;
+    for (const part of dottedName.Split('.')) {
+      ns = ns!.GetNamespaceMember(part);
+      if (ns == null) return null;
+    }
+    return ns;
+  }
+  AddType(type: NamedTypeSymbol): void {
+    const key = type.MetadataName;
+    if (!this.types.ContainsKey(key)) this.types[key] = new List<NamedTypeSymbol>();
+    this.types[key].Add(type);
+  }
+  GetNamespaceMember(name: string): NamespaceSymbol? {
+    if (this.children.ContainsKey(name)) return this.children[name];
+    const source = this.underlying == null ? null : this.underlying.GetNamespaceMember(name);
+    if (source == null) return null;
+    const child = new NamespaceSymbol(name, this, source);
+    this.children[name] = child;
+    return child;
+  }
+  GetNamespaceMembers(): IEnumerable<NamespaceSymbol> {
+    if (this.underlying != null) {
+      for (const child of this.underlying.GetNamespaceMembers()) this.GetNamespaceMember(child.Name);
+    }
+    return new List<NamespaceSymbol>(this.children.Values);
+  }
+  GetTypeMember(name: string, arity: int): NamedTypeSymbol? {
+    const key = arity == 0 ? name : name + "`" + arity;
+    if (this.types.ContainsKey(key)) return this.types[key][0];
+    return this.underlying == null ? null : this.underlying.GetTypeMember(name, arity);
+  }
+  *GetTypeMembersByName(name: string): IEnumerable<NamedTypeSymbol> {
+    for (const type of this.GetTypeMembers()) if (type.Name == name) yield type;
+  }
+  *GetTypeMembers(): IEnumerable<NamedTypeSymbol> {
+    const seen = new HashSet<string>();
+    for (const pair of this.types) { seen.Add(pair.Key); yield pair.Value[0]; }
+    if (this.underlying != null) {
+      for (const type of this.underlying.GetTypeMembers()) if (seen.Add(type.MetadataName)) yield type;
+    }
+  }
+  ToDisplayString(): string {
+    if (this.parent == null) return "";
+    const prefix = this.parent.ToDisplayString();
+    return prefix.Length == 0 ? this.name : prefix + "." + this.name;
+  }
+  override ToString(): string { return this.IsGlobalNamespace ? "<global namespace>" : this.ToDisplayString(); }
+}

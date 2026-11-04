@@ -1,0 +1,78 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { Dictionary } from "System.Collections.Generic";
+import { Symbol, Accessibility } from "../Symbols/Symbol";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { TypeSymbol, TypeParameterSymbol, TypeParameterConstraints, TypeKind, VarianceKind } from "../Symbols/TypeSymbols";
+import { MethodSymbol, FieldSymbol } from "../Symbols/MemberSymbols";
+import { SynthesizedNamedType } from "../Symbols/Source/Synthesized";
+
+export static class SynthesizedClassFactory {
+  static Create(objectType: NamedTypeSymbol, container: NamedTypeSymbol, method: MethodSymbol,
+    name: string): [SynthesizedNamedType, NamedTypeSymbol] {
+    return SynthesizedClassFactory.Create(objectType, container, method, name, null);
+  }
+
+  static Create(objectType: NamedTypeSymbol, container: NamedTypeSymbol, method: MethodSymbol,
+    name: string, baseType: NamedTypeSymbol?): [SynthesizedNamedType, NamedTypeSymbol] {
+    const cls = new SynthesizedNamedType(name, container, TypeKind.Class, Accessibility.Private, baseType ?? objectType);
+    const classTps = container.TypeParameters;
+    const methodTps = method.TypeParameters;
+    if (classTps.Length + methodTps.Length == 0) return [cls, cls];
+
+    const map = new Dictionary<TypeParameterSymbol, int>();
+    const tps = ImmutableArray.CreateBuilder<TypeParameterSymbol>();
+    const args = ImmutableArray.CreateBuilder<TypeSymbol>();
+    if (container instanceof SynthesizedNamedType) {
+      const inherited = (container as SynthesizedNamedType).MethodTypeParameterMap;
+      if (inherited != null) {
+        const byOrdinal = new Dictionary<int, TypeParameterSymbol>();
+        for (const pair of inherited) byOrdinal.Add(pair.Value, pair.Key);
+        for (const tp of classTps) {
+          tps.Add(SynthesizedClassFactory.Copy(tp, tp.Ordinal, cls));
+          args.Add(byOrdinal.ContainsKey(tp.Ordinal) ? byOrdinal[tp.Ordinal] : tp);
+        }
+        for (const pair of inherited) map[pair.Key] = pair.Value;
+        cls.SetTypeParameters(tps.ToImmutable());
+        cls.OwnArityValue = 0;
+        cls.MethodTypeParameterMap = map;
+        return [cls, cls.Construct(args.ToImmutable())];
+      }
+    }
+
+    for (const tp of classTps) {
+      tps.Add(SynthesizedClassFactory.Copy(tp, tp.Ordinal, cls));
+      args.Add(tp);
+    }
+    for (const tp of methodTps) {
+      const ordinal = classTps.Length + tp.Ordinal;
+      tps.Add(SynthesizedClassFactory.Copy(tp, ordinal, cls));
+      args.Add(tp);
+      map[tp] = ordinal;
+    }
+    cls.SetTypeParameters(tps.ToImmutable());
+    cls.OwnArityValue = methodTps.Length;
+    cls.MethodTypeParameterMap = map;
+    return [cls, cls.Construct(args.ToImmutable())];
+  }
+
+  private static Copy(tp: TypeParameterSymbol, ordinal: int, container: Symbol): TypeParameterSymbol {
+    return new TypeParameterSymbol(tp.Name, ordinal, container, VarianceKind.None,
+      ignored => new TypeParameterConstraints(tp.HasReferenceTypeConstraint, tp.HasValueTypeConstraint,
+        tp.HasConstructorConstraint && !tp.HasValueTypeConstraint, tp.HasNotNullConstraint, tp.ConstraintTypes));
+  }
+
+  static ClosedField(closed: NamedTypeSymbol, def: FieldSymbol): FieldSymbol {
+    if (Object.ReferenceEquals(closed, def.ContainingSymbol)) return def;
+    for (const member of closed.GetMembers(def.Name))
+      if (member instanceof FieldSymbol) return member as FieldSymbol;
+    throw new InvalidOperationException("Sequence contains no elements");
+  }
+
+  static ClosedMethod(closed: NamedTypeSymbol, def: MethodSymbol): MethodSymbol {
+    if (Object.ReferenceEquals(closed, def.ContainingSymbol)) return def;
+    for (const member of closed.GetMembers(def.Name))
+      if (member instanceof MethodSymbol && (member as MethodSymbol).Parameters.Length == def.Parameters.Length)
+        return member as MethodSymbol;
+    throw new InvalidOperationException("Sequence contains no matching element");
+  }
+}

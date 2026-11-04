@@ -1,0 +1,313 @@
+import { Func } from "System";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { Binder } from "./Binder";
+import { BinderScope, BinderScopeKind } from "./BinderScope";
+import { BinderStatements } from "./BinderStatements";
+import { FlowNarrowing, Narrowings, NarrowingBranches } from "./FlowNarrowing";
+import { TypeSymbol, ArrayTypeSymbol, NullableTypeSymbol, TypeParameterSymbol, NullTypeSymbol } from "../Symbols/TypeSymbols";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { MethodSymbol, PropertySymbol, LocalSymbol, LabelSymbol } from "../Symbols/MemberSymbols";
+import { SpecialType } from "../Symbols/SpecialType";
+import { SyntaxNode } from "../Syntax/SyntaxElement";
+import { ExpressionSyntax, WhileStatementSyntax, DoStatementSyntax, ForStatementSyntax,
+  ForOfStatementSyntax, VariableDeclarationListSyntax } from "../Syntax/Nodes.Core";
+import { Descriptors } from "../Diagnostics/Descriptors";
+import { BoundExpression, BoundStatement, BoundBlock, BoundStatementList, BoundNoOp, BoundWhile,
+  BoundDoWhile, BoundFor, BoundExpressionStatement, BoundLocalDeclaration, BoundLocal,
+  BoundAssignment, BoundArrayAccess, BoundPropertyAccess, BoundCall, BoundConversion,
+  ConversionKind, BoundBinary, BinaryOperatorKind, BoundIf, BoundAwait, BoundTry, BoundCatch,
+  BoundDefaultValue } from "../Bound/BoundNodes";
+
+class BinderForOfBinding<TFile> {
+  constructor(private readonly binder: Binder<TFile>, private readonly statements: BinderStatements<TFile>,
+    private readonly syntax: ForOfStatementSyntax, private readonly element: TypeSymbol) {}
+  Bind(current: LocalSymbol): BoundStatement {
+    const syntax = this.syntax;
+    const element = this.element;
+    const bodyScope = this.binder.PushScope(BinderScopeKind.Block);
+    try {
+      const prefix = ImmutableArray.CreateBuilder<BoundStatement>();
+      const currentValue = this.statements.At(new BoundLocal(current), syntax);
+      if (syntax.Left instanceof VariableDeclarationListSyntax) {
+        const declaration = syntax.Left as VariableDeclarationListSyntax;
+        if (declaration.Declarators.Count != 1)
+          this.binder.Report(Descriptors.FeatureNotSupported, syntax.Left, ["Multiple declarations in for-of"]);
+        else {
+          const variable = declaration.Declarators.Get(0);
+          if (variable.Pattern != null)
+            prefix.Add(this.binder.Expressions.BindDestructuringFrom(variable.Pattern, currentValue, element, declaration.IsConst, variable));
+          else if (variable.Identifier != null && !variable.Identifier.IsMissing) {
+            const type = variable.TypeAnnotation == null ? element : this.binder.BindType(variable.TypeAnnotation.Type);
+            const local = new LocalSymbol(variable.Identifier.Text, type, declaration.IsConst, this.statements.LocalOwner, variable);
+            this.binder.DeclareSymbol(local.Name, local, variable.Identifier);
+            prefix.Add(this.statements.At(new BoundLocalDeclaration(local,
+              this.binder.Conversions.ConvertImplicit(currentValue, type, variable)), variable));
+          }
+        }
+      } else if (syntax.Left instanceof ExpressionSyntax) {
+        const target = this.binder.Expressions.AssignmentTarget(syntax.Left as ExpressionSyntax);
+        if (!target.HasErrors) {
+          const assignment = new BoundAssignment(target, this.binder.Conversions.ConvertImplicit(currentValue, target.Type!, syntax.Left));
+          assignment.IsDiscarded = true;
+          prefix.Add(this.statements.At(new BoundExpressionStatement(this.statements.At(assignment, syntax.Left)), syntax));
+          this.binder.Flow.InvalidateNarrowing(target);
+        }
+      }
+      prefix.Add(this.statements.Embedded(syntax.Body));
+      return this.statements.At(new BoundBlock(ImmutableArray.CreateRange<LocalSymbol>(bodyScope.Locals), prefix.ToImmutable()), syntax);
+    } finally { this.binder.PopScope(); }
+  }
+}
+
+export sealed class BinderStatementLoops<TFile> {
+  constructor(private readonly binder: Binder<TFile>, private readonly statements: BinderStatements<TFile>) {}
+  private PushLoop(): BinderScope {
+    const scope = this.binder.PushScope(BinderScopeKind.Loop);
+    scope.BreakLabel = new LabelSymbol("break");
+    scope.ContinueLabel = new LabelSymbol("continue");
+    scope.LabelName = this.statements.PendingLabel;
+    this.statements.PendingLabel = null;
+    return scope;
+  }
+  private IsTrue(condition: BoundExpression?): bool {
+    return condition == null || (condition.ConstantValue != null && condition.ConstantValue.Value instanceof bool &&
+      (condition.ConstantValue.Value as bool));
+  }
+  While(syntax: WhileStatementSyntax): BoundStatement {
+    this.binder.Flow.InvalidateAssignedIn(syntax);
+    const condition = this.binder.Conversions.ConvertToBool(this.binder.BindValue(syntax.Condition), syntax.Condition);
+    const branches = FlowNarrowing.GetNarrowing(condition);
+    const saved = this.binder.Flow.SaveState();
+    const scope = this.PushLoop();
+    let body: BoundStatement;
+    try { this.binder.Flow.Apply(branches.WhenTrue); body = this.statements.Embedded(syntax.Body); }
+    finally { this.binder.PopScope(); }
+    this.binder.Flow.RestoreState(saved);
+    this.binder.Flow.InvalidateAssignedIn(syntax);
+    const node = this.statements.At(new BoundWhile(condition, body, scope.BreakLabel!, scope.ContinueLabel!), syntax);
+    this.statements.SetCompletion(node, !this.IsTrue(condition) || scope.BreakUsed);
+    if (!scope.BreakUsed) this.binder.Flow.Apply(branches.WhenFalse);
+    this.statements.FilterClosedLocals();
+    return node;
+  }
+  Do(syntax: DoStatementSyntax): BoundStatement {
+    this.binder.Flow.InvalidateAssignedIn(syntax);
+    const saved = this.binder.Flow.SaveState();
+    const scope = this.PushLoop();
+    let body: BoundStatement;
+    try { body = this.statements.Embedded(syntax.Body); } finally { this.binder.PopScope(); }
+    this.binder.Flow.RestoreState(saved);
+    this.binder.Flow.InvalidateAssignedIn(syntax);
+    const condition = this.binder.Conversions.ConvertToBool(this.binder.BindValue(syntax.Condition), syntax.Condition);
+    const node = this.statements.At(new BoundDoWhile(condition, body, scope.BreakLabel!, scope.ContinueLabel!), syntax);
+    this.statements.SetCompletion(node, !this.IsTrue(condition) || scope.BreakUsed);
+    if (!scope.BreakUsed) this.binder.Flow.Apply(FlowNarrowing.GetNarrowing(condition).WhenFalse);
+    this.statements.FilterClosedLocals();
+    return node;
+  }
+  For(syntax: ForStatementSyntax): BoundStatement {
+    const outer = this.binder.PushScope(BinderScopeKind.Block);
+    try {
+      let initializer: BoundStatement? = null;
+      if (syntax.Initializer instanceof VariableDeclarationListSyntax) {
+        const declaration = syntax.Initializer as VariableDeclarationListSyntax;
+        const list = ImmutableArray.CreateBuilder<BoundStatement>();
+        for (const variable of declaration.Declarators) list.Add(this.statements.BindDeclarator(variable, declaration.IsConst));
+        initializer = this.statements.At(new BoundStatementList(list.ToImmutable()), declaration);
+      } else if (syntax.Initializer instanceof ExpressionSyntax)
+        initializer = this.statements.At(new BoundExpressionStatement(
+          this.statements.BindStatementExpression(syntax.Initializer as ExpressionSyntax)), syntax.Initializer);
+      this.binder.Flow.InvalidateAssignedIn(syntax);
+      const condition = syntax.Condition == null ? null :
+        this.binder.Conversions.ConvertToBool(this.binder.BindValue(syntax.Condition), syntax.Condition);
+      const branches = condition == null ? new NarrowingBranches(Narrowings.Empty, Narrowings.Empty) : FlowNarrowing.GetNarrowing(condition);
+      const saved = this.binder.Flow.SaveState();
+      const scope = this.PushLoop();
+      let body: BoundStatement;
+      try { this.binder.Flow.Apply(branches.WhenTrue); body = this.statements.Embedded(syntax.Body); }
+      finally { this.binder.PopScope(); }
+      this.binder.Flow.RestoreState(saved);
+      this.binder.Flow.Apply(branches.WhenTrue);
+      const increment = syntax.Incrementor == null ? null : this.statements.At(
+        new BoundExpressionStatement(this.statements.BindStatementExpression(syntax.Incrementor)), syntax.Incrementor);
+      this.binder.Flow.RestoreState(saved);
+      this.binder.Flow.InvalidateAssignedIn(syntax);
+      const node = this.statements.At(new BoundFor(ImmutableArray.CreateRange<LocalSymbol>(outer.Locals),
+        initializer, condition, increment, body, scope.BreakLabel!, scope.ContinueLabel!), syntax);
+      this.statements.SetCompletion(node, !this.IsTrue(condition) || scope.BreakUsed);
+      if (!scope.BreakUsed) this.binder.Flow.Apply(branches.WhenFalse);
+      return node;
+    } finally { this.binder.PopScope(); this.statements.FilterClosedLocals(); }
+  }
+  ForOf(syntax: ForOfStatementSyntax): BoundStatement {
+    const isAsync = syntax.AwaitKeyword != null;
+    if (isAsync && !this.binder.IsAsync) this.binder.Report(Descriptors.AwaitOutsideAsync, syntax.AwaitKeyword, []);
+    let collection = this.statements.Natural(this.binder.BindValue(syntax.Expression));
+    if (collection.Type == null || collection.HasErrors) return this.statements.At(new BoundNoOp(), syntax);
+    if (collection.Type instanceof NullableTypeSymbol) {
+      this.binder.Report(Descriptors.PossiblyNull, syntax.Expression, [syntax.Expression.ToFullString().Trim()]);
+      collection = this.statements.At(new BoundConversion(collection, ConversionKind.FromNullable,
+        collection.Type!.StripNullable()), syntax.Expression);
+    }
+    const element = this.binder.Expressions.GetIterationType(collection.Type!, isAsync);
+    if (element == null) {
+      this.binder.Report(Descriptors.NotIterable, syntax.Expression, [collection.Type!.ToDisplayString()]);
+      return this.statements.At(new BoundNoOp(), syntax);
+    }
+    this.binder.Flow.InvalidateAssignedIn(syntax);
+    const saved = this.binder.Flow.SaveState();
+    const scope = this.PushLoop();
+    try {
+      const binding = new BinderForOfBinding<TFile>(this.binder, this.statements, syntax, element);
+      return this.BuildForEachLoop(collection, element, syntax, binding.Bind, scope.BreakLabel, scope.ContinueLabel, isAsync);
+    } finally {
+      this.binder.PopScope();
+      this.binder.Flow.RestoreState(saved);
+      this.binder.Flow.InvalidateAssignedIn(syntax);
+      this.statements.FilterClosedLocals();
+    }
+  }
+  private FindMethod(type: TypeSymbol, name: string, optional: bool): MethodSymbol? {
+    for (const symbol of this.binder.LookupMembers(type, name)) {
+      if (!(symbol instanceof MethodSymbol) || symbol.IsStatic || !this.binder.IsAccessible(symbol)) continue;
+      const method = symbol as MethodSymbol;
+      let valid = true;
+      for (const parameter of method.Parameters) if (!optional || !parameter.IsOptional) { valid = false; break; }
+      if (valid) return method;
+    }
+    return null;
+  }
+  private FindProperty(type: TypeSymbol, name: string): PropertySymbol? {
+    for (const symbol of this.binder.LookupMembers(type, name))
+      if (symbol instanceof PropertySymbol && !symbol.IsStatic && (symbol as PropertySymbol).GetMethod != null &&
+        this.binder.IsAccessible(symbol)) return symbol as PropertySymbol;
+    return null;
+  }
+  private Interface(type: TypeSymbol, name: string): NamedTypeSymbol? {
+    if (type instanceof NamedTypeSymbol && (type as NamedTypeSymbol).OriginalDefinition.ToMetadataString() == name) return type as NamedTypeSymbol;
+    for (const implemented of type.AllInterfaces) if (implemented.OriginalDefinition.ToMetadataString() == name) return implemented;
+    return null;
+  }
+  private Temp(name: string, type: TypeSymbol): LocalSymbol {
+    const local = new LocalSymbol(name, type, false, this.statements.LocalOwner);
+    local.IsSynthesized = true;
+    return local;
+  }
+  private Await(value: BoundExpression, at: SyntaxNode): BoundExpression {
+    const info = value.Type == null ? null : this.binder.Expressions.GetAwaitInfo(value.Type, at);
+    return info == null ? this.binder.Expressions.Bad(at, value) :
+      this.statements.At(new BoundAwait(value, info, info.GetResult.ReturnType), at);
+  }
+  Dispose(local: LocalSymbol, isAsync: bool, at: SyntaxNode, required: bool): BoundStatement {
+    const name = isAsync ? "DisposeAsync" : "Dispose";
+    const interfaceName = isAsync ? "System.IAsyncDisposable" : "System.IDisposable";
+    const iface = this.Interface(local.Type, interfaceName);
+    let method = this.FindMethod(local.Type, name, false);
+    if (method == null && iface != null) method = this.FindMethod(iface, name, false);
+    if (method == null && local.Type instanceof TypeParameterSymbol) {
+      const disposable = this.binder.Context.GetWellKnownType(interfaceName);
+      if (disposable != null) method = this.FindMethod(disposable, name, false);
+    }
+    if (method == null) {
+      if (required && !local.Type.IsErrorType) this.binder.Report(Descriptors.NotDisposable, at, [local.Type.ToDisplayString(), interfaceName]);
+      return this.statements.At(new BoundNoOp(), at);
+    }
+    let call: BoundExpression = this.statements.At(new BoundCall(new BoundLocal(local), method, ImmutableArray<BoundExpression>.Empty), at);
+    if (isAsync) call = this.Await(call, at);
+    let result: BoundStatement = this.statements.At(new BoundExpressionStatement(call), at);
+    if (!local.Type.IsValueType) {
+      const condition = new BoundBinary(BinaryOperatorKind.NotEqual, new BoundLocal(local),
+        this.binder.Literal(null, NullTypeSymbol.Instance, at), this.binder.BoolType, this.binder.ObjectType);
+      result = this.statements.At(new BoundIf(condition, result, null), at);
+    }
+    return result;
+  }
+  BuildForEachLoop(source: BoundExpression, elementType: TypeSymbol, at: SyntaxNode,
+    bodyFactory: Func<LocalSymbol, BoundStatement>, breakLabel: LabelSymbol?, continueLabel: LabelSymbol?, isAsync: bool): BoundStatement {
+    breakLabel = breakLabel ?? new LabelSymbol("break");
+    continueLabel = continueLabel ?? new LabelSymbol("continue");
+    const type = source.Type!.StripNullable();
+    const current = this.Temp("<current>", elementType);
+    if (!isAsync && ((type instanceof ArrayTypeSymbol && (type as ArrayTypeSymbol).Rank == 1) || type.SpecialType == SpecialType.String)) {
+      const collection = this.Temp("<collection>", type);
+      const index = this.Temp("<index>", this.binder.IntType);
+      const length = this.FindProperty(type instanceof ArrayTypeSymbol ? this.binder.Special(SpecialType.Array) : type, "Length");
+      if (length == null) {
+        this.binder.Report(Descriptors.NotIterable, at, [type.ToDisplayString()]);
+        return this.statements.At(new BoundNoOp(), at);
+      }
+      let element: BoundExpression;
+      if (type instanceof ArrayTypeSymbol) element = new BoundArrayAccess(new BoundLocal(collection), new BoundLocal(index), elementType);
+      else {
+        let chars: PropertySymbol? = null;
+        for (const member of this.binder.Special(SpecialType.String).GetMembers())
+          if (member instanceof PropertySymbol && (member as PropertySymbol).IsIndexer) { chars = member as PropertySymbol; break; }
+        if (chars == null) {
+          this.binder.Report(Descriptors.NotIterable, at, [type.ToDisplayString()]);
+          return this.statements.At(new BoundNoOp(), at);
+        }
+        element = new BoundPropertyAccess(new BoundLocal(collection), chars, ImmutableArray.Create<BoundExpression>(new BoundLocal(index)));
+      }
+      const condition = new BoundBinary(BinaryOperatorKind.LessThan, new BoundLocal(index),
+        new BoundPropertyAccess(new BoundLocal(collection), length, ImmutableArray<BoundExpression>.Empty), this.binder.BoolType, this.binder.IntType);
+      const addition = new BoundBinary(BinaryOperatorKind.Add, new BoundLocal(index),
+        this.binder.Literal(1, this.binder.IntType, at), this.binder.IntType, this.binder.IntType);
+      const increment = new BoundAssignment(new BoundLocal(index), addition);
+      increment.IsDiscarded = true;
+      const body = this.statements.At(new BoundBlock(ImmutableArray.Create<LocalSymbol>(current),
+        ImmutableArray.Create<BoundStatement>(this.statements.At(new BoundLocalDeclaration(current, this.statements.At(element, at)), at),
+          bodyFactory.Invoke(current))), at);
+      const loop = this.statements.At(new BoundFor(ImmutableArray<LocalSymbol>.Empty,
+        this.statements.At(new BoundLocalDeclaration(index, this.binder.Literal(0, this.binder.IntType, at)), at), condition,
+        this.statements.At(new BoundExpressionStatement(increment), at), body, breakLabel, continueLabel), at);
+      return this.statements.At(new BoundBlock(ImmutableArray.Create<LocalSymbol>(collection, index),
+        ImmutableArray.Create<BoundStatement>(this.statements.At(new BoundLocalDeclaration(collection, source), at), loop)), at);
+    }
+    const getName = isAsync ? "GetAsyncEnumerator" : "GetEnumerator";
+    let getEnumerator = this.FindMethod(type, getName, true);
+    let receiver = source;
+    if (getEnumerator == null) {
+      let iface = this.Interface(type, isAsync ? "System.Collections.Generic.IAsyncEnumerable`1" : "System.Collections.Generic.IEnumerable`1");
+      if (iface == null && !isAsync) iface = this.Interface(type, "System.Collections.IEnumerable");
+      if (iface != null) {
+        getEnumerator = this.FindMethod(iface, getName, true);
+        receiver = this.binder.Conversions.ConvertImplicit(source, iface, at);
+      }
+    }
+    if (getEnumerator == null) {
+      this.binder.Report(Descriptors.NotIterable, at, [type.ToDisplayString()]);
+      return this.statements.At(new BoundNoOp(), at);
+    }
+    const enumerator = this.Temp("<enumerator>", getEnumerator.ReturnType);
+    const enumType = enumerator.Type;
+    let move = this.FindMethod(enumType, isAsync ? "MoveNextAsync" : "MoveNext", false);
+    let property = this.FindProperty(enumType, "Current");
+    for (const implemented of enumType.AllInterfaces) {
+      if (move == null) move = this.FindMethod(implemented, isAsync ? "MoveNextAsync" : "MoveNext", false);
+      if (property == null) property = this.FindProperty(implemented, "Current");
+    }
+    if (move == null || property == null) {
+      this.binder.Report(Descriptors.NotIterable, at, [type.ToDisplayString()]);
+      return this.statements.At(new BoundNoOp(), at);
+    }
+    let condition: BoundExpression = this.statements.At(new BoundCall(new BoundLocal(enumerator), move, ImmutableArray<BoundExpression>.Empty), at);
+    if (isAsync) condition = this.Await(condition, at);
+    condition = this.binder.Conversions.ConvertToBool(condition, at);
+    const value = this.binder.Conversions.ConvertExplicit(new BoundPropertyAccess(new BoundLocal(enumerator), property,
+      ImmutableArray<BoundExpression>.Empty), elementType, at);
+    const body = this.statements.At(new BoundBlock(ImmutableArray.Create<LocalSymbol>(current),
+      ImmutableArray.Create<BoundStatement>(this.statements.At(new BoundLocalDeclaration(current, value), at), bodyFactory.Invoke(current))), at);
+    let loop: BoundStatement = this.statements.At(new BoundWhile(condition, body, breakLabel, continueLabel), at);
+    const dispose = this.Dispose(enumerator, isAsync, at, false);
+    if (!(dispose instanceof BoundNoOp)) loop = this.statements.At(new BoundTry(this.statements.AsBlock(loop),
+      ImmutableArray<BoundCatch>.Empty, this.statements.AsBlock(dispose)), at);
+    const arguments = ImmutableArray.CreateBuilder<BoundExpression>();
+    for (const parameter of getEnumerator.Parameters) arguments.Add(parameter.DefaultValue == null || parameter.DefaultValue.IsNull && parameter.Type.IsValueType ?
+      this.statements.At(new BoundDefaultValue(parameter.Type), at) as BoundExpression :
+      this.binder.Literal(parameter.DefaultValue.Value, parameter.Type, at));
+    const initialization = this.statements.At(new BoundLocalDeclaration(enumerator,
+      this.statements.At(new BoundCall(receiver, getEnumerator, arguments.ToImmutable()), at)), at);
+    return this.statements.At(new BoundBlock(ImmutableArray.Create<LocalSymbol>(enumerator),
+      ImmutableArray.Create<BoundStatement>(initialization, loop)), at);
+  }
+}

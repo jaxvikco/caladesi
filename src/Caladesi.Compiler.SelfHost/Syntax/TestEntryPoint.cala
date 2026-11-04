@@ -1,0 +1,36 @@
+import { Path, Directory } from "System.IO";
+import { StringBuilder } from "System.Text";
+import { CompilationOptions } from "Caladesi.Compiler";
+import { SyntaxTree } from "Caladesi.Compiler.Syntax";
+
+export sealed class TestEntryPoint {
+  static Create(options: CompilationOptions, hookTypes: IEnumerable<string>): SyntaxTree {
+    ArgumentNullException.ThrowIfNull(options);
+    const regular = new List<string>();
+    const mstest = new List<string>();
+    const seen = new HashSet<string>();
+    for (const hook of hookTypes) {
+      if (!hook.Contains('.') || !seen.Add(hook)) continue;
+      if (hook.EndsWith("UnitTesting.TestingPlatformBuilderHook", StringComparison.Ordinal)) mstest.Add(hook);
+      else regular.Add(hook);
+    }
+    regular.AddRange(mstest);
+    const sb = new StringBuilder();
+    sb.AppendLine("import { TestApplication } from \"Microsoft.Testing.Platform.Builder\";");
+    for (let i = 0; i < regular.Count; i++) {
+      const ns = regular[i].Substring(0, regular[i].LastIndexOf('.'));
+      sb.AppendLine(`import * as __hook${i} from "${ns}";`);
+    }
+    sb.AppendLine("async function main(args: string[]): Task<int> {");
+    sb.AppendLine("  const builder = await TestApplication.CreateBuilderAsync(args);");
+    for (let i = 0; i < regular.Count; i++) {
+      const name = regular[i].Substring(regular[i].LastIndexOf('.') + 1);
+      sb.AppendLine(`  __hook${i}.${name}.AddExtensions(builder, args);`);
+    }
+    sb.AppendLine("  using app = await builder.BuildAsync();");
+    sb.AppendLine("  return await app.RunAsync();");
+    sb.AppendLine("}");
+    const dir = options.ProjectDirectory ?? Directory.GetCurrentDirectory();
+    return SyntaxTree.ParseText(sb.ToString(), Path.Combine(dir, "obj", "CaladesiTestEntryPoint.cala"));
+  }
+}

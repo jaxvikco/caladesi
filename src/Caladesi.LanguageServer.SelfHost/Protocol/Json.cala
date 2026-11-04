@@ -1,0 +1,72 @@
+import { JavaScriptEncoder } from "System.Text.Encodings.Web";
+import { JsonElement, JsonValueKind, Utf8JsonWriter, JsonWriterOptions } from "System.Text.Json";
+import { MemoryStream } from "System.IO";
+import { LinePosition, LinePositionSpan } from "Caladesi.Compiler.Text";
+
+export sealed class Json {
+  static Build(write: Action<Utf8JsonWriter>): byte[] {
+    let options = new JsonWriterOptions();
+    options.Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping;
+    options.SkipValidation = false;
+    using stream = new MemoryStream();
+    {
+      using writer = new Utf8JsonWriter(stream, options);
+      write(writer);
+    }
+    return stream.ToArray();
+  }
+  static Get(element: JsonElement?, name: string): JsonElement? {
+    if (element == null) return null;
+    if (element.ValueKind != JsonValueKind.Object) return null;
+    const [found, value] = element.TryGetProperty(name);
+    if (!found || value.ValueKind == JsonValueKind.Null) return null;
+    return value;
+  }
+  static Path(element: JsonElement, ...names: string[]): JsonElement? {
+    let current: JsonElement? = element;
+    for (const name: string of names) {
+      current = Json.Get(current, name);
+      if (current == null) return null;
+    }
+    return current;
+  }
+  static GetString(element: JsonElement?): string? {
+    if (element == null || element.ValueKind != JsonValueKind.String) return null;
+    return element.GetString();
+  }
+  static GetInt(element: JsonElement?): int? {
+    if (element == null || element.ValueKind != JsonValueKind.Number) return null;
+    const [ok, n] = element.TryGetInt32();
+    return ok ? n : null;
+  }
+  static GetBool(element: JsonElement?, fallback: bool = false): bool {
+    if (element == null) return fallback;
+    const kind = element.ValueKind;
+    return kind == JsonValueKind.True || kind == JsonValueKind.False ? element.GetBoolean() : fallback;
+  }
+  static Items(element: JsonElement?): IEnumerable<JsonElement> {
+    const items = new List<JsonElement>();
+    if (element != null && element.ValueKind == JsonValueKind.Array) {
+      for (const item: JsonElement of element.EnumerateArray()) items.Add(item);
+    }
+    return items;
+  }
+  static WritePosition(w: Utf8JsonWriter, p: LinePosition): void {
+    w.WriteStartObject();
+    w.WriteNumber("line", p.Line);
+    w.WriteNumber("character", p.Character);
+    w.WriteEndObject();
+  }
+  static WriteRange(w: Utf8JsonWriter, range: LinePositionSpan): void {
+    w.WriteStartObject();
+    w.WritePropertyName("start");
+    Json.WritePosition(w, range.Start);
+    w.WritePropertyName("end");
+    Json.WritePosition(w, range.End);
+    w.WriteEndObject();
+  }
+  static WriteRange(w: Utf8JsonWriter, name: string, range: LinePositionSpan): void {
+    w.WritePropertyName(name);
+    Json.WriteRange(w, range);
+  }
+}

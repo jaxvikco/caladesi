@@ -74,6 +74,7 @@
                  TreatWarningsAsErrors="$(TreatWarningsAsErrors)"
                  NoWarn="$(NoWarn)"
                  Version="$(_CaladesiAssemblyVersion)"
+                 InformationalVersion="$(Version)"
                  TargetFrameworkMoniker="$(TargetFrameworkMoniker)"
                  TargetFrameworkDisplayName="$(TargetFrameworkMonikerDisplayName)"
                  Optimize="$(Optimize)"

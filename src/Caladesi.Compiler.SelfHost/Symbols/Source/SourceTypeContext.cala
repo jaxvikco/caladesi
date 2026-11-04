@@ -1,0 +1,28 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { SourceSymbolContext } from "./SourceSymbolContext";
+import { SourceNamedType } from "./SourceTypes";
+import { SourceMethodSymbol, SourceFieldSymbol } from "./SourceMembers";
+import { SourceModuleClassSymbol } from "./SourceModuleClass";
+import { Symbol } from "../Symbol";
+import { NamedTypeSymbol } from "../NamedTypeSymbol";
+import { TypeSymbol } from "../TypeSymbols";
+import { ConstantValue } from "../MemberSymbols";
+import { ExpressionSyntax } from "../../Syntax/Nodes.Core";
+import { BoundBlock } from "../../Bound/BoundNodes";
+
+// Only compilation ownership and expression/body binding cross this boundary.
+// Declaration classification, caches and every synthesized member are built in Cala.
+export abstract class SourceTypeContext<TFile> extends SourceSymbolContext<TFile> {
+  abstract GetNamespace(file: TFile): Symbol;
+  abstract GetWellKnownType(name: string): NamedTypeSymbol?;
+  abstract get IsConsoleApplication(): bool;
+  abstract HasTopLevelStatements(file: TFile): bool;
+  abstract InferVariableType(file: TFile, owner: Symbol, expression: ExpressionSyntax,
+    allowTopLevelAwait: bool): TypeSymbol;
+  abstract EvaluateEnumInitializer(file: TFile, owner: SourceNamedType<TFile>, expression: ExpressionSyntax,
+    previous: ImmutableArray<SourceFieldSymbol<TFile>>): ConstantValue?;
+  // Constant evaluation uses a fresh diagnostic bag, not declaration diagnostics.
+  abstract TryEvaluateConstant(file: TFile, owner: Symbol, expression: ExpressionSyntax, type: TypeSymbol): ConstantValue?;
+  abstract BindTopLevelStatements(file: TFile, method: SourceMethodSymbol<TFile>,
+    module: SourceModuleClassSymbol<TFile>): BoundBlock?;
+}

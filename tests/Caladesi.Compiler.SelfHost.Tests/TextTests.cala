@@ -1,0 +1,143 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { SourceText, TextSpan, TextSpans, LinePosition, LinePositions } from "Caladesi.Compiler.Text";
+
+@TestClass
+export class TextTests {
+  @TestMethod
+  spanBounds(): void {
+    const span = TextSpans.FromBounds(2, 7);
+    if (span.Start != 2 || span.Length != 5 || TextSpans.End(span) != 7) throw new Exception("Span bounds");
+  }
+
+  @TestMethod
+  spanHalfOpenContains(): void {
+    const span = new TextSpan(2, 3);
+    if (!TextSpans.Contains(span, 2) || !TextSpans.Contains(span, 4) || TextSpans.Contains(span, 5) || TextSpans.Contains(span, 1)) throw new Exception("Half open span");
+  }
+
+  @TestMethod
+  spanInclusiveContains(): void {
+    const span = new TextSpan(2, 3);
+    if (!TextSpans.ContainsInclusive(span, 5) || TextSpans.ContainsInclusive(span, 6)) throw new Exception("Inclusive span");
+  }
+
+  @TestMethod
+  emptySpan(): void {
+    const span = new TextSpan(4, 0);
+    if (!TextSpans.IsEmpty(span) || TextSpans.Contains(span, 4) || !TextSpans.ContainsInclusive(span, 4)) throw new Exception("Empty span");
+  }
+
+  @TestMethod
+  spanOverlap(): void {
+    const span = new TextSpan(2, 3);
+    if (!TextSpans.OverlapsWith(span, new TextSpan(4, 2)) || TextSpans.OverlapsWith(span, new TextSpan(5, 2))) throw new Exception("Span overlap");
+  }
+
+  @TestMethod
+  spanAndPositionFormatting(): void {
+    if (TextSpans.Format(new TextSpan(2, 3)) != "[2..5)" || LinePositions.Format(new LinePosition(1, 2)) != "2:3") throw new Exception("Formatting");
+  }
+
+  @TestMethod
+  emptySourceHasOneLine(): void {
+    const text = SourceText.From("");
+    if (text.Length != 0 || text.LineCount != 1 || text.GetLineStart(0) != 0 || text.GetLineEnd(0) != 0) throw new Exception("Empty source");
+  }
+
+  @TestMethod
+  mixedLineEndings(): void {
+    const text = SourceText.From("a\r\nbb\nccc\rd");
+    if (text.LineCount != 4 || text.GetLineStart(1) != 3 || text.GetLineStart(2) != 6 || text.GetLineStart(3) != 10) throw new Exception("Line starts");
+    if (text.GetLineEnd(0) != 3 || text.GetLineEnd(3) != 11) throw new Exception("Line ends include break");
+  }
+
+  @TestMethod
+  trailingLineBreak(): void {
+    const text = SourceText.From("a\r\n");
+    if (text.LineCount != 2 || text.GetLineStart(1) != 3 || text.GetLineIndex(3) != 1) throw new Exception("Trailing empty line");
+  }
+
+  @TestMethod
+  unicodeSeparatorsAreOrdinaryCharacters(): void {
+    const text = SourceText.From("a\u0085b\u2028c\u2029d");
+    if (text.LineCount != 1 || text.Length != 7) throw new Exception("Unicode separators");
+  }
+
+  @TestMethod
+  utf16Positions(): void {
+    const text = SourceText.From("a😀\r\n𐐀b");
+    if (text.Length != 8 || text.GetLineStart(1) != 5 || text.GetLinePosition(7).Character != 2) throw new Exception("UTF16 positions");
+  }
+
+  @TestMethod
+  positionsInsideCrLf(): void {
+    const text = SourceText.From("a\r\nb");
+    if (text.GetLineIndex(1) != 0 || text.GetLineIndex(2) != 0 || text.GetLineIndex(3) != 1) throw new Exception("CRLF positions");
+  }
+
+  @TestMethod
+  positionsClampAtSourceBounds(): void {
+    const text = SourceText.From("a\nb");
+    if (text.GetLineIndex(-100) != 0 || text.GetLineIndex(100) != 1 || text.GetLinePosition(100).Character != 1) throw new Exception("Position clamp");
+  }
+
+  @TestMethod
+  linePositionClampsBeforeLineBreak(): void {
+    const text = SourceText.From("ab\r\nc");
+    if (text.GetPosition(new LinePosition(0, 100)) != 2 || text.GetPosition(new LinePosition(-1, 5)) != 0 || text.GetPosition(new LinePosition(100, 0)) != 5) throw new Exception("Line position clamp");
+  }
+
+  @TestMethod
+  sourceSlice(): void {
+    const text = SourceText.From("abcdef");
+    if (text.ToString(new TextSpan(2, 3)) != "cde" || text.GetCharacter(5) != 'f') throw new Exception("Slice");
+  }
+
+  @TestMethod
+  replacementDoesNotMutateSource(): void {
+    const text = SourceText.From("a\r\nb");
+    const changed = text.WithChanges(new TextSpan(1, 2), "\nx\n");
+    if (text.Text != "a\r\nb" || changed.Text != "a\nx\nb" || changed.LineCount != 3) throw new Exception("Immutable replacement");
+  }
+
+  @TestMethod
+  insertionAndDeletion(): void {
+    const text = SourceText.From("ab");
+    if (text.WithChanges(new TextSpan(1, 0), "X").Text != "aXb" || text.WithChanges(new TextSpan(0, 2), "").Text != "") throw new Exception("Insert/delete");
+  }
+
+  @TestMethod
+  positionSpanCrossesLines(): void {
+    const span = SourceText.From("a\r\nbc").GetLinePositionSpan(new TextSpan(1, 3));
+    if (span.Start.Line != 0 || span.Start.Character != 1 || span.End.Line != 1 || span.End.Character != 1) throw new Exception("Position span");
+  }
+
+  @TestMethod
+  exhaustiveShortLineMaps(): void {
+    const alphabet = "x\r\n";
+    let count = 1;
+    for (let length = 0; length <= 5; length++) {
+      for (let value = 0; value < count; value++) {
+        let source = "";
+        let remaining = value;
+        for (let i = 0; i < length; i++) {
+          source += alphabet.Substring(remaining % 3, 1);
+          remaining /= 3;
+        }
+        const text = SourceText.From(source);
+        let expectedLine = 0;
+        let expectedStart = 0;
+        for (let position = 0; position <= source.Length; position++) {
+          if (position > 0 && (source[position - 1] == '\n' || (source[position - 1] == '\r' && (position == source.Length || source[position] != '\n')))) {
+            expectedLine++;
+            expectedStart = position;
+          }
+          count *= 3;
+          const actual = text.GetLinePosition(position);
+          if (actual.Line != expectedLine || actual.Character != position - expectedStart) throw new Exception("Exhaustive line map");
+        }
+        if (text.LineCount != expectedLine + 1) throw new Exception("Exhaustive line count");
+      }
+    }
+  }
+}

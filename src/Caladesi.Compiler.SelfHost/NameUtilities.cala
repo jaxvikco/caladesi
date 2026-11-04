@@ -1,0 +1,26 @@
+import { StringBuilder } from "System.Text";
+
+export sealed class NameUtilities {
+  static ToPascalCase(value: string): string {
+    ArgumentNullException.ThrowIfNull(value);
+    const builder = new StringBuilder();
+    let upper = true;
+    for (let i = 0; i < value.Length; i++) {
+      const character = value[i];
+      if (char.IsLetterOrDigit(character)) {
+        builder.Append(upper ? char.ToUpperInvariant(character) : character);
+        upper = false;
+      } else upper = true;
+    }
+    if (builder.Length > 0 && char.IsDigit(builder[0])) builder.Insert(0, '_');
+    return builder.ToString();
+  }
+
+  static FlipFirstCase(value: string): string {
+    ArgumentNullException.ThrowIfNull(value);
+    if (value.Length == 0) return value;
+    const first = value[0];
+    const flipped = char.IsUpper(first) ? char.ToLowerInvariant(first) : char.ToUpperInvariant(first);
+    return flipped.ToString() + value.Substring(1);
+  }
+}

@@ -1,0 +1,15 @@
+import { TextSpan } from "../Text/TextSpan";
+import { SyntaxTree } from "../Syntax/SyntaxTree";
+import { Symbol } from "Caladesi.Compiler.Symbols";
+
+export struct type SymbolReference = { readonly Tree: SyntaxTree; readonly Span: TextSpan; readonly IsDeclaration: bool };
+export sealed class SymbolAt {
+  constructor(public readonly Symbol: Symbol, public readonly Span: TextSpan, public readonly IsDeclaration: bool) {}
+  override Equals(other: object?): bool {
+    if (!(other instanceof SymbolAt)) return false;
+    const at = other as SymbolAt;
+    return this.Symbol.Equals(at.Symbol) && this.Span.Start == at.Span.Start &&
+      this.Span.Length == at.Span.Length && this.IsDeclaration == at.IsDeclaration;
+  }
+  override GetHashCode(): int { return HashCode.Combine(this.Symbol, this.Span, this.IsDeclaration); }
+}

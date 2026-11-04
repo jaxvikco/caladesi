@@ -47,6 +47,7 @@ internal static class E2EEnvironment
             {
                 ["CALADESI_PACK_OUT"] = feed,
                 ["CALADESI_PACK_WORK"] = Path.Combine(e2eDir, "pack-obj"),
+                ["CALADESI_VERSION"] = "1.0.0",
             };
             ProcessResult result = await Dotnet.RunProcessAsync("bash", [Path.Combine(RepoRoot, "eng", "pack.sh")], RepoRoot, env, TimeSpan.FromMinutes(10)).ConfigureAwait(false);
             if (result.ExitCode != 0)

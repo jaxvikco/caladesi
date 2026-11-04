@@ -1,0 +1,126 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { ISignatureTypeProvider, PrimitiveTypeCode, MetadataReader, TypeDefinitionHandle, TypeReferenceHandle, TypeSpecificationHandle, ArrayShape, MethodSignature } from "System.Reflection.Metadata";
+import { ThreadStaticAttribute } from "System";
+import { RuntimeHelpers } from "System.Runtime.CompilerServices";
+import { SymbolKind } from "../Symbol";
+import { TypeSymbol, TypeKind, TypeParameterSymbol, ArrayTypeSymbol, NullableTypeSymbol, ErrorTypeSymbol } from "../TypeSymbols";
+import { NamedTypeSymbol } from "../NamedTypeSymbol";
+import { SpecialType, SpecialTypes } from "../SpecialType";
+import { MetadataAssemblySymbol } from "./MetadataAssemblySymbol";
+import { ReferenceSet } from "./ReferenceSet";
+
+export sealed class GenericContext {
+  constructor(public readonly TypeParameters: ImmutableArray<TypeParameterSymbol>,
+    public readonly MethodParameters: ImmutableArray<TypeParameterSymbol>) {}
+  static readonly Empty: GenericContext = new GenericContext(
+    ImmutableArray<TypeParameterSymbol>.Empty, ImmutableArray<TypeParameterSymbol>.Empty);
+}
+
+export sealed class ByRefTypeSymbol extends TypeSymbol {
+  constructor(public readonly Element: TypeSymbol) { super(); }
+  override get Kind(): SymbolKind { return SymbolKind.NamedType; }
+  override get Name(): string { return this.Element.Name + "&"; }
+  override get TypeKind(): TypeKind { return TypeKind.Error; }
+  override get IsReferenceType(): bool { return false; }
+  override get IsValueType(): bool { return false; }
+  override Equals(other: TypeSymbol?): bool {
+    return other instanceof ByRefTypeSymbol && (other as ByRefTypeSymbol).Element.Equals(this.Element);
+  }
+  override GetHashCode(): int { return this.Element.GetHashCode() + 1; }
+}
+
+export sealed class UnsupportedTypeSymbol extends NamedTypeSymbol {
+  constructor(private readonly name: string) { super(); }
+  override get Name(): string { return this.name; }
+  override get TypeKind(): TypeKind { return TypeKind.Error; }
+  override get TypeParameters(): ImmutableArray<TypeParameterSymbol> { return ImmutableArray<TypeParameterSymbol>.Empty; }
+  override get TypeArguments(): ImmutableArray<TypeSymbol> { return ImmutableArray<TypeSymbol>.Empty; }
+  override Equals(other: TypeSymbol?): bool { return object.ReferenceEquals(this, other); }
+  override GetHashCode(): int { return RuntimeHelpers.GetHashCode(this); }
+}
+
+export sealed class MetadataTypeProvider implements ISignatureTypeProvider<TypeSymbol, GenericContext> {
+  @ThreadStatic
+  static SawIsExternalInit: bool = false;
+  @ThreadStatic
+  static SawUnsupported: bool = false;
+
+  constructor(private readonly assembly: MetadataAssemblySymbol) {}
+  private get Set(): ReferenceSet { return this.assembly.ReferenceSet; }
+
+  GetPrimitiveType(typeCode: PrimitiveTypeCode): TypeSymbol {
+    let special = SpecialType.None;
+    switch (typeCode) {
+      case PrimitiveTypeCode.Boolean: special = SpecialType.Boolean; break;
+      case PrimitiveTypeCode.Char: special = SpecialType.Char; break;
+      case PrimitiveTypeCode.SByte: special = SpecialType.SByte; break;
+      case PrimitiveTypeCode.Byte: special = SpecialType.Byte; break;
+      case PrimitiveTypeCode.Int16: special = SpecialType.Int16; break;
+      case PrimitiveTypeCode.UInt16: special = SpecialType.UInt16; break;
+      case PrimitiveTypeCode.Int32: special = SpecialType.Int32; break;
+      case PrimitiveTypeCode.UInt32: special = SpecialType.UInt32; break;
+      case PrimitiveTypeCode.Int64: special = SpecialType.Int64; break;
+      case PrimitiveTypeCode.UInt64: special = SpecialType.UInt64; break;
+      case PrimitiveTypeCode.Single: special = SpecialType.Single; break;
+      case PrimitiveTypeCode.Double: special = SpecialType.Double; break;
+      case PrimitiveTypeCode.String: special = SpecialType.String; break;
+      case PrimitiveTypeCode.Object: special = SpecialType.Object; break;
+      case PrimitiveTypeCode.Void: special = SpecialType.Void; break;
+      case PrimitiveTypeCode.IntPtr: special = SpecialType.IntPtr; break;
+      case PrimitiveTypeCode.UIntPtr: special = SpecialType.UIntPtr; break;
+    }
+    if (special == SpecialType.None) {
+      MetadataTypeProvider.SawUnsupported = true;
+      return new UnsupportedTypeSymbol("typedref");
+    }
+    return this.Set.GetSpecialType(special) ?? new ErrorTypeSymbol(SpecialTypes.MetadataName(special) ?? "?");
+  }
+
+  GetTypeFromDefinition(reader: MetadataReader, handle: TypeDefinitionHandle, rawTypeKind: byte): TypeSymbol {
+    return this.assembly.GetTypeDefinition(handle);
+  }
+  GetTypeFromReference(reader: MetadataReader, handle: TypeReferenceHandle, rawTypeKind: byte): TypeSymbol {
+    return this.assembly.ResolveTypeReference(handle);
+  }
+  GetTypeFromSpecification(reader: MetadataReader, genericContext: GenericContext,
+    handle: TypeSpecificationHandle, rawTypeKind: byte): TypeSymbol {
+    return reader.GetTypeSpecification(handle).DecodeSignature<TypeSymbol, GenericContext>(this, genericContext);
+  }
+  GetSZArrayType(elementType: TypeSymbol): TypeSymbol {
+    return new ArrayTypeSymbol(elementType, this.Set.GetSpecialType(SpecialType.Array));
+  }
+  GetArrayType(elementType: TypeSymbol, shape: ArrayShape): TypeSymbol {
+    return new ArrayTypeSymbol(elementType, this.Set.GetSpecialType(SpecialType.Array), shape.Rank);
+  }
+  GetByReferenceType(elementType: TypeSymbol): TypeSymbol { return new ByRefTypeSymbol(elementType); }
+  GetPointerType(elementType: TypeSymbol): TypeSymbol {
+    MetadataTypeProvider.SawUnsupported = true;
+    return new UnsupportedTypeSymbol("pointer");
+  }
+  GetFunctionPointerType(signature: MethodSignature<TypeSymbol>): TypeSymbol {
+    MetadataTypeProvider.SawUnsupported = true;
+    return new UnsupportedTypeSymbol("function pointer");
+  }
+  GetPinnedType(elementType: TypeSymbol): TypeSymbol { return elementType; }
+  GetModifiedType(modifier: TypeSymbol, unmodifiedType: TypeSymbol, isRequired: bool): TypeSymbol {
+    if (modifier instanceof NamedTypeSymbol && modifier.Name == "IsExternalInit") {
+      MetadataTypeProvider.SawIsExternalInit = true;
+    }
+    return unmodifiedType;
+  }
+  GetGenericInstantiation(genericType: TypeSymbol, typeArguments: ImmutableArray<TypeSymbol>): TypeSymbol {
+    if (!(genericType instanceof NamedTypeSymbol) || genericType instanceof ErrorTypeSymbol) return genericType;
+    const named = genericType as NamedTypeSymbol;
+    if (named.Arity != typeArguments.Length) return new ErrorTypeSymbol(named.Name);
+    if (named.SpecialType == SpecialType.Nullable) return new NullableTypeSymbol(typeArguments[0]);
+    return named.Construct(typeArguments);
+  }
+  GetGenericMethodParameter(genericContext: GenericContext, index: int): TypeSymbol {
+    return index >= 0 && index < genericContext.MethodParameters.Length
+      ? genericContext.MethodParameters[index] : new ErrorTypeSymbol("!!" + index);
+  }
+  GetGenericTypeParameter(genericContext: GenericContext, index: int): TypeSymbol {
+    return index >= 0 && index < genericContext.TypeParameters.Length
+      ? genericContext.TypeParameters[index] : new ErrorTypeSymbol("!" + index);
+  }
+}

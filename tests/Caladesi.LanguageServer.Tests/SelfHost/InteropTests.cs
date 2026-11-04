@@ -1,0 +1,68 @@
+using System.Text;
+using Caladesi.LanguageServer.Projects;
+using Caladesi.LanguageServer.Protocol;
+
+namespace Caladesi.LanguageServer.Tests;
+
+[TestClass]
+public class InteropTests
+{
+    [TestMethod]
+    public void ProjectPropertyLookupPreservesValues()
+    {
+        MsBuildProjectData data = new();
+        data.Properties.Add("AssemblyName", "PortedProject");
+        Assert.AreEqual("PortedProject", data.Property("AssemblyName"));
+        Assert.AreEqual("", data.Property("Missing"));
+    }
+
+    [TestMethod]
+    public void TransportSkipsInvalidHeadersAndReadsUtf8Payload()
+    {
+        var body = Encoding.UTF8.GetBytes(/*lang=json,strict*/ """{"text":"🦎"}""");
+        var header = Encoding.ASCII.GetBytes("invalid\r\nContent-Length: nope\r\n\r\nContent-Length: " + body.Length.ToString(System.Globalization.CultureInfo.InvariantCulture) + "\r\n\r\n");
+        using MemoryStream input = new();
+        input.Write(header);
+        input.Write(body);
+        input.Position = 0;
+        MessageReader reader = new(input);
+        CollectionAssert.AreEqual(body, reader.ReadMessage());
+        Assert.IsNull(reader.ReadMessage());
+    }
+
+    [TestMethod]
+    public void WriterCountsUtf8BytesRatherThanCharacters()
+    {
+        var body = Encoding.UTF8.GetBytes(/*lang=json,strict*/ """{"text":"å"}""");
+        using MemoryStream output = new();
+        new MessageWriter(output).Write(body);
+        output.Position = 0;
+        CollectionAssert.AreEqual(body, new MessageReader(output).ReadMessage());
+    }
+
+    [TestMethod]
+    public async Task StandaloneInlineUnionFindsRuntimeReference()
+    {
+        Assert.IsTrue(File.Exists(Path.Combine(AppContext.BaseDirectory, "Caladesi.Runtime.SelfHost.dll")));
+        using TestClient client = new();
+        _ = await client.Initialize().ConfigureAwait(false);
+        const string uri = "file:///virtual/selfhost-inline-union.cala";
+        client.Open(uri, "const value: int | string = 42;\nlet invalid: any = value;\n");
+        var diagnostics = client.WaitForDiagnostics(uri).GetProperty("diagnostics");
+        Assert.AreEqual(1, diagnostics.GetArrayLength());
+        Assert.AreEqual("CAL0201", diagnostics[0].GetProperty("code").GetString());
+    }
+
+    [TestMethod]
+    public void LanguageServerUsesNativeCompilerAssembly()
+    {
+        var server = typeof(MsBuildProjectData).Assembly;
+        string[] references = [.. server.GetReferencedAssemblies().Select(assembly => assembly.Name!)];
+        Assert.AreEqual("cala-ls-selfhost", server.GetName().Name);
+        CollectionAssert.Contains(references, "Caladesi.Compiler.SelfHost");
+        CollectionAssert.DoesNotContain(references, "Caladesi.Compiler");
+        CollectionAssert.DoesNotContain(references, "Caladesi.Runtime");
+        Assert.AreEqual("Caladesi.Compiler.SelfHost",
+            typeof(MsBuildProjectData).GetMethod(nameof(MsBuildProjectData.ToCompilationOptions))!.ReturnType.Assembly.GetName().Name);
+    }
+}

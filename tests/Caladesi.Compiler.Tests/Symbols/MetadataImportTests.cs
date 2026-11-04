@@ -1,5 +1,9 @@
+extern alias SelfHost;
+
 using Caladesi.Compiler.Symbols;
 using Caladesi.Compiler.Symbols.Metadata;
+using NativeMetadata = SelfHost::Caladesi.Compiler.Symbols.Metadata;
+using NativeSymbols = SelfHost::Caladesi.Compiler.Symbols;
 
 namespace Caladesi.Compiler.Tests.Symbols;
 
@@ -7,6 +11,11 @@ namespace Caladesi.Compiler.Tests.Symbols;
 public class MetadataImportTests
 {
     private static readonly Lazy<ReferenceSet> s_set = new(() => ReferenceSet.Create(TestReferences.Paths));
+
+    public static void NullableTupleGeneric(Tuple<(string? Text, int Number)?, string?> values)
+    {
+        _ = values;
+    }
 
     [TestMethod]
     public void SpecialTypes_Resolve()
@@ -58,6 +67,21 @@ public class MetadataImportTests
     }
 
     [TestMethod]
+    public void NullableMetadataDecoderKeepsGenericFlagPositionsAligned()
+    {
+        string[] paths = [.. TestReferences.Paths, typeof(MetadataImportTests).Assembly.Location];
+        MethodSymbol oracle = ReferenceSet.Create(paths)
+            .FindType("Caladesi.Compiler.Tests.Symbols.MetadataImportTests")!
+            .GetMembers(nameof(NullableTupleGeneric)).OfType<MethodSymbol>().Single();
+        NativeSymbols.MethodSymbol native = NativeMetadata.ReferenceSet.Create(paths)
+            .FindType("Caladesi.Compiler.Tests.Symbols.MetadataImportTests")!
+            .GetMembers(nameof(NullableTupleGeneric)).OfType<NativeSymbols.MethodSymbol>().Single();
+
+        AssertNestedNullableTypes(oracle.Parameters[0].Type);
+        AssertNestedNullableTypes(native.Parameters[0].Type);
+    }
+
+    [TestMethod]
     public void Dictionary_TryGetValue_OutParam()
     {
         ReferenceSet set = s_set.Value;
@@ -75,5 +99,25 @@ public class MetadataImportTests
         Assert.AreEqual(TypeKind.Interface, set.FindType("System.IDisposable")!.TypeKind);
         NamedTypeSymbol func = set.FindType("System.Func`2")!.Construct(set.GetSpecialType(SpecialType.Int32)!, set.GetSpecialType(SpecialType.String)!);
         Assert.AreEqual("string", func.DelegateInvokeMethod!.ReturnType.ToDisplayString());
+    }
+
+    private static void AssertNestedNullableTypes(TypeSymbol dictionaryType)
+    {
+        NamedTypeSymbol dictionary = (NamedTypeSymbol)dictionaryType;
+        Assert.HasCount(2, dictionary.TypeArguments);
+        NullableTypeSymbol tupleType = (NullableTypeSymbol)dictionary.TypeArguments[0];
+        NamedTypeSymbol tuple = (NamedTypeSymbol)tupleType.Underlying;
+        Assert.IsTrue(tuple.TypeArguments[0] is NullableTypeSymbol);
+        Assert.IsTrue(dictionary.TypeArguments[1] is NullableTypeSymbol);
+    }
+
+    private static void AssertNestedNullableTypes(NativeSymbols.TypeSymbol dictionaryType)
+    {
+        NativeSymbols.NamedTypeSymbol dictionary = (NativeSymbols.NamedTypeSymbol)dictionaryType;
+        Assert.HasCount(2, dictionary.TypeArguments);
+        NativeSymbols.NullableTypeSymbol tupleType = (NativeSymbols.NullableTypeSymbol)dictionary.TypeArguments[0];
+        NativeSymbols.NamedTypeSymbol tuple = (NativeSymbols.NamedTypeSymbol)tupleType.Underlying;
+        Assert.IsTrue(tuple.TypeArguments[0] is NativeSymbols.NullableTypeSymbol);
+        Assert.IsTrue(dictionary.TypeArguments[1] is NativeSymbols.NullableTypeSymbol);
     }
 }

@@ -40,6 +40,15 @@ code hello
 
 - `Caladesi: Restart Language Server`
 
+## Building from source
+
+Run `eng/bootstrap.sh` from the repository root to explicitly build and test a native
+bootstrap with the retained C# oracle, then
+`CALADESI_BOOTSTRAP_DIR="$PWD/artifacts/bootstrap" eng/package-vscode.sh`.
+Packaging verifies three native stages with stable release identities and tests LSP
+initialize, diagnostics, hover and shutdown before bundling the native language server.
+It never publishes the C# language server or silently creates a bootstrap.
+
 ## Learn more
 
 - [Source and documentation](https://github.com/jaxvikco/caladesi)

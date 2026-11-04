@@ -1,0 +1,405 @@
+import { Object, StringComparer } from "System";
+import { List } from "System.Collections.Generic";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { Binder } from "./Binder";
+import { Symbol } from "../Symbols/Symbol";
+import { TypeSymbol, TypeParameterSymbol, TypeParameterConstraints, NullableTypeSymbol, ArrayTypeSymbol,
+  NeverTypeSymbol, NullTypeSymbol, ErrorTypeSymbol } from "../Symbols/TypeSymbols";
+import { NamedTypeSymbol, ConstructedNamedType } from "../Symbols/NamedTypeSymbol";
+import { NamespaceSymbol } from "../Symbols/NamespaceSymbol";
+import { TypeMap } from "../Symbols/TypeMap";
+import { SpecialType } from "../Symbols/SpecialType";
+import { SourceMethodSymbol } from "../Symbols/Source/SourceMembers";
+import { TypeAliasSymbol } from "../Symbols/Source/SourceTypes";
+import { SourceUnionSymbol } from "../Symbols/Source/SourceTypeAliasTypes";
+import { FileModuleSymbol } from "../FileScope";
+import { SyntaxNode } from "../Syntax/SyntaxElement";
+import { SyntaxKind } from "../Syntax/SyntaxKind";
+import { TypeSyntax, NameSyntax, SimpleNameSyntax, IdentifierNameSyntax, GenericNameSyntax,
+  QualifiedNameSyntax, ArrayTypeSyntax, ReadonlyArrayTypeSyntax, TupleTypeSyntax, UnionTypeSyntax,
+  NullableTypeSyntax, FunctionTypeSyntax, ObjectTypeSyntax, LiteralTypeSyntax, ParenthesizedTypeSyntax,
+  IntersectionTypeSyntax, SpecialConstraintTypeSyntax, NewConstraintTypeSyntax, MissingTypeSyntax,
+  TypeArgumentListSyntax, TypeParameterSyntax } from "../Syntax/Nodes.Core";
+import { Descriptors } from "../Diagnostics/Descriptors";
+
+class BinderConstraintState {
+  Class: bool = false;
+  Struct: bool = false;
+  New: bool = false;
+  NotNull: bool = false;
+  readonly Types: List<TypeSymbol> = new List<TypeSymbol>();
+}
+
+export sealed class BinderTypes<TFile> {
+  constructor(private readonly binder: Binder<TFile>) {}
+  Bind(syntax: TypeSyntax, allowVoid: bool = false): TypeSymbol {
+    const type = this.BindCore(syntax, allowVoid);
+    this.binder.RecordType(syntax, type);
+    return type;
+  }
+  private BindCore(syntax: TypeSyntax, allowVoid: bool): TypeSymbol {
+    if (syntax instanceof IdentifierNameSyntax) {
+      const name = syntax as IdentifierNameSyntax;
+      if (name.Identifier.IsMissing) return this.binder.ErrorType;
+      if (name.Identifier.Kind == SyntaxKind.VoidKeyword) {
+        if (allowVoid) return this.binder.VoidType;
+        this.binder.Report(Descriptors.VoidNotAllowed, syntax, []);
+        return this.binder.ErrorType;
+      }
+      return this.BindSimpleName(name.Name, ImmutableArray<TypeSymbol>.Empty, syntax);
+    }
+    if (syntax instanceof GenericNameSyntax) {
+      const name = syntax as GenericNameSyntax;
+      return this.BindSimpleName(name.Name, this.BindTypeArguments(name.TypeArguments), syntax);
+    }
+    if (syntax instanceof QualifiedNameSyntax) return this.BindQualifiedName(syntax as QualifiedNameSyntax);
+    if (syntax instanceof ArrayTypeSyntax) {
+      const element = this.Bind((syntax as ArrayTypeSyntax).ElementType);
+      if (element.IsVoid) {
+        this.binder.Report(Descriptors.VoidNotAllowed, syntax, []);
+        return this.binder.ErrorType;
+      }
+      return this.binder.Context.CreateArrayType(element);
+    }
+    if (syntax instanceof ReadonlyArrayTypeSyntax) {
+      const inner = this.Bind((syntax as ReadonlyArrayTypeSyntax).Type);
+      if (inner instanceof ArrayTypeSymbol) {
+        const definition = this.binder.Context.GetWellKnownType("System.Collections.Generic.IReadOnlyList`1");
+        return definition == null ? this.binder.ErrorType :
+          definition.Construct(ImmutableArray.Create<TypeSymbol>((inner as ArrayTypeSymbol).ElementType));
+      }
+      if (!inner.IsErrorType) this.binder.Report(Descriptors.ReadonlyOnlyArrays, syntax, []);
+      return inner;
+    }
+    if (syntax instanceof NullableTypeSyntax) return this.MakeNullable(this.Bind((syntax as NullableTypeSyntax).ElementType), syntax);
+    if (syntax instanceof ParenthesizedTypeSyntax) return this.Bind((syntax as ParenthesizedTypeSyntax).Type, allowVoid);
+    if (syntax instanceof TupleTypeSyntax) {
+      const tuple = syntax as TupleTypeSyntax;
+      const types = ImmutableArray.CreateBuilder<TypeSymbol>();
+      const names = ImmutableArray.CreateBuilder<string?>();
+      let anyNames = false;
+      for (const element of tuple.Elements) {
+        types.Add(this.Bind(element.Type));
+        names.Add(element.NameToken?.Text);
+        if (element.NameToken != null) anyNames = true;
+      }
+      return this.MakeTuple(types.ToImmutable(), anyNames ? names.ToImmutable() : new ImmutableArray<string?>(), syntax);
+    }
+    if (syntax instanceof UnionTypeSyntax) return this.BindUnion(syntax as UnionTypeSyntax);
+    if (syntax instanceof FunctionTypeSyntax) return this.BindFunction(syntax as FunctionTypeSyntax);
+    if (syntax instanceof ObjectTypeSyntax) this.binder.Report(Descriptors.ObjectTypeLiteralNotAllowed, syntax, []);
+    else if (syntax instanceof IntersectionTypeSyntax) this.binder.Report(Descriptors.IntersectionNotAllowed, syntax, []);
+    else if (syntax instanceof SpecialConstraintTypeSyntax || syntax instanceof NewConstraintTypeSyntax)
+      this.binder.Report(Descriptors.ConstraintNotAType, syntax, []);
+    else if (syntax instanceof LiteralTypeSyntax) {
+      const literal = syntax as LiteralTypeSyntax;
+      const kind = literal.Literal.Kind;
+      if (kind == SyntaxKind.NullLiteralExpression) return NullTypeSymbol.Instance;
+      if (kind == SyntaxKind.TrueLiteralExpression || kind == SyntaxKind.FalseLiteralExpression) return this.binder.BoolType;
+      if (kind == SyntaxKind.NumericLiteralExpression) return this.binder.DoubleType;
+      if (kind == SyntaxKind.StringLiteralExpression) this.binder.Report(Descriptors.StringLiteralTypeNotAllowed, syntax, []);
+    }
+    return this.binder.ErrorType;
+  }
+  PredefinedType(name: string): TypeSymbol? {
+    let special = SpecialType.None;
+    switch (name) {
+      case "double": special = SpecialType.Double; break;
+      case "string": special = SpecialType.String; break;
+      case "bool": special = SpecialType.Boolean; break;
+      case "object": special = SpecialType.Object; break;
+      case "never": return NeverTypeSymbol.Instance;
+      case "bigint": special = SpecialType.BigInteger; break;
+      case "int": special = SpecialType.Int32; break;
+      case "long": special = SpecialType.Int64; break;
+      case "short": special = SpecialType.Int16; break;
+      case "byte": special = SpecialType.Byte; break;
+      case "sbyte": special = SpecialType.SByte; break;
+      case "uint": special = SpecialType.UInt32; break;
+      case "ulong": special = SpecialType.UInt64; break;
+      case "ushort": special = SpecialType.UInt16; break;
+      case "float": special = SpecialType.Single; break;
+      case "decimal": special = SpecialType.Decimal; break;
+      case "nint": special = SpecialType.IntPtr; break;
+      case "nuint": special = SpecialType.UIntPtr; break;
+      case "char": special = SpecialType.Char; break;
+    }
+    return special == SpecialType.None ? null : this.binder.Special(special);
+  }
+  MakeNullable(type: TypeSymbol, at: SyntaxNode?): TypeSymbol {
+    if (type.IsErrorType || type instanceof NullableTypeSymbol) return type;
+    if (type.IsVoid || type.IsNullType || type.IsNeverType) {
+      this.binder.Report(Descriptors.CannotBeNullable, at, [type.ToDisplayString()]);
+      return this.binder.ErrorType;
+    }
+    return new NullableTypeSymbol(type);
+  }
+  BindTypeArguments(list: TypeArgumentListSyntax, allowVoid: bool = false): ImmutableArray<TypeSymbol> {
+    const result = ImmutableArray.CreateBuilder<TypeSymbol>();
+    for (const argument of list.Arguments) result.Add(this.Bind(argument, allowVoid));
+    return result.ToImmutable();
+  }
+  private BindFunction(syntax: FunctionTypeSyntax): TypeSymbol {
+    if (syntax.TypeParameters != null) {
+      this.binder.Report(Descriptors.FeatureNotSupported, syntax.TypeParameters, ["Generic function types"]);
+      return this.binder.ErrorType;
+    }
+    const parameters = ImmutableArray.CreateBuilder<TypeSymbol>();
+    for (const parameter of syntax.Parameters.Parameters) {
+      if (parameter.TypeAnnotation == null) {
+        this.binder.Report(Descriptors.TypeAnnotationRequired, parameter, []);
+        parameters.Add(this.binder.ErrorType);
+      } else {
+        let type = this.Bind(parameter.TypeAnnotation.Type);
+        if (parameter.QuestionToken != null) type = this.MakeNullable(type, parameter);
+        parameters.Add(type);
+      }
+    }
+    return this.MakeDelegateType(parameters.ToImmutable(), this.Bind(syntax.ReturnType, true), syntax);
+  }
+  MakeDelegateType(parameters: ImmutableArray<TypeSymbol>, returnType: TypeSymbol, at: SyntaxNode?): TypeSymbol {
+    if (parameters.Length > 16) {
+      this.binder.Report(Descriptors.TooManyParameters, at, []);
+      return this.binder.ErrorType;
+    }
+    if (returnType.ReturnsNothing) {
+      const name = parameters.Length == 0 ? "System.Action" : "System.Action`" + parameters.Length;
+      const definition = this.binder.Context.GetWellKnownType(name);
+      if (definition == null) return this.binder.ErrorType;
+      return parameters.Length == 0 ? definition : definition.Construct(parameters);
+    }
+    const definition = this.binder.Context.GetWellKnownType("System.Func`" + (parameters.Length + 1));
+    return definition == null ? this.binder.ErrorType : definition.Construct(parameters.Add(returnType));
+  }
+  MakeTuple(elements: ImmutableArray<TypeSymbol>, names: ImmutableArray<string?>, at: SyntaxNode?): TypeSymbol {
+    if (elements.Length == 0 || elements.Length > 7) {
+      this.binder.Report(Descriptors.TupleSize, at, []);
+      return this.binder.ErrorType;
+    }
+    const definition = this.binder.Context.GetWellKnownType("System.ValueTuple`" + elements.Length);
+    return definition == null ? this.binder.ErrorType : new ConstructedNamedType(definition, elements, names);
+  }
+  private AddUnionCase(cases: List<TypeSymbol>, type: TypeSymbol): bool {
+    if (type.IsNullType) return true;
+    if (type instanceof NullableTypeSymbol) {
+      this.AddUnionCase(cases, (type as NullableTypeSymbol).Underlying);
+      return true;
+    }
+    if (type instanceof NamedTypeSymbol && (type as NamedTypeSymbol).IsUnionType && !type.IsErrorType) {
+      let nullable = false;
+      for (const alternative of (type as NamedTypeSymbol).UnionCases)
+        if (this.AddUnionCase(cases, alternative)) nullable = true;
+      return nullable;
+    }
+    for (const previous of cases) if (previous.Equals(type)) return false;
+    cases.Add(type);
+    return false;
+  }
+  private BindUnion(syntax: UnionTypeSyntax): TypeSymbol {
+    let allStrings = syntax.Types.Count > 0;
+    for (const type of syntax.Types)
+      if (!(type instanceof LiteralTypeSyntax) || (type as LiteralTypeSyntax).Literal.Kind != SyntaxKind.StringLiteralExpression)
+        allStrings = false;
+    if (allStrings) {
+      this.binder.Report(Descriptors.StringLiteralUnionNeedsAlias, syntax, []);
+      return this.binder.ErrorType;
+    }
+    const cases = new List<TypeSymbol>();
+    let nullable = false;
+    for (const syntaxType of syntax.Types) {
+      const type = this.Bind(syntaxType);
+      if (type.IsErrorType) return type;
+      if (type.IsVoid) {
+        this.binder.Report(Descriptors.VoidNotAllowed, syntaxType, []);
+        return this.binder.ErrorType;
+      }
+      if (this.AddUnionCase(cases, type)) nullable = true;
+    }
+    if (cases.Count == 0) return NullTypeSymbol.Instance;
+    const result = cases.Count == 1 ? cases[0] : this.MakeAnonymousUnion(cases, syntax);
+    return nullable ? this.MakeNullable(result, syntax) : result;
+  }
+  MakeAnonymousUnion(cases: List<TypeSymbol>, at: SyntaxNode?): TypeSymbol {
+    if (cases.Count > 8) {
+      this.binder.Report(Descriptors.UnionTooLarge, at, []);
+      return this.binder.ErrorType;
+    }
+    cases.Sort((left, right) => string.CompareOrdinal(left.ToDisplayString(), right.ToDisplayString()));
+    const name = "Caladesi.Runtime.Union`" + cases.Count;
+    const definition = this.binder.Context.GetWellKnownType(name);
+    if (definition == null) {
+      this.binder.Report(Descriptors.RuntimeMissing, at, [name]);
+      return this.binder.ErrorType;
+    }
+    return definition.Construct(ImmutableArray.CreateRange<TypeSymbol>(cases));
+  }
+  private NamedOrNullable(type: NamedTypeSymbol): TypeSymbol {
+    return type instanceof SourceUnionSymbol<TFile> && (type as SourceUnionSymbol<TFile>).IncludesNull ?
+      new NullableTypeSymbol(type) : type;
+  }
+  private ConstructNamed(definition: NamedTypeSymbol, arguments: ImmutableArray<TypeSymbol>): TypeSymbol {
+    for (const argument of arguments) if (argument.IsErrorType) return this.binder.ErrorType;
+    return definition.Construct(arguments);
+  }
+  private ExpandAlias(alias: TypeAliasSymbol<TFile>, arguments: ImmutableArray<TypeSymbol>): TypeSymbol {
+    const target = alias.Target;
+    return arguments.IsDefaultOrEmpty || target.IsErrorType ? target : new TypeMap(alias.TypeParameters, arguments).Substitute(target);
+  }
+  BindSimpleName(name: string, arguments: ImmutableArray<TypeSymbol>, syntax: SyntaxNode): TypeSymbol {
+    if (arguments.IsDefault) arguments = ImmutableArray<TypeSymbol>.Empty;
+    if (arguments.Length == 0 && this.binder.TypeParameters.ContainsKey(name)) {
+      const parameter = this.binder.TypeParameters[name];
+      this.binder.Record(syntax, parameter);
+      return parameter;
+    }
+    const candidates = this.binder.Context.GetScope(this.binder.File).Lookup(name);
+    let wrongArity = false;
+    let nonType = false;
+    let ownArity = 1;
+    for (const candidate of candidates) {
+      let found: TypeSymbol? = null;
+      if (candidate instanceof NamedTypeSymbol) {
+        const type = candidate as NamedTypeSymbol;
+        ownArity = type.OwnArity;
+        if (type.OwnArity == arguments.Length)
+          found = arguments.Length == 0 ? this.NamedOrNullable(type) : this.ConstructNamed(type, arguments);
+        else wrongArity = true;
+      } else if (candidate instanceof TypeAliasSymbol<TFile>) {
+        const alias = candidate as TypeAliasSymbol<TFile>;
+        if (alias.TypeParameters.Length == arguments.Length) found = this.ExpandAlias(alias, arguments);
+        else wrongArity = true;
+      } else nonType = true;
+      if (found != null) {
+        this.binder.Record(syntax, found.StripNullable());
+        return found;
+      }
+    }
+    if (wrongArity) {
+      this.binder.Report(arguments.Length == 0 ? Descriptors.TypeRequiresArguments : Descriptors.TypeNotGeneric,
+        syntax, [name, arguments.Length == 0 ? ownArity : arguments.Length]);
+      return this.binder.ErrorType;
+    }
+    if (nonType) {
+      this.binder.Report(Descriptors.NotAType, syntax, [name]);
+      return this.binder.ErrorType;
+    }
+    if (arguments.Length == 0) {
+      const predefined = this.PredefinedType(name);
+      if (predefined != null) return predefined;
+      if (name == "any" || name == "undefined") {
+        this.binder.Report(name == "any" ? Descriptors.AnyNotAllowed : Descriptors.UndefinedNotAllowed, syntax, []);
+        return this.binder.ErrorType;
+      }
+    }
+    this.binder.Report(Descriptors.NameNotFound, syntax, [name]);
+    return this.binder.ErrorType;
+  }
+  private BindQualifiedName(syntax: QualifiedNameSyntax): TypeSymbol {
+    const left = this.ResolveNamespaceOrType(syntax.Left);
+    if (left == null) return this.binder.ErrorType;
+    const right = syntax.Right;
+    const arguments = right instanceof GenericNameSyntax ?
+      this.BindTypeArguments((right as GenericNameSyntax).TypeArguments) : ImmutableArray<TypeSymbol>.Empty;
+    let found: NamedTypeSymbol? = null;
+    if (left instanceof NamespaceSymbol) found = (left as NamespaceSymbol).GetTypeMember(right.Name, arguments.Length);
+    else if (left instanceof NamedTypeSymbol) {
+      for (const candidate of (left as NamedTypeSymbol).GetMembers(right.Name))
+        if (candidate instanceof NamedTypeSymbol && (candidate as NamedTypeSymbol).OwnArity == arguments.Length) {
+          found = candidate as NamedTypeSymbol; break;
+        }
+    } else if (left instanceof FileModuleSymbol<TFile>) {
+      for (const candidate of this.binder.Context.GetScope((left as FileModuleSymbol<TFile>).File).GetExports(right.Name)) {
+        if (candidate instanceof NamedTypeSymbol && (candidate as NamedTypeSymbol).OwnArity == arguments.Length) {
+          found = candidate as NamedTypeSymbol; break;
+        }
+        if (candidate instanceof TypeAliasSymbol<TFile> && (candidate as TypeAliasSymbol<TFile>).TypeParameters.Length == arguments.Length)
+          return this.ExpandAlias(candidate as TypeAliasSymbol<TFile>, arguments);
+      }
+    }
+    if (found == null) {
+      this.binder.Report(Descriptors.NameNotFound, right, [syntax.Left.ToFullString().Trim() + "." + right.Name]);
+      return this.binder.ErrorType;
+    }
+    this.binder.Record(syntax, found);
+    return arguments.Length == 0 ? this.NamedOrNullable(found) : this.ConstructNamed(found, arguments);
+  }
+  ResolveNamespaceOrType(syntax: NameSyntax): Symbol? {
+    if (syntax instanceof IdentifierNameSyntax) {
+      const name = (syntax as IdentifierNameSyntax).Name;
+      if (this.binder.TypeParameters.ContainsKey(name)) return this.binder.TypeParameters[name];
+      const candidates = this.binder.Context.GetScope(this.binder.File).Lookup(name);
+      for (const candidate of candidates)
+        if (candidate instanceof NamespaceSymbol || candidate instanceof FileModuleSymbol<TFile>) {
+          this.binder.Record(syntax, candidate); return candidate;
+        }
+      for (const candidate of candidates) if (candidate instanceof NamedTypeSymbol && (candidate as NamedTypeSymbol).OwnArity == 0) {
+        this.binder.Record(syntax, candidate); return candidate;
+      }
+      this.binder.Report(Descriptors.NameNotFound, syntax, [name]);
+      return null;
+    }
+    if (syntax instanceof GenericNameSyntax) return this.Bind(syntax) as NamedTypeSymbol;
+    if (syntax instanceof QualifiedNameSyntax) {
+      const qualified = syntax as QualifiedNameSyntax;
+      const left = this.ResolveNamespaceOrType(qualified.Left);
+      if (left == null) return null;
+      let found: Symbol? = null;
+      if (left instanceof NamespaceSymbol) {
+        const ns = left as NamespaceSymbol;
+        found = ns.GetNamespaceMember(qualified.Right.Name);
+        if (found == null) found = ns.GetTypeMember(qualified.Right.Name, 0);
+      } else if (left instanceof NamedTypeSymbol) {
+        for (const member of (left as NamedTypeSymbol).GetMembers(qualified.Right.Name))
+          if (member instanceof NamedTypeSymbol) { found = member; break; }
+      }
+      if (found != null) { this.binder.Record(syntax, found); return found; }
+      this.binder.Report(Descriptors.NameNotFound, qualified.Right, [qualified.Right.Name]);
+    }
+    return null;
+  }
+  private VisitConstraint(syntax: TypeSyntax, state: BinderConstraintState): void {
+    if (syntax instanceof IntersectionTypeSyntax) {
+      for (const constraint of (syntax as IntersectionTypeSyntax).Types) this.VisitConstraint(constraint, state);
+    } else if (syntax instanceof ParenthesizedTypeSyntax) this.VisitConstraint((syntax as ParenthesizedTypeSyntax).Type, state);
+    else if (syntax instanceof SpecialConstraintTypeSyntax) {
+      if ((syntax as SpecialConstraintTypeSyntax).Keyword.Kind == SyntaxKind.ClassKeyword) state.Class = true;
+      else state.Struct = true;
+    } else if (syntax instanceof NewConstraintTypeSyntax) state.New = true;
+    else if (syntax instanceof IdentifierNameSyntax && (syntax as IdentifierNameSyntax).Name == "notnull") state.NotNull = true;
+    else {
+      const bound = this.Bind(syntax);
+      if (!bound.IsErrorType) state.Types.Add(bound);
+    }
+  }
+  BindConstraints(syntax: TypeParameterSyntax, parameter: TypeParameterSymbol): TypeParameterConstraints {
+    if (syntax.Constraint == null) return TypeParameterConstraints.None;
+    const state = new BinderConstraintState();
+    this.VisitConstraint(syntax.Constraint!, state);
+    return new TypeParameterConstraints(state.Class, state.Struct, state.New, state.NotNull,
+      ImmutableArray.CreateRange<TypeSymbol>(state.Types));
+  }
+  AdjustDeclaredReturnType(method: SourceMethodSymbol<TFile>, type: TypeSymbol, syntax: TypeSyntax): TypeSymbol {
+    if (type.IsErrorType) return type;
+    if (method.IsAsync && !method.IsIterator && !BinderTypes<TFile>.IsTaskLike(type)) {
+      this.binder.Report(Descriptors.MustReturnTask, syntax, []);
+      return this.binder.ErrorType;
+    }
+    if (method.IsIterator && !BinderTypes<TFile>.IsIteratorReturnType(type, method.IsAsync)) {
+      this.binder.Report(Descriptors.MustReturnEnumerable, syntax, []);
+      return this.binder.ErrorType;
+    }
+    return type;
+  }
+  static IsTaskLike(type: TypeSymbol): bool {
+    if (!(type instanceof NamedTypeSymbol)) return false;
+    const special = (type as NamedTypeSymbol).OriginalDefinition.SpecialType;
+    return special == SpecialType.Task || special == SpecialType.TaskT || special == SpecialType.ValueTask || special == SpecialType.ValueTaskT;
+  }
+  static IsIteratorReturnType(type: TypeSymbol, isAsync: bool): bool {
+    if (!(type instanceof NamedTypeSymbol)) return false;
+    const name = (type as NamedTypeSymbol).OriginalDefinition.ToMetadataString();
+    return isAsync ? name == "System.Collections.Generic.IAsyncEnumerable`1" || name == "System.Collections.Generic.IAsyncEnumerator`1" :
+      name == "System.Collections.Generic.IEnumerable`1" || name == "System.Collections.Generic.IEnumerator`1" ||
+      name == "System.Collections.IEnumerable" || name == "System.Collections.IEnumerator";
+  }
+}

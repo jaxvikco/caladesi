@@ -1,0 +1,73 @@
+import { ConversionKind } from "./Bound/BoundNodes";
+import { MethodSymbol, ConstantValue } from "./Symbols/MemberSymbols";
+
+export struct type Conversion = {
+  readonly Exists: bool;
+  readonly Kind: ConversionKind;
+  readonly IsImplicit: bool;
+  readonly Method: MethodSymbol?;
+  readonly CaseIndex: int;
+  readonly Constant: ConstantValue?;
+  readonly WrapNullable: bool;
+};
+
+// Keep default conversions as absent values; struct operations use helpers, as in TextSpans.
+export sealed class Conversions {
+  static readonly None: Conversion = new Conversion(false, ConversionKind.Identity, false, null, 0, null, false);
+  static readonly Identity: Conversion = Conversions.Create(ConversionKind.Identity, true);
+
+  static Create(kind: ConversionKind, isImplicit: bool): Conversion {
+    return Conversions.Create(kind, isImplicit, null, -1, null);
+  }
+
+  static Create(kind: ConversionKind, isImplicit: bool, method: MethodSymbol?): Conversion {
+    return Conversions.Create(kind, isImplicit, method, -1, null);
+  }
+
+  static Create(kind: ConversionKind, isImplicit: bool, method: MethodSymbol?, caseIndex: int): Conversion {
+    return Conversions.Create(kind, isImplicit, method, caseIndex, null);
+  }
+
+  static Create(kind: ConversionKind, isImplicit: bool, method: MethodSymbol?,
+    caseIndex: int, constant: ConstantValue?): Conversion {
+    return new Conversion(true, kind, isImplicit, method, caseIndex, constant, false);
+  }
+
+  static IsIdentity(conversion: Conversion): bool {
+    return conversion.Exists && conversion.Kind == ConversionKind.Identity;
+  }
+
+  static WithNullableWrap(conversion: Conversion): Conversion {
+    return new Conversion(true, conversion.Kind, conversion.IsImplicit, conversion.Method,
+      conversion.CaseIndex, conversion.Constant, true);
+  }
+
+  static Implicit(kind: ConversionKind): Conversion {
+    return Conversions.Create(kind, true);
+  }
+
+  static Implicit(kind: ConversionKind, method: MethodSymbol?): Conversion {
+    return Conversions.Create(kind, true, method);
+  }
+
+  static Implicit(kind: ConversionKind, method: MethodSymbol?, caseIndex: int): Conversion {
+    return Conversions.Create(kind, true, method, caseIndex);
+  }
+
+  static Implicit(kind: ConversionKind, method: MethodSymbol?,
+    caseIndex: int, constant: ConstantValue?): Conversion {
+    return Conversions.Create(kind, true, method, caseIndex, constant);
+  }
+
+  static Explicit(kind: ConversionKind): Conversion {
+    return Conversions.Create(kind, false);
+  }
+
+  static Explicit(kind: ConversionKind, method: MethodSymbol?): Conversion {
+    return Conversions.Create(kind, false, method);
+  }
+
+  static Explicit(kind: ConversionKind, method: MethodSymbol?, caseIndex: int): Conversion {
+    return Conversions.Create(kind, false, method, caseIndex);
+  }
+}

@@ -1,0 +1,330 @@
+import { ImmutableArray } from "System.Collections.Immutable";
+import { Symbol, Accessibility, SourceLocation, AttributeData } from "../Symbol";
+import { TypeSymbol, TypeParameterSymbol, ErrorTypeSymbol } from "../TypeSymbols";
+import { NamedTypeSymbol } from "../NamedTypeSymbol";
+import { MethodSymbol, MethodKind, ParameterSymbol, FieldSymbol, PropertySymbol, ConstantValue } from "../MemberSymbols";
+import { SpecialType } from "../SpecialType";
+import { SyntaxNode } from "../../Syntax/SyntaxElement";
+import { FunctionDeclarationSyntax, MethodDeclarationSyntax, AccessorDeclarationSyntax, ConstructorDeclarationSyntax,
+  PropertyDeclarationSyntax, ParameterListSyntax, TypeParameterListSyntax, TypeAnnotationSyntax,
+  VariableDeclaratorSyntax, ExpressionSyntax, BlockSyntax } from "../../Syntax/Nodes.Core";
+import { TextSpan } from "../../Text/TextSpan";
+import { BoundBlock } from "../../Bound/BoundNodes";
+import { Diagnostic } from "../../Diagnostics/Diagnostic";
+import { Descriptors } from "../../Diagnostics/Descriptors";
+import { ModifierSet } from "./Modifiers";
+import { SynthesizedBodyKind } from "./SynthesizedBodyKind";
+import { SourceSymbolContext } from "./SourceSymbolContext";
+import { SourceTypeParameters } from "./SourceTypeParameters";
+import { OverrideResolver } from "./OverrideResolver";
+
+export sealed class SourceMethodSymbol<TSourceFile> extends MethodSymbol {
+  private typeParams: ImmutableArray<TypeParameterSymbol>;
+  private typeParamsDone: bool = false;
+  private parameters: ImmutableArray<ParameterSymbol>;
+  private returnType: TypeSymbol? = null;
+  private returnTypeInProgress: bool = false;
+  private boundBody: BoundBlock? = null;
+  private bodyBound: bool = false;
+  private overridden: MethodSymbol? = null;
+  private overriddenDone: bool = false;
+  private emitName: string? = null;
+  private inferredReturn: TypeSymbol? = null;
+  SynthesizedKind: SynthesizedBodyKind = SynthesizedBodyKind.None;
+  IsVirtualFlag: bool = false;
+  IsAbstractFlag: bool = false;
+  IsOverrideFlag: bool = false;
+  IsSealedFlag: bool = false;
+  IsStaticFlag: bool = false;
+  IsEntryPoint: bool = false;
+  AssociatedProperty: PropertySymbol? = null;
+  ParameterList: ParameterListSyntax? = null;
+  TypeParameterList: TypeParameterListSyntax? = null;
+  ReturnAnnotation: TypeAnnotationSyntax? = null;
+  BodySyntax: BlockSyntax? = null;
+  IsGeneratorSyntax: bool = false;
+  HasExplicitIlName: bool = false;
+  DecoratorSyntax: ImmutableArray<SyntaxNode> = ImmutableArray<SyntaxNode>.Empty;
+  ExplicitParameters: ImmutableArray<ParameterSymbol>;
+  ExplicitReturnType: TypeSymbol? = null;
+  ParameterProperties: ImmutableArray<[Parameter: ParameterSymbol, Member: Symbol]>;
+  SyntheticBodyFactory: Func<SourceMethodSymbol<TSourceFile>, BoundBlock?>? = null;
+  IsExpressionBodyImplicitReturn: bool = false;
+  UnionCaseIndex: int = -1;
+  InheritedBaseConstructor: MethodSymbol? = null;
+  ForceAsync: bool = false;
+  constructor(public readonly Context: SourceSymbolContext<TSourceFile>, public readonly File: TSourceFile,
+    public readonly ContainerType: NamedTypeSymbol, private readonly name: string, private readonly kind: MethodKind,
+    public readonly Modifiers: ModifierSet, public readonly Declaration: SyntaxNode?,
+    private readonly accessibility: Accessibility) { super(); }
+  override get Name(): string { return this.name; }
+  override get MetadataName(): string { return this.emitName ?? this.name; }
+  SetEmitName(name: string): void { this.emitName = name; }
+  override get ContainingSymbol(): Symbol? { return this.ContainerType; }
+  override get MethodKind(): MethodKind { return this.kind; }
+  override get IsFromSource(): bool { return true; }
+  override get DeclaredAccessibility(): Accessibility { return this.accessibility; }
+  override get IsStatic(): bool { return this.IsStaticFlag; }
+  override get IsAbstract(): bool { return this.IsAbstractFlag; }
+  override get IsVirtual(): bool { return this.IsVirtualFlag; }
+  override get IsOverride(): bool { return this.IsOverrideFlag; }
+  override get IsSealed(): bool { return this.IsSealedFlag; }
+  override get IsAsync(): bool { return this.Modifiers.IsAsync || this.ForceAsync; }
+  override get IsIterator(): bool { return this.IsGeneratorSyntax; }
+  override get IsInitOnly(): bool {
+    return this.kind == MethodKind.PropertySet && this.AssociatedProperty instanceof SourcePropertySymbol<TSourceFile> &&
+      (this.AssociatedProperty as SourcePropertySymbol<TSourceFile>).IsInitOnlyProperty;
+  }
+  override get IsExtensionMethod(): bool {
+    return this.Parameters.Length > 0 && this.Parameters[0].IsThis && this.IsStatic;
+  }
+  override get AssociatedSymbol(): Symbol? { return this.AssociatedProperty; }
+  override get Locations(): ImmutableArray<SourceLocation> {
+    return this.Declaration == null ? ImmutableArray<SourceLocation>.Empty :
+      ImmutableArray.Create<SourceLocation>(new SourceLocation(this.Context.GetTree(this.File), this.IdentifierSpan));
+  }
+  get IdentifierSpan(): TextSpan {
+    const declaration = this.Declaration;
+    if (declaration instanceof FunctionDeclarationSyntax) return (declaration as FunctionDeclarationSyntax).Identifier.Span;
+    if (declaration instanceof MethodDeclarationSyntax) return (declaration as MethodDeclarationSyntax).Identifier.Span;
+    if (declaration instanceof AccessorDeclarationSyntax) return (declaration as AccessorDeclarationSyntax).Identifier.Span;
+    if (declaration instanceof ConstructorDeclarationSyntax) return (declaration as ConstructorDeclarationSyntax).Keyword.Span;
+    if (declaration instanceof PropertyDeclarationSyntax) return (declaration as PropertyDeclarationSyntax).Identifier.Span;
+    return declaration == null ? new TextSpan() : declaration.Span;
+  }
+  override GetAttributes(): ImmutableArray<AttributeData> { return ImmutableArray<AttributeData>.Empty; }
+  override get TypeParameters(): ImmutableArray<TypeParameterSymbol> {
+    if (this.typeParamsDone) return this.typeParams;
+    this.typeParamsDone = true;
+    if (this.TypeParameterList == null || this.TypeParameterList.Parameters.Count == 0) {
+      this.typeParams = ImmutableArray<TypeParameterSymbol>.Empty;
+      return this.typeParams;
+    }
+    this.typeParams = SourceTypeParameters<TSourceFile>.Create(this.Context, this.File, this, this.ContainerType, this.TypeParameterList);
+    return this.typeParams;
+  }
+  override get Parameters(): ImmutableArray<ParameterSymbol> {
+    if (!this.parameters.IsDefault) return this.parameters;
+    if (!this.ExplicitParameters.IsDefault) {
+      this.parameters = this.ExplicitParameters;
+      return this.parameters;
+    }
+    if (this.ParameterList == null) {
+      this.parameters = this.kind == MethodKind.PropertySet && this.AssociatedProperty != null ?
+        ImmutableArray.Create<ParameterSymbol>(new ParameterSymbol("value", this.AssociatedProperty.Type, 0, this)) :
+        ImmutableArray<ParameterSymbol>.Empty;
+      return this.parameters;
+    }
+    this.parameters = this.Context.BindParameters(this.File, this, this.ParameterList);
+    return this.parameters;
+  }
+  override get ReturnType(): TypeSymbol {
+    if (this.returnType != null) return this.returnType;
+    if (this.ExplicitReturnType != null) { this.returnType = this.ExplicitReturnType; return this.returnType; }
+    if (this.kind == MethodKind.Constructor || this.kind == MethodKind.StaticConstructor) {
+      this.returnType = this.Context.GetSpecialType(SpecialType.Void);
+      return this.returnType;
+    }
+    if (this.ReturnAnnotation != null) {
+      const type = this.Context.BindType(this.File, this, this.ReturnAnnotation.Type, true);
+      this.returnType = this.Context.AdjustDeclaredReturnType(this.File, this, type, this.ReturnAnnotation!.Type);
+      return this.returnType;
+    }
+    if (this.kind == MethodKind.PropertySet) {
+      this.returnType = this.Context.GetSpecialType(SpecialType.Void);
+      return this.returnType;
+    }
+    if (this.kind == MethodKind.PropertyGet && this.AssociatedProperty != null) {
+      this.returnType = this.AssociatedProperty.Type;
+      return this.returnType;
+    }
+    if (this.returnTypeInProgress) {
+      this.Context.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.RecursiveInference,
+        this.Context.GetFilePath(this.File), this.IdentifierSpan, this.Name));
+      this.returnType = ErrorTypeSymbol.Instance;
+      return this.returnType;
+    }
+    this.returnTypeInProgress = true;
+    this.GetBoundBody();
+    this.returnTypeInProgress = false;
+    if (this.returnType == null) this.returnType = this.inferredReturn ?? this.Context.GetSpecialType(SpecialType.Void);
+    return this.returnType;
+  }
+  SetInferredReturnType(type: TypeSymbol): void { this.inferredReturn = type; }
+  SetReturnType(type: TypeSymbol): void { this.returnType = type; }
+  GetBoundBody(): BoundBlock? {
+    if (this.bodyBound) return this.boundBody;
+    this.bodyBound = true;
+    if (this.SyntheticBodyFactory != null) {
+      this.boundBody = this.SyntheticBodyFactory!(this);
+      return this.boundBody;
+    }
+    if (this.BodySyntax == null && !(this.kind == MethodKind.Constructor &&
+      (this.SynthesizedKind == SynthesizedBodyKind.DefaultConstructor || this.SynthesizedKind == SynthesizedBodyKind.InheritedConstructor)) &&
+      this.kind != MethodKind.StaticConstructor) return null;
+    this.boundBody = this.Context.BindMethodBody(this.File, this);
+    return this.boundBody;
+  }
+  get HasBody(): bool {
+    return this.BodySyntax != null || this.SyntheticBodyFactory != null || (this.kind == MethodKind.Constructor &&
+      (this.SynthesizedKind == SynthesizedBodyKind.DefaultConstructor || this.SynthesizedKind == SynthesizedBodyKind.InheritedConstructor));
+  }
+  override get OverriddenMethod(): MethodSymbol? {
+    if (this.overriddenDone) return this.overridden;
+    this.overriddenDone = true;
+    if (!this.IsOverrideFlag || this.ContainerType.BaseType == null) return null;
+    this.overridden = OverrideResolver<TSourceFile>.FindOverriddenMethod(this);
+    return this.overridden;
+  }
+  override ToString(): string { return this.ContainerType.Name + "." + this.name; }
+}
+
+export sealed class SourceFieldSymbol<TSourceFile> extends FieldSymbol {
+  private type: TypeSymbol?;
+  private typeInProgress: bool = false;
+  private constant: ConstantValue? = null;
+  private constDone: bool = false;
+  IsReadOnlyFlag: bool;
+  IsModuleVariable: bool = false;
+  IsBackingField: bool = false;
+  Declarator: VariableDeclaratorSyntax? = null;
+  IsConstDeclaration: bool = false;
+  IsEnumMember: bool = false;
+  LiteralText: string? = null;
+  ConstantFactory: Func<SourceFieldSymbol<TSourceFile>, ConstantValue?>? = null;
+  InitializerSyntax: ExpressionSyntax? = null;
+  constructor(private readonly context: SourceSymbolContext<TSourceFile>, public readonly File: TSourceFile,
+    private readonly container: Symbol, private readonly name: string, private readonly accessibility: Accessibility,
+    public readonly IsStaticFlag: bool, isReadOnly: bool, public readonly IsConstFlag: bool,
+    public readonly Declaration: SyntaxNode?, type: TypeSymbol?,
+    private readonly typeFactory: Func<SourceFieldSymbol<TSourceFile>, TypeSymbol>?) {
+    super();
+    this.type = type;
+    this.IsReadOnlyFlag = isReadOnly;
+  }
+  constructor(context: SourceSymbolContext<TSourceFile>, file: TSourceFile, container: Symbol, name: string,
+    accessibility: Accessibility, isStatic: bool, isReadOnly: bool, isConst: bool, declaration: SyntaxNode?, type: TypeSymbol?) {
+    super();
+    this.context = context;
+    this.File = file;
+    this.container = container;
+    this.name = name;
+    this.accessibility = accessibility;
+    this.IsStaticFlag = isStatic;
+    this.IsReadOnlyFlag = isReadOnly;
+    this.IsConstFlag = isConst;
+    this.Declaration = declaration;
+    this.type = type;
+    this.typeFactory = null;
+  }
+  override get Name(): string { return this.name; }
+  override get ContainingSymbol(): Symbol? { return this.container; }
+  override get IsFromSource(): bool { return true; }
+  override get DeclaredAccessibility(): Accessibility { return this.accessibility; }
+  override get IsStatic(): bool { return this.IsStaticFlag; }
+  override get IsReadOnly(): bool { return this.IsReadOnlyFlag; }
+  override get IsConst(): bool { return this.IsConstFlag || (this.IsConstDeclaration && this.ConstantValue != null); }
+  override get Locations(): ImmutableArray<SourceLocation> {
+    return this.Declaration == null ? ImmutableArray<SourceLocation>.Empty :
+      ImmutableArray.Create<SourceLocation>(new SourceLocation(this.context.GetTree(this.File), this.Declaration!.Span));
+  }
+  override get Type(): TypeSymbol {
+    if (this.type != null) return this.type;
+    if (this.typeInProgress) {
+      this.context.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.RecursiveInference,
+        this.context.GetFilePath(this.File), this.Declaration == null ? new TextSpan() : this.Declaration.Span, this.Name));
+      this.type = ErrorTypeSymbol.Instance;
+      return this.type;
+    }
+    this.typeInProgress = true;
+    this.type = this.typeFactory!(this);
+    this.typeInProgress = false;
+    return this.type;
+  }
+  override get ConstantValue(): ConstantValue? {
+    if (!this.IsConstFlag && !this.IsEnumMember && !this.IsConstDeclaration) return null;
+    if (!this.constDone) {
+      this.constDone = true;
+      this.constant = this.ConstantFactory == null ? null : this.ConstantFactory!(this);
+    }
+    return this.constant;
+  }
+  SetType(type: TypeSymbol): void { this.type = type; }
+  override ToString(): string { return this.container.Name + "." + this.name; }
+}
+
+export sealed class SourcePropertySymbol<TSourceFile> extends PropertySymbol {
+  private type: TypeSymbol?;
+  private typeInProgress: bool = false;
+  IsAbstractFlag: bool = false;
+  IsVirtualFlag: bool = false;
+  IsOverrideFlag: bool = false;
+  IsSealedFlag: bool = false;
+  IsInitOnlyProperty: bool = false;
+  IsAutoProperty: bool = false;
+  BackingField: SourceFieldSymbol<TSourceFile>? = null;
+  Getter: SourceMethodSymbol<TSourceFile>? = null;
+  Setter: SourceMethodSymbol<TSourceFile>? = null;
+  IsOptionalMember: bool = false;
+  InitializerSyntax: ExpressionSyntax? = null;
+  IndexerParameters: ImmutableArray<ParameterSymbol>;
+  constructor(public readonly Context: SourceSymbolContext<TSourceFile>, public readonly File: TSourceFile,
+    private readonly container: NamedTypeSymbol, private readonly name: string, private readonly accessibility: Accessibility,
+    public readonly IsStaticFlag: bool, public readonly Declaration: SyntaxNode?,
+    private readonly typeFactory: Func<SourcePropertySymbol<TSourceFile>, TypeSymbol>?, type: TypeSymbol?) {
+    super();
+    this.type = type;
+  }
+  constructor(context: SourceSymbolContext<TSourceFile>, file: TSourceFile, container: NamedTypeSymbol, name: string,
+    accessibility: Accessibility, isStatic: bool, declaration: SyntaxNode?,
+    typeFactory: Func<SourcePropertySymbol<TSourceFile>, TypeSymbol>?) {
+    super();
+    this.Context = context;
+    this.File = file;
+    this.container = container;
+    this.name = name;
+    this.accessibility = accessibility;
+    this.IsStaticFlag = isStatic;
+    this.Declaration = declaration;
+    this.typeFactory = typeFactory;
+    this.type = null;
+  }
+  override get Name(): string { return this.name; }
+  override get ContainingSymbol(): Symbol? { return this.container; }
+  override get IsFromSource(): bool { return true; }
+  override get DeclaredAccessibility(): Accessibility { return this.accessibility; }
+  override get IsStatic(): bool { return this.IsStaticFlag; }
+  override get IsAbstract(): bool { return this.IsAbstractFlag; }
+  override get IsVirtual(): bool { return this.IsVirtualFlag; }
+  override get IsOverride(): bool { return this.IsOverrideFlag; }
+  override get IsSealed(): bool { return this.IsSealedFlag; }
+  override get GetMethod(): MethodSymbol? { return this.Getter; }
+  override get SetMethod(): MethodSymbol? { return this.Setter; }
+  override get Parameters(): ImmutableArray<ParameterSymbol> {
+    return this.IndexerParameters.IsDefault ? ImmutableArray<ParameterSymbol>.Empty : this.IndexerParameters;
+  }
+  override get Locations(): ImmutableArray<SourceLocation> {
+    const declaration = this.Declaration;
+    if (declaration == null) return ImmutableArray<SourceLocation>.Empty;
+    let span = declaration.Span;
+    if (declaration instanceof PropertyDeclarationSyntax) span = (declaration as PropertyDeclarationSyntax).Identifier.Span;
+    else if (declaration instanceof AccessorDeclarationSyntax) span = (declaration as AccessorDeclarationSyntax).Identifier.Span;
+    return ImmutableArray.Create<SourceLocation>(new SourceLocation(this.Context.GetTree(this.File), span));
+  }
+  override get Type(): TypeSymbol {
+    if (this.type != null) return this.type;
+    if (this.typeInProgress) {
+      if (this.Context.IsSourceNamedType(this.container))
+        this.Context.DeclarationDiagnostics.Add(Diagnostic.Create(Descriptors.RecursiveInference,
+          this.Context.GetFilePath(this.File), this.Declaration == null ? new TextSpan() : this.Declaration.Span, this.Name));
+      this.type = ErrorTypeSymbol.Instance;
+      return this.type;
+    }
+    this.typeInProgress = true;
+    this.type = this.typeFactory!(this);
+    this.typeInProgress = false;
+    return this.type;
+  }
+  SetType(type: TypeSymbol): void { this.type = type; }
+  override ToString(): string { return this.container.Name + "." + this.name; }
+}

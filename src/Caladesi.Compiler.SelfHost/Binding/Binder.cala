@@ -1,0 +1,469 @@
+import { IDisposable, Object, Func, Action } from "System";
+import { List, Dictionary, IEnumerable } from "System.Collections.Generic";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { BinderContext } from "./BinderContext";
+import { BinderScope, BinderScopeKind } from "./BinderScope";
+import { BinderTypes } from "./BinderTypes";
+import { BinderExpressions, BinderExpressionModule } from "./BinderExpressions";
+import { BinderStatements } from "./BinderStatements";
+import { BinderStatementAttributes } from "./BinderStatementAttributes";
+import { ConversionClassifier } from "./ConversionClassifier";
+import { ConversionBinder, ConversionBindingContext } from "./ConversionBinder";
+import { OverloadResolver, OverloadResolutionContext } from "./OverloadResolver";
+import { FlowNarrowing } from "./FlowNarrowing";
+import { Symbol, Accessibility, AttributeData } from "../Symbols/Symbol";
+import { TypeSymbol, TypeParameterSymbol, TypeParameterConstraints, ErrorTypeSymbol,
+  NullableTypeSymbol } from "../Symbols/TypeSymbols";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { NamespaceSymbol } from "../Symbols/NamespaceSymbol";
+import { LocalSymbol, ParameterSymbol, MethodSymbol, MethodKind, FieldSymbol,
+  ConstantValue } from "../Symbols/MemberSymbols";
+import { SourceMethodSymbol, SourceFieldSymbol } from "../Symbols/Source/SourceMembers";
+import { TypeAliasSymbol, SourceNamedType } from "../Symbols/Source/SourceTypes";
+import { SourceModuleClassSymbol } from "../Symbols/Source/SourceModuleClass";
+import { SourceLiteralEnumSymbol } from "../Symbols/Source/SourceTypeAliasTypes";
+import { OverrideResolver } from "../Symbols/Source/OverrideResolver";
+import { MemberLookup } from "../Symbols/MemberLookup";
+import { SpecialType } from "../Symbols/SpecialType";
+import { SyntaxElement, SyntaxNode } from "../Syntax/SyntaxElement";
+import { SyntaxToken } from "../Syntax/SyntaxToken";
+import { SyntaxTree } from "../Syntax/SyntaxTree";
+import { TypeSyntax, TypeParameterSyntax, ExpressionSyntax, StatementSyntax, BlockSyntax,
+  ParameterListSyntax, ParameterSyntax, DecoratorSyntax } from "../Syntax/Nodes.Core";
+import { TextSpan } from "../Text/TextSpan";
+import { Diagnostic, DiagnosticBag, DiagnosticDescriptor } from "../Diagnostics/Diagnostic";
+import { Descriptors } from "../Diagnostics/Descriptors";
+import { BoundNode, BoundExpression, BoundStatement, BoundBlock, BoundLiteral, BoundBadExpression,
+  BoundUnbound, BoundTypeExpression, BoundNamespaceExpression, BoundMethodGroup,
+  BoundPropertyAccess } from "../Bound/BoundNodes";
+import { BoundAttribute } from "../BoundAttribute";
+import { FileModuleSymbol } from "../FileScope";
+
+class BinderAction implements IDisposable {
+  private action: Action?;
+  constructor(action: Action) { this.action = action; }
+  Dispose(): void {
+    const action = this.action;
+    this.action = null;
+    if (action != null) action.Invoke();
+  }
+}
+
+class BinderFunctionRestore<TFile> {
+  constructor(private readonly binder: Binder<TFile>, private readonly owner: Symbol?,
+    private readonly ctor: bool, private readonly staticCtor: bool, private readonly initializer: bool) {}
+  Restore(): void { this.binder.RestoreFunction(this.owner, this.ctor, this.staticCtor, this.initializer); }
+}
+class BinderInitializerRestore<TFile> {
+  constructor(private readonly binder: Binder<TFile>, private readonly saved: bool) {}
+  Restore(): void { this.binder.InInitializer = this.saved; }
+}
+class BinderSpeculationRestore<TFile> {
+  constructor(private readonly binder: Binder<TFile>, private readonly saved: DiagnosticBag?) {}
+  Restore(): void { this.binder.RestoreSpeculation(this.saved); }
+}
+class BinderMemberLookup<TFile> {
+  readonly Result: List<Symbol> = new List<Symbol>();
+  private foundNonMethod: bool = false;
+  constructor(private readonly binder: Binder<TFile>, private readonly name: string) {}
+  Visit(current: TypeSymbol): bool {
+    for (const member of current.GetMembers(this.name)) {
+      if (Binder<TFile>.IsSpecialAccessor(member) || !this.binder.IsAccessible(member)) continue;
+      if (member instanceof MethodSymbol) {
+        const method = member as MethodSymbol;
+        let hidden = false;
+        for (const previous of this.Result) if (previous instanceof MethodSymbol) {
+          const prior = previous as MethodSymbol;
+          if (prior.Arity == method.Arity && prior.Name == method.Name &&
+            OverrideResolver<TFile>.SignaturesMatch(prior, method)) { hidden = true; break; }
+        }
+        if (!hidden) this.Result.Add(method);
+      } else if (!this.foundNonMethod || member instanceof NamedTypeSymbol) this.Result.Add(member);
+    }
+    let hasMethod = false;
+    for (const member of this.Result)
+      if (member instanceof MethodSymbol) hasMethod = true;
+      else if (!(member instanceof NamedTypeSymbol)) this.foundNonMethod = true;
+    return !this.foundNonMethod || hasMethod;
+  }
+}
+
+class BinderOverloadContext<TFile> extends OverloadResolutionContext {
+  constructor(private readonly binder: Binder<TFile>) { super(); }
+  override IsAccessible(symbol: Symbol): bool { return this.binder.IsAccessible(symbol); }
+  override LookupExtensionMethods(name: string): IEnumerable<MethodSymbol> { return this.binder.LookupExtensionMethods(name); }
+  override GetSpecialType(type: SpecialType): NamedTypeSymbol { return this.binder.Special(type); }
+  override get LocalOwner(): Symbol? { return this.binder.ContainingSymbol; }
+  override Report(descriptor: DiagnosticDescriptor, syntax: SyntaxNode?, args: object?[]): void {
+    this.binder.Report(descriptor, syntax, args);
+  }
+  override BeginSpeculation(): IDisposable { return this.binder.BeginSpeculation(); }
+}
+
+export sealed class Binder<TFile> extends ConversionBindingContext {
+  private diagnostics: DiagnosticBag?;
+  private owner: Symbol?;
+  private speculationDepth: int = 0;
+  readonly TypeParameters: Dictionary<string, TypeParameterSymbol> = new Dictionary<string, TypeParameterSymbol>(StringComparer.Ordinal);
+  SymbolMap: Dictionary<SyntaxNode, Symbol>? = null;
+  TypeMap: Dictionary<SyntaxNode, TypeSymbol>? = null;
+  BoundMap: Dictionary<SyntaxNode, BoundNode>? = null;
+  DeclarationMap: Dictionary<[Tree: SyntaxTree, Start: int], Symbol>? = null;
+  Scope: BinderScope;
+  readonly Flow: FlowNarrowing = new FlowNarrowing();
+  readonly Classifier: ConversionClassifier;
+  readonly Conversions: ConversionBinder;
+  readonly Overloads: OverloadResolver;
+  readonly Types: BinderTypes<TFile>;
+  readonly Expressions: BinderExpressions<TFile>;
+  readonly Statements: BinderStatements<TFile>;
+  AssignTargetSyntax: SyntaxNode? = null;
+  InConstructor: bool = false;
+  InStaticConstructor: bool = false;
+  InInitializer: bool = false;
+  IsAsync: bool = false;
+  IsIterator: bool = false;
+  ReturnType: TypeSymbol? = null;
+  constructor(public readonly Context: BinderContext<TFile>, public readonly File: TFile,
+    containing: Symbol?, diagnostics: DiagnosticBag?) {
+    super();
+    this.owner = containing;
+    this.diagnostics = diagnostics;
+    this.Scope = new BinderScope(null, BinderScopeKind.Method);
+    this.CollectTypeParameters();
+    this.Classifier = new ConversionClassifier(this.ResolveLiteralEnum);
+    this.Conversions = new ConversionBinder(this.Classifier, this);
+    this.Overloads = new OverloadResolver(this.Classifier, this.Conversions, new BinderOverloadContext<TFile>(this));
+    this.Types = new BinderTypes<TFile>(this);
+    this.Expressions = new BinderExpressions<TFile>(this);
+    this.Statements = new BinderStatements<TFile>(this);
+  }
+  override get ContainingSymbol(): Symbol? { return this.owner; }
+  get Compilation(): BinderContext<TFile> { return this.Context; }
+  get IsSpeculative(): bool { return this.diagnostics == null; }
+  private CollectTypeParameters(): void {
+    this.TypeParameters.Clear();
+    const chain = new List<Symbol>();
+    for (let symbol = this.owner; symbol != null; symbol = symbol.ContainingSymbol) chain.Add(symbol);
+    for (let i = chain.Count - 1; i >= 0; i--) {
+      const symbol = chain[i];
+      let parameters = ImmutableArray<TypeParameterSymbol>.Empty;
+      if (symbol instanceof NamedTypeSymbol) parameters = (symbol as NamedTypeSymbol).TypeParameters;
+      else if (symbol instanceof MethodSymbol) parameters = (symbol as MethodSymbol).TypeParameters;
+      else if (symbol instanceof TypeAliasSymbol<TFile>) parameters = (symbol as TypeAliasSymbol<TFile>).TypeParameters;
+      for (const parameter of parameters) this.TypeParameters[parameter.Name] = parameter;
+    }
+  }
+  EnterFunction(method: MethodSymbol): IDisposable {
+    const owner = this.owner;
+    const ctor = this.InConstructor;
+    const staticCtor = this.InStaticConstructor;
+    const initializer = this.InInitializer;
+    this.owner = method;
+    this.InConstructor = method.MethodKind == MethodKind.Constructor;
+    this.InStaticConstructor = method.MethodKind == MethodKind.StaticConstructor;
+    this.InInitializer = false;
+    this.CollectTypeParameters();
+    const restore = new BinderFunctionRestore<TFile>(this, owner, ctor, staticCtor, initializer);
+    return new BinderAction(restore.Restore);
+  }
+  RestoreFunction(owner: Symbol?, ctor: bool, staticCtor: bool, initializer: bool): void {
+    this.owner = owner;
+    this.InConstructor = ctor;
+    this.InStaticConstructor = staticCtor;
+    this.InInitializer = initializer;
+    this.CollectTypeParameters();
+  }
+  EnterInitializer(): IDisposable {
+    const saved = this.InInitializer;
+    this.InInitializer = true;
+    const restore = new BinderInitializerRestore<TFile>(this, saved);
+    return new BinderAction(restore.Restore);
+  }
+  BeginSpeculation(): IDisposable {
+    const saved = this.diagnostics;
+    this.diagnostics = null;
+    this.speculationDepth++;
+    const restore = new BinderSpeculationRestore<TFile>(this, saved);
+    return new BinderAction(restore.Restore);
+  }
+  RestoreSpeculation(saved: DiagnosticBag?): void {
+    this.diagnostics = saved;
+    this.speculationDepth--;
+  }
+  Speculatively<T>(action: Func<T>): T {
+    const guard = this.BeginSpeculation();
+    try { return action.Invoke(); }
+    finally { guard.Dispose(); }
+  }
+  override Report(descriptor: DiagnosticDescriptor, at: SyntaxNode?, args: object?[]): void {
+    this.Report(descriptor, at as SyntaxElement, args);
+  }
+  Report(descriptor: DiagnosticDescriptor, at: SyntaxElement?, args: object?[]): void {
+    this.ReportSpan(descriptor, at == null ? new TextSpan() : at.Span, args);
+  }
+  ReportSpan(descriptor: DiagnosticDescriptor, span: TextSpan, args: object?[]): void {
+    if (this.diagnostics != null)
+      this.diagnostics.Add(new Diagnostic(descriptor, this.Context.GetFilePath(this.File), span, args, null, descriptor.Severity));
+  }
+  Record(syntax: SyntaxNode, symbol: Symbol): void {
+    if (this.speculationDepth != 0) return;
+    if (this.SymbolMap != null) this.SymbolMap[syntax] = symbol;
+    this.Context.RecordSymbol(syntax, symbol);
+  }
+  RecordType(syntax: SyntaxNode, type: TypeSymbol): void {
+    if (this.speculationDepth != 0) return;
+    if (this.TypeMap != null) this.TypeMap[syntax] = type;
+    this.Context.RecordType(syntax, type);
+  }
+  private RecordBound(syntax: SyntaxNode, bound: BoundNode): void {
+    if (this.speculationDepth != 0) return;
+    if (this.BoundMap != null) this.BoundMap[syntax] = bound;
+    this.Context.RecordBound(syntax, bound);
+  }
+  PushScope(kind: BinderScopeKind): BinderScope {
+    this.Scope = new BinderScope(this.Scope, kind);
+    return this.Scope;
+  }
+  PopScope(): void { this.Scope = this.Scope.Parent!; }
+  DeclareSymbol(name: string, symbol: Symbol, at: SyntaxElement?): void {
+    if (this.Scope.Symbols.ContainsKey(name)) {
+      this.Report(Descriptors.DuplicateLocal, at, [name]);
+      return;
+    }
+    this.Scope.Symbols[name] = symbol;
+    if (symbol instanceof LocalSymbol) this.Scope.Locals.Add(symbol as LocalSymbol);
+    if (this.speculationDepth != 0 || at == null) return;
+    let token: SyntaxToken? = at instanceof SyntaxToken ? at as SyntaxToken : null;
+    if (at instanceof ParameterSyntax) token = (at as ParameterSyntax).Identifier;
+    if (token == null && at instanceof SyntaxNode) token = (at as SyntaxNode).GetFirstToken();
+    if (token != null && !token.IsMissing) {
+      if (this.DeclarationMap != null) this.DeclarationMap[[this.Context.GetTree(this.File), token.Start]] = symbol;
+      this.Context.RecordDeclaration(this.File, token.Start, symbol);
+    }
+  }
+  LookupLocal(name: string): Symbol? {
+    for (let scope: BinderScope? = this.Scope; scope != null; scope = scope.Parent)
+      if (scope.Symbols.ContainsKey(name)) return scope.Symbols[name];
+    return null;
+  }
+  Special(type: SpecialType): NamedTypeSymbol { return this.Context.GetSpecialType(type); }
+  get VoidType(): TypeSymbol { return this.Special(SpecialType.Void); }
+  override get BoolType(): TypeSymbol { return this.Special(SpecialType.Boolean); }
+  get StringType(): TypeSymbol { return this.Special(SpecialType.String); }
+  get ObjectType(): TypeSymbol { return this.Special(SpecialType.Object); }
+  get IntType(): TypeSymbol { return this.Special(SpecialType.Int32); }
+  get DoubleType(): TypeSymbol { return this.Special(SpecialType.Double); }
+  get ErrorType(): TypeSymbol { return ErrorTypeSymbol.Instance; }
+  Bad(syntax: SyntaxNode?, children: ImmutableArray<BoundNode>): BoundBadExpression {
+    const result = new BoundBadExpression(children);
+    result.Syntax = syntax;
+    return result;
+  }
+  Literal(value: object?, type: TypeSymbol, syntax: SyntaxNode?): BoundLiteral {
+    const result = new BoundLiteral(new ConstantValue(value), type);
+    result.Syntax = syntax;
+    return result;
+  }
+  BindType(syntax: TypeSyntax, allowVoid: bool = false): TypeSymbol { return this.Types.Bind(syntax, allowVoid); }
+  BindConstraints(syntax: TypeParameterSyntax, parameter: TypeParameterSymbol): TypeParameterConstraints {
+    return this.Types.BindConstraints(syntax, parameter);
+  }
+  BindExpression(syntax: ExpressionSyntax): BoundExpression { return this.BindExpression(syntax, null); }
+  BindExpression(syntax: ExpressionSyntax, target: TypeSymbol?): BoundExpression {
+    const expression = this.Expressions.Bind(syntax, target);
+    this.RecordBound(syntax, expression);
+    if (expression.Type != null) this.RecordType(syntax, expression.Type);
+    return expression;
+  }
+  BindValue(syntax: ExpressionSyntax): BoundExpression { return this.BindValue(syntax, null); }
+  BindValue(syntax: ExpressionSyntax, target: TypeSymbol?): BoundExpression {
+    const expression = this.BindExpression(syntax, target);
+    if (expression instanceof BoundTypeExpression || expression instanceof BoundNamespaceExpression ||
+      expression instanceof BinderExpressionModule<TFile>) {
+      this.ReportNotAValue(expression, syntax);
+      return this.Bad(syntax, ImmutableArray.Create<BoundNode>(expression));
+    }
+    if (expression instanceof BoundPropertyAccess && (expression as BoundPropertyAccess).Property.GetMethod == null &&
+      !Object.ReferenceEquals(syntax, this.AssignTargetSyntax)) {
+      this.Report(Descriptors.PropertyWriteOnly, syntax, [(expression as BoundPropertyAccess).Property.Name]);
+      return this.Bad(syntax, ImmutableArray.Create<BoundNode>(expression));
+    }
+    return expression;
+  }
+  BindRValue(syntax: ExpressionSyntax): BoundExpression {
+    let expression = this.BindValue(syntax);
+    if (expression instanceof BoundUnbound && BinderExpressions<TFile>.HasNaturalType(expression as BoundUnbound))
+      expression = (expression as BoundUnbound).BindToType.Invoke(null);
+    if (expression instanceof BoundUnbound || expression instanceof BoundMethodGroup || expression.Type == null) {
+      this.WidenInferredType(expression, syntax, true);
+      return expression instanceof BoundBadExpression ? expression : this.Bad(syntax, ImmutableArray.Create<BoundNode>(expression));
+    }
+    return expression;
+  }
+  BindToType(syntax: ExpressionSyntax, target: TypeSymbol): BoundExpression {
+    return this.Conversions.ConvertImplicit(this.BindValue(syntax, target), target, syntax);
+  }
+  BindStatement(syntax: StatementSyntax): BoundStatement {
+    const statement = this.Statements.Bind(syntax);
+    this.RecordBound(syntax, statement);
+    return statement;
+  }
+  BindBlock(syntax: BlockSyntax): BoundBlock { return this.Statements.BindBlock(syntax); }
+  BindParameters(method: SourceMethodSymbol<TFile>, syntax: ParameterListSyntax): ImmutableArray<ParameterSymbol> {
+    return this.Statements.BindParameters(method, syntax);
+  }
+  BindMethodBody(method: SourceMethodSymbol<TFile>): BoundBlock? { return this.Statements.BindMethodBody(method); }
+  EnableTopLevelAwait(): void { this.IsAsync = true; }
+  BindTopLevelStatements(method: SourceMethodSymbol<TFile>, module: SourceModuleClassSymbol<TFile>): BoundBlock? {
+    return this.Statements.BindTopLevelStatements(method, module);
+  }
+  BindAttributes(symbol: Symbol, syntax: ImmutableArray<SyntaxNode>): ImmutableArray<AttributeData> {
+    return this.Statements.BindAttributes(symbol, syntax);
+  }
+  BindDecorator(syntax: DecoratorSyntax): BoundAttribute? {
+    return new BinderStatementAttributes<TFile>(this, this.Statements).BindDecorator(syntax);
+  }
+  AdjustDeclaredReturnType(method: SourceMethodSymbol<TFile>, type: TypeSymbol, syntax: TypeSyntax): TypeSymbol {
+    return this.Types.AdjustDeclaredReturnType(method, type, syntax);
+  }
+  InferVariableType(initializer: ExpressionSyntax): TypeSymbol {
+    const guard = this.BeginSpeculation();
+    let inferred: TypeSymbol;
+    try {
+      let bound = this.BindExpression(initializer);
+      if (bound instanceof BoundUnbound && BinderExpressions<TFile>.HasNaturalType(bound as BoundUnbound))
+        bound = (bound as BoundUnbound).BindToType.Invoke(null);
+      inferred = this.WidenInferredType(bound, initializer, false);
+    } finally { guard.Dispose(); }
+    if (inferred.IsErrorType) {
+      let bound = this.BindExpression(initializer);
+      if (bound instanceof BoundUnbound && BinderExpressions<TFile>.HasNaturalType(bound as BoundUnbound))
+        bound = (bound as BoundUnbound).BindToType.Invoke(null);
+      this.WidenInferredType(bound, initializer, true);
+    }
+    return inferred;
+  }
+  WidenInferredType(expression: BoundExpression, syntax: SyntaxNode, report: bool): TypeSymbol {
+    if (expression instanceof BoundUnbound) {
+      if (expression.Type != null) return expression.Type;
+      if (report) this.Report(Descriptors.CannotInferType, syntax, []);
+      return this.ErrorType;
+    }
+    const type = expression.Type;
+    if (type == null || expression instanceof BoundMethodGroup || expression instanceof BoundTypeExpression ||
+      expression instanceof BoundNamespaceExpression || expression instanceof BinderExpressionModule<TFile>) {
+      if (report) this.Report(Descriptors.CannotInferType, syntax, []);
+      return this.ErrorType;
+    }
+    if (type.IsNullType) {
+      if (report) this.Report(Descriptors.CannotInferNull, syntax, []);
+      return this.ErrorType;
+    }
+    if (type.IsVoid) {
+      if (report) this.Report(Descriptors.VoidNotAllowed, syntax, []);
+      return this.ErrorType;
+    }
+    return type.IsNeverType ? this.ObjectType : type;
+  }
+  TryEvaluateConstant(expression: ExpressionSyntax, target: TypeSymbol): ConstantValue? {
+    const guard = this.BeginSpeculation();
+    try {
+      const bound = this.BindExpression(expression, target);
+      if (bound.HasErrors) return null;
+      const converted = this.Conversions.ConvertImplicit(bound, target, expression, false);
+      return converted.HasErrors ? null : converted.ConstantValue;
+    } finally { guard.Dispose(); }
+  }
+  EvaluateEnumInitializer(owner: SourceNamedType<TFile>, expression: ExpressionSyntax,
+    previous: ImmutableArray<SourceFieldSymbol<TFile>>): ConstantValue? {
+    this.PushScope(BinderScopeKind.Block);
+    try {
+      for (const field of previous) {
+        const constant = new LocalSymbol(field.Name, this.IntType, true, owner);
+        constant.ConstantValue = field.ConstantValue;
+        this.Scope.Symbols[field.Name] = constant;
+      }
+      return this.TryEvaluateConstant(expression, this.IntType);
+    } finally { this.PopScope(); }
+  }
+  override ConvertMethodGroup(group: BoundMethodGroup, target: TypeSymbol, syntax: SyntaxNode?, report: bool): BoundExpression {
+    return this.Expressions.ConvertMethodGroup(group, target, syntax, report);
+  }
+  override IsModuleExpression(expression: BoundExpression): bool { return expression instanceof BinderExpressionModule<TFile>; }
+  override IsLiteralEnum(type: TypeSymbol): bool { return this.Expressions.IsLiteralEnum(type); }
+  private ResolveLiteralEnum(type: TypeSymbol, text: string): FieldSymbol? {
+    type = type.StripNullable();
+    if (type instanceof NamedTypeSymbol && (type as NamedTypeSymbol).OriginalDefinition instanceof SourceLiteralEnumSymbol<TFile>)
+      return ((type as NamedTypeSymbol).OriginalDefinition as SourceLiteralEnumSymbol<TFile>).FindMember(text);
+    return null;
+  }
+  private ReportNotAValue(expression: BoundExpression, syntax: SyntaxNode): void {
+    if (expression instanceof BoundTypeExpression)
+      this.Report(Descriptors.TypeUsedAsValue, syntax, [(expression as BoundTypeExpression).TypeSym.ToDisplayString()]);
+    else if (expression instanceof BoundNamespaceExpression)
+      this.Report(Descriptors.NamespaceUsedAsValue, syntax, [(expression as BoundNamespaceExpression).Namespace.ToDisplayString()]);
+    else if (expression instanceof BinderExpressionModule<TFile>)
+      this.Report(Descriptors.NamespaceUsedAsValue, syntax, ["module"]);
+    else this.Report(Descriptors.ExpressionNotAValue, syntax, []);
+  }
+  get CurrentType(): NamedTypeSymbol? {
+    for (let symbol = this.owner; symbol != null; symbol = symbol.ContainingSymbol)
+      if (symbol instanceof NamedTypeSymbol) return symbol as NamedTypeSymbol;
+    return null;
+  }
+  IsAccessible(member: Symbol): bool {
+    const accessibility = member.DeclaredAccessibility;
+    if (accessibility == Accessibility.Public || accessibility == Accessibility.NotApplicable) return true;
+    if (accessibility == Accessibility.Internal || accessibility == Accessibility.ProtectedAndInternal)
+      return member.IsFromSource || member.ContainingType?.IsFromSource == true;
+    if (accessibility == Accessibility.ProtectedOrInternal && member.IsFromSource) return true;
+    const owner = member.ContainingType?.OriginalDefinition;
+    for (let type = this.CurrentType; type != null; type = type.ContainingType) {
+      if (accessibility == Accessibility.Private) {
+        if (Object.ReferenceEquals(type.OriginalDefinition, owner)) return true;
+      } else for (let baseType: NamedTypeSymbol? = type; baseType != null; baseType = baseType.BaseType)
+        if (Object.ReferenceEquals(baseType.OriginalDefinition, owner)) return true;
+    }
+    return false;
+  }
+  static IsSpecialAccessor(symbol: Symbol): bool {
+    if (!(symbol instanceof MethodSymbol)) return false;
+    const kind = (symbol as MethodSymbol).MethodKind;
+    return kind == MethodKind.PropertyGet || kind == MethodKind.PropertySet || kind == MethodKind.EventAdd ||
+      kind == MethodKind.EventRemove || kind == MethodKind.StaticConstructor || kind == MethodKind.Constructor;
+  }
+  LookupMembers(type: TypeSymbol, name: string): ImmutableArray<Symbol> {
+    const lookup = new BinderMemberLookup<TFile>(this, name);
+    MemberLookup.Walk(type, this.ObjectType, lookup.Visit);
+    return ImmutableArray.CreateRange<Symbol>(lookup.Result);
+  }
+  LookupConstructors(type: NamedTypeSymbol): ImmutableArray<MethodSymbol> {
+    const result = ImmutableArray.CreateBuilder<MethodSymbol>();
+    for (const member of type.GetMembers())
+      if (member instanceof MethodSymbol && (member as MethodSymbol).MethodKind == MethodKind.Constructor && this.IsAccessible(member))
+        result.Add(member as MethodSymbol);
+    return result.ToImmutable();
+  }
+  private AddExtensions(result: List<MethodSymbol>, members: IEnumerable<Symbol>, name: string): void {
+    for (const member of members) if (member instanceof MethodSymbol) {
+      const method = member as MethodSymbol;
+      if (method.Name == name && method.IsExtensionMethod && this.IsAccessible(method) && !result.Contains(method)) result.Add(method);
+    }
+  }
+  LookupExtensionMethods(name: string): IEnumerable<MethodSymbol> {
+    const result = new List<MethodSymbol>();
+    const scope = this.Context.GetScope(this.File);
+    if (scope.Declared.ContainsKey(name)) this.AddExtensions(result, scope.Declared[name], name);
+    this.AddExtensions(result, scope.NamedImportSymbols, name);
+    for (const wildcard of scope.WildcardImports) {
+      if (wildcard instanceof NamespaceSymbol) {
+        for (const type of (wildcard as NamespaceSymbol).GetTypeMembers())
+          if (type.IsStatic && !type.IsGenericType) this.AddExtensions(result, type.GetMembers(name), name);
+      } else if (wildcard instanceof NamedTypeSymbol) this.AddExtensions(result, (wildcard as NamedTypeSymbol).GetMembers(name), name);
+      else if (wildcard instanceof FileModuleSymbol<TFile>)
+        this.AddExtensions(result, this.Context.GetScope((wildcard as FileModuleSymbol<TFile>).File).GetExports(name), name);
+    }
+    return result;
+  }
+}

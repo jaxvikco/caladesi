@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Packaging wrapper only; the assembly is built by eng/SelfHost.proj. -->
+  <PropertyGroup>
+    <PackageId>Caladesi.Runtime</PackageId>
+    <Description>Runtime support library for assemblies produced by the Caladesi compiler.</Description>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <EnableDefaultItems>false</EnableDefaultItems>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <NoBuild>true</NoBuild>
+    <NoWarn>$(NoWarn);NU5128;NU5100;NU5105</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="../src/Caladesi.Runtime/README.md" Pack="true" PackagePath="README.md" />
+    <None Include="$(NativeRuntimeDir)Caladesi.Runtime.dll" Pack="true" PackagePath="lib/$(TargetFramework)/Caladesi.Runtime.dll" />
+  </ItemGroup>
+  <Import Project="NativePackaging.targets" />
+</Project>

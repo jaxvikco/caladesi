@@ -1,0 +1,5 @@
+import { Attribute, AttributeUsageAttribute, AttributeTargets } from "System";
+
+@AttributeUsageAttribute(AttributeTargets.Struct)
+export sealed class CaladesiUnionAttribute extends Attribute {
+}

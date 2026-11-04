@@ -1,0 +1,15 @@
+import { SyntaxElement, SyntaxNode, SyntaxList, SeparatedSyntaxList } from "./SyntaxElement";
+import { SyntaxToken } from "./SyntaxToken";
+
+export sealed class SyntaxNodeHelpers {
+  static Node<T extends SyntaxNode>(node: SyntaxNode, index: int): T { return node.Slot(index) as T; }
+  static NodeOpt<T extends SyntaxNode>(node: SyntaxNode, index: int): T? { return node.Slot(index) as T; }
+  static Tok(node: SyntaxNode, index: int): SyntaxToken { return node.Slot(index) as SyntaxToken; }
+  static TokOpt(node: SyntaxNode, index: int): SyntaxToken? { return node.Slot(index) as SyntaxToken; }
+  static L<T extends SyntaxElement>(node: SyntaxNode, index: int): SyntaxList<T> {
+    return new SyntaxList<T>(node.Slot(index) as SyntaxNode);
+  }
+  static SL<T extends SyntaxElement>(node: SyntaxNode, index: int): SeparatedSyntaxList<T> {
+    return new SeparatedSyntaxList<T>(node.Slot(index) as SyntaxNode);
+  }
+}

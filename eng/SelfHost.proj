@@ -1,0 +1,133 @@
+<Project DefaultTargets="Verify">
+  <Import Project="../Directory.Build.props" />
+  <PropertyGroup>
+    <Configuration Condition="'$(Configuration)' == ''">Release</Configuration>
+    <_RepositoryRoot>$([MSBuild]::NormalizeDirectory('$(MSBuildThisFileDirectory)', '..'))</_RepositoryRoot>
+    <SelfHostArtifactsDirectory Condition="'$(SelfHostArtifactsDirectory)' == ''">$(_RepositoryRoot)artifacts/selfhost/$(Configuration.ToLowerInvariant())</SelfHostArtifactsDirectory>
+    <_SelfHostRoot>$([MSBuild]::NormalizeDirectory('$(SelfHostArtifactsDirectory)'))</_SelfHostRoot>
+    <NativeVerificationManifest Condition="'$(NativeVerificationManifest)' == ''">$(_SelfHostRoot)verified.txt</NativeVerificationManifest>
+    <_ManifestPath>$([System.IO.Path]::GetFullPath('$(NativeVerificationManifest)'))</_ManifestPath>
+    <_BootstrapRoot Condition="'$(BootstrapDirectory)' != ''">$([MSBuild]::NormalizeDirectory('$(BootstrapDirectory)'))</_BootstrapRoot>
+    <_Stage1Root>$(_SelfHostRoot)stage1/</_Stage1Root>
+    <_Stage2Root>$(_SelfHostRoot)stage2/</_Stage2Root>
+    <_Stage3Root>$(_SelfHostRoot)stage3/</_Stage3Root>
+    <_Pivot>$(Configuration.ToLowerInvariant())</_Pivot>
+    <SelfHostReleaseIdentity Condition="'$(SelfHostReleaseIdentity)' == ''">false</SelfHostReleaseIdentity>
+    <BootstrapReleaseIdentity Condition="'$(BootstrapReleaseIdentity)' == ''">false</BootstrapReleaseIdentity>
+    <_CompilerName>Caladesi.Compiler.SelfHost</_CompilerName>
+    <_RuntimeName>Caladesi.Runtime.SelfHost</_RuntimeName>
+    <_TaskName>Caladesi.Build.Tasks.SelfHost</_TaskName>
+    <_CliName>calac-selfhost</_CliName>
+    <_LanguageServerName>cala-ls-selfhost</_LanguageServerName>
+    <_CompilerName Condition="'$(SelfHostReleaseIdentity)' == 'true'">Caladesi.Compiler</_CompilerName>
+    <_RuntimeName Condition="'$(SelfHostReleaseIdentity)' == 'true'">Caladesi.Runtime</_RuntimeName>
+    <_TaskName Condition="'$(SelfHostReleaseIdentity)' == 'true'">Caladesi.Build.Tasks</_TaskName>
+    <_CliName Condition="'$(SelfHostReleaseIdentity)' == 'true'">calac</_CliName>
+    <_LanguageServerName Condition="'$(SelfHostReleaseIdentity)' == 'true'">cala-ls</_LanguageServerName>
+    <_BootstrapCompilerName>Caladesi.Compiler.SelfHost</_BootstrapCompilerName>
+    <_BootstrapRuntimeName>Caladesi.Runtime.SelfHost</_BootstrapRuntimeName>
+    <_BootstrapTaskName>Caladesi.Build.Tasks.SelfHost</_BootstrapTaskName>
+    <_BootstrapCliName>calac-selfhost</_BootstrapCliName>
+    <_BootstrapCompilerName Condition="'$(BootstrapReleaseIdentity)' == 'true'">Caladesi.Compiler</_BootstrapCompilerName>
+    <_BootstrapRuntimeName Condition="'$(BootstrapReleaseIdentity)' == 'true'">Caladesi.Runtime</_BootstrapRuntimeName>
+    <_BootstrapTaskName Condition="'$(BootstrapReleaseIdentity)' == 'true'">Caladesi.Build.Tasks</_BootstrapTaskName>
+    <_BootstrapCliName Condition="'$(BootstrapReleaseIdentity)' == 'true'">calac</_BootstrapCliName>
+    <_CliRelativePath>bin/Caladesi.Cli.SelfHost/$(_Pivot)/$(_CliName).dll</_CliRelativePath>
+    <_TaskRelativePath>bin/Caladesi.Build.Tasks.SelfHost/$(_Pivot)/$(_TaskName).dll</_TaskRelativePath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Explicit order matters: project references resolve within this stage, but never build recursively. -->
+    <_NativeProject Include="$(_RepositoryRoot)src/Caladesi.Runtime.SelfHost/Caladesi.Runtime.SelfHost.calaproj" />
+    <_NativeProject Include="$(_RepositoryRoot)src/Caladesi.Compiler.SelfHost/Caladesi.Compiler.SelfHost.calaproj" />
+    <_NativeProject Include="$(_RepositoryRoot)src/Caladesi.Build.Tasks.SelfHost/Caladesi.Build.Tasks.SelfHost.calaproj" />
+    <_NativeProject Include="$(_RepositoryRoot)src/Caladesi.Cli.SelfHost/Caladesi.Cli.SelfHost.calaproj" />
+    <_NativeProject Include="$(_RepositoryRoot)src/Caladesi.LanguageServer.SelfHost/Caladesi.LanguageServer.SelfHost.calaproj" />
+    <_RequiredBootstrapFile Include="$(_BootstrapCliName).dll;$(_BootstrapCliName).deps.json;$(_BootstrapCliName).runtimeconfig.json;$(_BootstrapCompilerName).dll;$(_BootstrapRuntimeName).dll;$(_BootstrapTaskName).dll" />
+    <_ComparedArtifact Include="bin/Caladesi.Runtime.SelfHost/$(_Pivot)/$(_RuntimeName).dll;bin/Caladesi.Runtime.SelfHost/$(_Pivot)/$(_RuntimeName).pdb" />
+    <_ComparedArtifact Include="bin/Caladesi.Compiler.SelfHost/$(_Pivot)/$(_CompilerName).dll;bin/Caladesi.Compiler.SelfHost/$(_Pivot)/$(_CompilerName).pdb" />
+    <_ComparedArtifact Include="bin/Caladesi.Build.Tasks.SelfHost/$(_Pivot)/$(_TaskName).dll;bin/Caladesi.Build.Tasks.SelfHost/$(_Pivot)/$(_TaskName).pdb" />
+    <_ComparedArtifact Include="bin/Caladesi.Cli.SelfHost/$(_Pivot)/$(_CliName).dll;bin/Caladesi.Cli.SelfHost/$(_Pivot)/$(_CliName).pdb" />
+    <_ComparedArtifact Include="bin/Caladesi.LanguageServer.SelfHost/$(_Pivot)/$(_LanguageServerName).dll;bin/Caladesi.LanguageServer.SelfHost/$(_Pivot)/$(_LanguageServerName).pdb" />
+    <_ComparedArtifact Include="bin/Caladesi.Cli.SelfHost/$(_Pivot)/$(_CliName).deps.json;bin/Caladesi.Cli.SelfHost/$(_Pivot)/$(_CliName).runtimeconfig.json" />
+    <_ComparedArtifact Include="bin/Caladesi.LanguageServer.SelfHost/$(_Pivot)/$(_LanguageServerName).deps.json;bin/Caladesi.LanguageServer.SelfHost/$(_Pivot)/$(_LanguageServerName).runtimeconfig.json" />
+  </ItemGroup>
+
+  <Target Name="_ValidateBootstrap">
+    <Delete Files="$(_ManifestPath)" />
+    <Error Condition="'$(SelfHostReleaseIdentity)' != 'true' and '$(SelfHostReleaseIdentity)' != 'false'"
+           Text="SelfHostReleaseIdentity must be true or false." />
+    <Error Condition="'$(BootstrapReleaseIdentity)' != 'true' and '$(BootstrapReleaseIdentity)' != 'false'"
+           Text="BootstrapReleaseIdentity must be true or false." />
+    <Error Condition="'$(BootstrapDirectory)' == ''"
+           Text="Set BootstrapDirectory to a trusted existing native bootstrap directory. No bootstrap artifacts are downloaded or built from C# by this target. See README.md." />
+    <Error Condition="'$(_BootstrapRoot)' != '' and $([System.String]::Copy('$(_BootstrapRoot)').StartsWith('$(_SelfHostRoot)'))"
+           Text="BootstrapDirectory must be outside SelfHostArtifactsDirectory; stage outputs are deleted before rebuilding." />
+    <Error Condition="!Exists('$(_BootstrapRoot)%(_RequiredBootstrapFile.Identity)')"
+           Text="Missing trusted native bootstrap artifact: $(_BootstrapRoot)%(_RequiredBootstrapFile.Identity). Supply the complete runnable CLI and native MSBuild task, including their dependencies." />
+  </Target>
+
+  <Target Name="Stage1" DependsOnTargets="_ValidateBootstrap">
+    <MSBuild Projects="$(MSBuildProjectFullPath)" Targets="_BuildNativeStage"
+             Properties="_SelfHostStage=1;_StageCompiler=$(_BootstrapRoot)$(_BootstrapCliName).dll;_StageTasks=$(_BootstrapRoot)$(_BootstrapTaskName).dll" />
+  </Target>
+
+  <Target Name="Stage2" DependsOnTargets="Stage1">
+    <MSBuild Projects="$(MSBuildProjectFullPath)" Targets="_BuildNativeStage"
+             Properties="_SelfHostStage=2;_StageCompiler=$(_Stage1Root)$(_CliRelativePath);_StageTasks=$(_Stage1Root)$(_TaskRelativePath)" />
+  </Target>
+
+  <Target Name="Stage3" DependsOnTargets="Stage2">
+    <MSBuild Projects="$(MSBuildProjectFullPath)" Targets="_BuildNativeStage"
+             Properties="_SelfHostStage=3;_StageCompiler=$(_Stage2Root)$(_CliRelativePath);_StageTasks=$(_Stage2Root)$(_TaskRelativePath)" />
+  </Target>
+
+  <Target Name="_BuildNativeStage">
+    <Error Condition="'$(_SelfHostStage)' != '1' and '$(_SelfHostStage)' != '2' and '$(_SelfHostStage)' != '3'"
+           Text="_BuildNativeStage is internal; use Stage1, Stage2, Stage3 or Verify." />
+    <Error Condition="!Exists('$(_StageCompiler)') or !Exists('$(_StageTasks)')"
+           Text="Stage $(_SelfHostStage) requires its preceding native compiler '$(_StageCompiler)' and task '$(_StageTasks)'." />
+    <PropertyGroup>
+      <_StageRoot>$(_SelfHostRoot)stage$(_SelfHostStage)/</_StageRoot>
+      <_NativeProperties>Configuration=$(Configuration);Version=$(Version);BuildProjectReferences=false;RestoreRecursive=false;UseArtifactsOutput=true;ArtifactsPath=$(_StageRoot);ArtifactsPivots=$(_Pivot);CaladesiCompilerPath=$(_StageCompiler);CaladesiTasksAssembly=$(_StageTasks);SelfHostReleaseIdentity=$(SelfHostReleaseIdentity);CaladesiImplicitRuntimeReference=false;PublishAot=false;UseAppHost=false;Deterministic=true;DebugType=portable;DebugSymbols=true</_NativeProperties>
+    </PropertyGroup>
+    <Message Importance="high" Text="Building native stage $(_SelfHostStage) using '$(_StageCompiler)' and '$(_StageTasks)' into '$(_StageRoot)'." />
+    <RemoveDir Directories="$(_StageRoot)" />
+    <!-- A distinct global-property set prevents reusing the pre-restore project evaluation for Build. -->
+    <MSBuild Projects="@(_NativeProject)" Targets="Restore" BuildInParallel="false"
+             Properties="$(_NativeProperties);_SelfHostRestoreEvaluation=true" />
+    <MSBuild Projects="@(_NativeProject)" Targets="Build" BuildInParallel="false"
+             Properties="$(_NativeProperties)" />
+    <Error Condition="!Exists('$(_StageRoot)%(_ComparedArtifact.Identity)')"
+           Text="Stage $(_SelfHostStage) did not produce required artifact '$(_StageRoot)%(_ComparedArtifact.Identity)'." />
+  </Target>
+
+  <!-- Target batching pairs each stage2 file with the same relative stage3 file. -->
+  <Target Name="_CompareArtifact" DependsOnTargets="Stage3" Outputs="%(_ComparedArtifact.Identity)">
+    <ItemGroup>
+      <_Stage2Hash Remove="@(_Stage2Hash)" />
+      <_Stage3Hash Remove="@(_Stage3Hash)" />
+    </ItemGroup>
+    <GetFileHash Files="$(_Stage2Root)%(_ComparedArtifact.Identity)" Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="_Stage2Hash" />
+    </GetFileHash>
+    <GetFileHash Files="$(_Stage3Root)%(_ComparedArtifact.Identity)" Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="_Stage3Hash" />
+    </GetFileHash>
+    <Error Condition="'@(_Stage2Hash->'%(FileHash)')' == '' or '@(_Stage3Hash->'%(FileHash)')' == ''"
+           Text="No SHA256 digest was produced for %(_ComparedArtifact.Identity)." />
+    <Error Condition="'@(_Stage2Hash->'%(FileHash)')' != '@(_Stage3Hash->'%(FileHash)')'"
+           Text="Native fixed-point mismatch: %(_ComparedArtifact.Identity). Stage2 SHA256=@(_Stage2Hash->'%(FileHash)'); Stage3 SHA256=@(_Stage3Hash->'%(FileHash)'). Outputs remain under $(_SelfHostRoot) for diagnosis." />
+    <Message Importance="high" Text="Identical stage2/stage3: %(_ComparedArtifact.Identity) SHA256=@(_Stage2Hash->'%(FileHash)')" />
+  </Target>
+
+  <Target Name="Verify" DependsOnTargets="_CompareArtifact">
+    <GetFileHash Files="@(_ComparedArtifact->'$(_Stage3Root)%(Identity)')" Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="_ManifestArtifacts" />
+    </GetFileHash>
+    <MakeDir Directories="$([System.IO.Path]::GetDirectoryName('$(_ManifestPath)'))" />
+    <WriteLinesToFile File="$(_ManifestPath)" Overwrite="true" Encoding="UTF-8"
+                      Lines="SelfHostReleaseIdentity=$(SelfHostReleaseIdentity);Version=$(Version);Configuration=$(Configuration);ArtifactsRoot=$(_SelfHostRoot);@(_ManifestArtifacts->'SHA256|%(Identity)|%(FileHash)');Verified=true" />
+    <Message Importance="high" Text="Native stage2 and stage3 required artifacts are byte-identical. Manifest: $(_ManifestPath). This verifies this invocation only; it does not retire the C# bootstrap." />
+  </Target>
+</Project>

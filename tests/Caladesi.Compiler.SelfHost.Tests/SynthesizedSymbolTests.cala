@@ -1,0 +1,55 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { SynthesizedNamedType, SynthesizedFieldSymbol, SynthesizedMethodSymbol } from "Caladesi.Compiler.Symbols.Source";
+import { ErrorTypeSymbol, NullTypeSymbol, TypeKind, Accessibility, MethodKind, ParameterSymbol } from "Caladesi.Compiler.Symbols";
+
+@TestClass
+export class SynthesizedSymbolTests {
+  @TestMethod
+  memberSnapshotsAndLiveList(): void {
+    const type = new SynthesizedNamedType("Closure", ErrorTypeSymbol.Instance, TypeKind.Class);
+    const before = type.GetMembers();
+    const live = type.Members;
+    const field = new SynthesizedFieldSymbol(type, "value", ErrorTypeSymbol.Instance);
+    type.AddMember(field);
+    if (before.Length != 0 || live.Count != 1 || type.GetMembers().Length != 1) {
+      throw new Exception("Synthesized member snapshot semantics");
+    }
+    if (!Object.ReferenceEquals(type.GetMembers()[0], field) || !field.IsFromSource || field.IsStatic || field.IsReadOnly) {
+      throw new Exception("Synthesized field defaults");
+    }
+    field.SetType(NullTypeSymbol.Instance);
+    if (!Object.ReferenceEquals(field.Type, NullTypeSymbol.Instance)) throw new Exception("Field type mutation");
+  }
+
+  @TestMethod
+  typeFlagsAndBaseAreMutable(): void {
+    const type = new SynthesizedNamedType("Closure", ErrorTypeSymbol.Instance, TypeKind.Class);
+    if (!type.IsSealed || type.IsAbstract || type.IsStatic || !type.IsCompilerGenerated || type.OwnArity != 0) {
+      throw new Exception("Synthesized type defaults");
+    }
+    type.SetBase(ErrorTypeSymbol.Instance);
+    type.IsSealedFlag = false;
+    type.IsAbstractFlag = true;
+    type.IsStaticFlag = true;
+    if (type.IsSealed || !type.IsAbstract || !type.IsStaticClass ||
+        !Object.ReferenceEquals(type.BaseType, ErrorTypeSymbol.Instance)) {
+      throw new Exception("Synthesized type mutation");
+    }
+  }
+
+  @TestMethod
+  methodMutationAndStateMachineFlags(): void {
+    const method = new SynthesizedMethodSymbol(ErrorTypeSymbol.Instance, "MoveNext", MethodKind.Ordinary,
+      Accessibility.Private, false, ErrorTypeSymbol.Instance, ImmutableArray<ParameterSymbol>.Empty);
+    method.SetReturnType(NullTypeSymbol.Instance);
+    method.IsAsyncMethod = true;
+    method.IsIteratorMethod = true;
+    method.Associated = ErrorTypeSymbol.Instance;
+    if (!Object.ReferenceEquals(method.ReturnType, NullTypeSymbol.Instance) ||
+        !method.IsAsync || !method.IsIterator || !method.IsFromSource ||
+        !Object.ReferenceEquals(method.AssociatedSymbol, ErrorTypeSymbol.Instance)) {
+      throw new Exception("Synthesized method mutation");
+    }
+  }
+}

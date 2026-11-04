@@ -1,0 +1,192 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { BlobBuilder, ILOpCode } from "System.Reflection.Metadata";
+import { MethodBodyStreamEncoder, MetadataTokens } from "System.Reflection.Metadata.Ecma335";
+import { ReferenceSet } from "Caladesi.Compiler.Symbols.Metadata";
+import { SynthesizedBodyEmitter, MetadataEmitter, ILBuilder } from "Caladesi.Compiler.Emit";
+import { SynthesizedNamedType, SynthesizedMethodSymbol, SynthesizedBodyKind, SourceMethodSymbol,
+  SourcePropertySymbol, SourceFieldSymbol, SourceSymbolContext, ModifierSet } from "Caladesi.Compiler.Symbols.Source";
+import { NamedTypeSymbol, TypeSymbol, TypeKind, SpecialType, Symbol, Accessibility, MethodKind, ParameterSymbol,
+  TypeParameterSymbol, TypeParameterConstraints } from "Caladesi.Compiler.Symbols";
+import { SyntaxTree, SyntaxNode, TypeSyntax, TypeParameterSyntax, ParameterListSyntax } from "Caladesi.Compiler.Syntax";
+import { DiagnosticBag } from "Caladesi.Compiler.Diagnostics";
+import { BoundBlock } from "Caladesi.Compiler.Bound";
+
+class SynthesizedEmitterContext extends SourceSymbolContext<SyntaxTree> {
+  readonly References: ReferenceSet = ReferenceSet.Create([typeof(object).Assembly.Location]);
+  private readonly diagnostics: DiagnosticBag = new DiagnosticBag();
+  override GetTree(file: SyntaxTree): SyntaxTree { return file; }
+  override GetFilePath(file: SyntaxTree): string { return file.FilePath; }
+  override get DeclarationDiagnostics(): DiagnosticBag { return this.diagnostics; }
+  override GetSpecialType(type: SpecialType): NamedTypeSymbol { return this.References.GetSpecialType(type)!; }
+  override IsSourceNamedType(type: NamedTypeSymbol): bool { return false; }
+  override BindParameters(file: SyntaxTree, method: SourceMethodSymbol<SyntaxTree>, syntax: ParameterListSyntax): ImmutableArray<ParameterSymbol> {
+    throw new InvalidOperationException("Explicit parameters required");
+  }
+  override BindType(file: SyntaxTree, owner: Symbol, syntax: TypeSyntax, allowVoid: bool): TypeSymbol {
+    throw new InvalidOperationException("Explicit types required");
+  }
+  override AdjustDeclaredReturnType(file: SyntaxTree, method: SourceMethodSymbol<SyntaxTree>, type: TypeSymbol, syntax: TypeSyntax): TypeSymbol { return type; }
+  override BindConstraints(file: SyntaxTree, owner: Symbol, syntax: TypeParameterSyntax, parameter: TypeParameterSymbol): TypeParameterConstraints {
+    throw new InvalidOperationException("No source constraints");
+  }
+  override BindMethodBody(file: SyntaxTree, method: SourceMethodSymbol<SyntaxTree>): BoundBlock? { return null; }
+}
+
+class SynthesizedEmitterFixture {
+  readonly Context: SynthesizedEmitterContext = new SynthesizedEmitterContext();
+  readonly File: SyntaxTree = SyntaxTree.ParseText("", "synthesized.cala");
+  readonly Metadata: MetadataEmitter;
+  readonly Owner: SynthesizedNamedType;
+  constructor(valueType: bool) {
+    this.Metadata = new MetadataEmitter(type => this.Context.GetSpecialType(type), name => this.Context.References.FindType(name));
+    this.Owner = new SynthesizedNamedType("Native", (null as (Symbol | null))!, valueType ? TypeKind.Struct : TypeKind.Class,
+      Accessibility.Public, this.Context.GetSpecialType(valueType ? SpecialType.ValueType : SpecialType.Object));
+    this.Metadata.RegisterTypeDefinition(this.Owner, MetadataTokens.TypeDefinitionHandle(1));
+  }
+  Method(kind: SynthesizedBodyKind, name: string, methodKind: MethodKind = MethodKind.Ordinary): SourceMethodSymbol<SyntaxTree> {
+    const method = new SourceMethodSymbol<SyntaxTree>(this.Context, this.File, this.Owner, name, methodKind,
+      new ModifierSet(), (null as (SyntaxNode | null))!, Accessibility.Public);
+    method.SynthesizedKind = kind;
+    method.ExplicitReturnType = this.Context.GetSpecialType(SpecialType.Boolean);
+    method.ExplicitParameters = ImmutableArray<ParameterSymbol>.Empty;
+    this.Owner.AddMember(method);
+    return method;
+  }
+  Field(name: string, type: SpecialType, isStatic: bool = false): SourceFieldSymbol<SyntaxTree> {
+    const field = new SourceFieldSymbol<SyntaxTree>(this.Context, this.File, this.Owner, name, Accessibility.Public,
+      isStatic, false, false, (null as (SyntaxNode | null))!, this.Context.GetSpecialType(type));
+    this.Owner.AddMember(field);
+    return field;
+  }
+  Property(name: string, type: SpecialType): void {
+    const property = new SourcePropertySymbol<SyntaxTree>(this.Context, this.File, this.Owner, name,
+      Accessibility.Public, false, (null as (SyntaxNode | null))!,
+      (null as (Func<SourcePropertySymbol<SyntaxTree>, TypeSymbol> | null))!, this.Context.GetSpecialType(type));
+    property.BackingField = this.Field("_" + name, type);
+    this.Owner.AddMember(property);
+  }
+  Emit(method: SourceMethodSymbol<SyntaxTree>): ILBuilder {
+    const il = new ILBuilder();
+    new SynthesizedBodyEmitter<SyntaxTree>(this.Metadata, method, il,
+      type => this.Context.GetSpecialType(type), name => this.Context.References.FindType(name)).Emit();
+    const blob = new BlobBuilder(); const stream = new MethodBodyStreamEncoder(blob);
+    stream.AddMethodBody(il.Encoder, il.MaxStack);
+    if (blob.Count == 0) throw new Exception("Method body and branch fixups must serialize");
+    return il;
+  }
+  Check(il: ILBuilder, expected: byte[]): void {
+    const actual = il.Code.ToArray();
+    if (actual.Length != expected.Length) throw new Exception("IL byte count");
+    for (let i = 0; i < expected.Length; i++)
+      if (actual[i] != expected[i]) throw new Exception("IL mismatch at " + i);
+  }
+}
+
+@TestClass
+export class SynthesizedBodyEmitterTests {
+  @TestMethod
+  unsupportedKindsEmitOriginalThrow(): void {
+    const fixture = new SynthesizedEmitterFixture(false);
+    const kinds: SynthesizedBodyKind[] = [SynthesizedBodyKind.None, SynthesizedBodyKind.RecordDeconstruct,
+      SynthesizedBodyKind.RecordPrintMembers, SynthesizedBodyKind.Custom, SynthesizedBodyKind.DefaultConstructor];
+    for (const kind of kinds) {
+      const il = fixture.Emit(fixture.Method(kind, "Unsupported"));
+      fixture.Check(il, [0x14, 0x7a]);
+      if (il.MaxStack != 5 || il.CurrentDepth != 0) throw new Exception("Throw stack");
+    }
+  }
+
+  @TestMethod
+  accessorsUseRealSourceBackingFieldsAndMetadata(): void {
+    const flags: bool[] = [false, true];
+    for (const isStatic of flags) {
+      const fixture = new SynthesizedEmitterFixture(false);
+      const property = new SourcePropertySymbol<SyntaxTree>(fixture.Context, fixture.File, fixture.Owner, "Value",
+        Accessibility.Public, isStatic, (null as (SyntaxNode | null))!,
+        (null as (Func<SourcePropertySymbol<SyntaxTree>, TypeSymbol> | null))!, fixture.Context.GetSpecialType(SpecialType.Int32));
+      property.BackingField = fixture.Field("_value", SpecialType.Int32, isStatic);
+      fixture.Owner.AddMember(property);
+      const getter = fixture.Method(SynthesizedBodyKind.AutoGetter, "get_Value");
+      getter.AssociatedProperty = property;
+      const getIL = fixture.Emit(getter);
+      const setter = fixture.Method(SynthesizedBodyKind.AutoSetter, "set_Value");
+      setter.AssociatedProperty = property;
+      const setIL = fixture.Emit(setter);
+      const expected = new ILBuilder();
+      if (isStatic) expected.Token(ILOpCode.Ldsfld, fixture.Metadata.GetFieldEntity(property.BackingField!), 1);
+      else { expected.Ldarg(0); expected.Token(ILOpCode.Ldfld, fixture.Metadata.GetFieldEntity(property.BackingField!), 0); }
+      expected.Op(ILOpCode.Ret, 0);
+      fixture.Check(getIL, expected.Code.ToArray());
+      if (setIL.Code.Count != (isStatic ? 7 : 8) || setIL.CurrentDepth != 0) throw new Exception("Setter operands");
+    }
+  }
+
+  @TestMethod
+  emptyRecordClassAndStructPreserveCtorAndEqualityLocals(): void {
+    const flags: bool[] = [false, true];
+    for (const valueType of flags) {
+      const fixture = new SynthesizedEmitterFixture(valueType);
+      const ctor = fixture.Emit(fixture.Method(SynthesizedBodyKind.RecordConstructor, ".ctor", MethodKind.Constructor));
+      if (ctor.Code.Count != (valueType ? 1 : 7)) throw new Exception("Base constructor path");
+      const equals = fixture.Emit(fixture.Method(SynthesizedBodyKind.RecordEquals, "Equals"));
+      if (equals.Locals.Count != 1 || equals.Locals[0].Type.SpecialType != SpecialType.Object)
+        throw new Exception("Original unused equality local is preserved");
+      const hash = fixture.Emit(fixture.Method(SynthesizedBodyKind.RecordGetHashCode, "GetHashCode"));
+      fixture.Check(hash, [0x16, 0x0a, 0x06, 0x2a]);
+      const text = fixture.Emit(fixture.Method(SynthesizedBodyKind.RecordToString, "ToString"));
+      if (text.Code.Count != 6 || text.MaxStack != 5) throw new Exception("Empty record text token");
+    }
+  }
+
+  @TestMethod
+  multiPropertyRecordsResolveComparersBoxingAndSourceCopyConstructors(): void {
+    const flags: bool[] = [false, true];
+    for (const valueType of flags) {
+      const fixture = new SynthesizedEmitterFixture(valueType);
+      fixture.Property("ZFirst", SpecialType.Int32); fixture.Property("ASecond", SpecialType.String);
+      const ctor = fixture.Emit(fixture.Method(SynthesizedBodyKind.RecordConstructor, ".ctor", MethodKind.Constructor));
+      if (ctor.Code.Count != (valueType ? 15 : 21)) throw new Exception("Record property stores");
+      const copy = fixture.Method(SynthesizedBodyKind.RecordCopyConstructor, ".ctor", MethodKind.Constructor);
+      fixture.Emit(copy);
+      fixture.Emit(fixture.Method(SynthesizedBodyKind.RecordClone, "Clone"));
+      const equals = fixture.Emit(fixture.Method(SynthesizedBodyKind.RecordEquals, "Equals"));
+      if (equals.Locals.Count != 5 || equals.Locals[1].Type.SpecialType != SpecialType.Int32 ||
+          equals.Locals[3].Type.SpecialType != SpecialType.String) throw new Exception("Ordered equality locals");
+      const hash = fixture.Emit(fixture.Method(SynthesizedBodyKind.RecordGetHashCode, "GetHashCode"));
+      if (hash.Locals.Count != 1 || hash.MaxStack != 7) throw new Exception("Hash accumulation stack");
+      fixture.Emit(fixture.Method(SynthesizedBodyKind.RecordToString, "ToString"));
+      fixture.Emit(fixture.Method(SynthesizedBodyKind.RecordEqualityContract, "get_EqualityContract"));
+      fixture.Emit(fixture.Method(SynthesizedBodyKind.RecordEqualsObject, "EqualsObject"));
+      fixture.Emit(fixture.Method(SynthesizedBodyKind.RecordEqualsOperator, "op_Equality"));
+      fixture.Emit(fixture.Method(SynthesizedBodyKind.RecordNotEqualsOperator, "op_Inequality"));
+    }
+  }
+
+  @TestMethod
+  unionCasesBoxValuesAndResolveRealEqualityAndHashMethods(): void {
+    const fixture = new SynthesizedEmitterFixture(true);
+    fixture.Field("Tag", SpecialType.Int32); fixture.Field("Value", SpecialType.Object);
+    const types: SpecialType[] = [SpecialType.Int32, SpecialType.String];
+    for (let i = 0; i < types.Length; i++) {
+      const ctor = fixture.Method(SynthesizedBodyKind.UnionConstructor, ".ctor", MethodKind.Constructor);
+      ctor.UnionCaseIndex = i;
+      ctor.ExplicitParameters = ImmutableArray.Create<ParameterSymbol>(
+        new ParameterSymbol("value", fixture.Context.GetSpecialType(types[i]), 0, ctor));
+      const body = fixture.Emit(ctor);
+      if (body.Code.Count != (i == 0 ? 20 : 15) || body.Code.ToArray()[1] != ((0x17 + i) as byte))
+        throw new Exception("Union boxing and tag");
+      const conversion = fixture.Method(SynthesizedBodyKind.UnionImplicit, "op_Implicit");
+      conversion.UnionCaseIndex = i;
+      if (fixture.Emit(conversion).Code.Count != 7) throw new Exception("Union constructor selection");
+    }
+    const equals = fixture.Emit(fixture.Method(SynthesizedBodyKind.UnionEquals, "Equals"));
+    if (equals.Locals.Count != 2 || equals.Locals[0].Type.SpecialType != SpecialType.Object)
+      throw new Exception("Union comparer object locals");
+    fixture.Emit(fixture.Method(SynthesizedBodyKind.UnionToString, "ToString"));
+    fixture.Emit(fixture.Method(SynthesizedBodyKind.UnionGetHashCode, "GetHashCode"));
+    fixture.Emit(fixture.Method(SynthesizedBodyKind.UnionEqualsObject, "EqualsObject"));
+    fixture.Emit(fixture.Method(SynthesizedBodyKind.UnionEqualsOperator, "op_Equality"));
+    fixture.Emit(fixture.Method(SynthesizedBodyKind.UnionNotEqualsOperator, "op_Inequality"));
+  }
+}

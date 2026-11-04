@@ -1,0 +1,912 @@
+import { SyntaxKind } from "./SyntaxKind";
+import { SyntaxToken } from "./SyntaxToken";
+import { SyntaxElement, SyntaxNode, SyntaxList, SeparatedSyntaxList } from "./SyntaxElement";
+
+export abstract class StatementSyntax extends SyntaxNode {
+  constructor(kind: SyntaxKind, slots: SyntaxElement?[]) { super(kind, slots); }
+}
+
+export abstract class ExpressionSyntax extends SyntaxNode {
+  constructor(kind: SyntaxKind, slots: SyntaxElement?[]) { super(kind, slots); }
+}
+
+export abstract class TypeSyntax extends ExpressionSyntax {
+  constructor(kind: SyntaxKind, slots: SyntaxElement?[]) { super(kind, slots); }
+}
+
+export abstract class NameSyntax extends TypeSyntax {
+  constructor(kind: SyntaxKind, slots: SyntaxElement?[]) { super(kind, slots); }
+}
+
+export abstract class SimpleNameSyntax extends NameSyntax {
+  constructor(kind: SyntaxKind, slots: SyntaxElement?[]) { super(kind, slots); }
+  abstract get Identifier(): SyntaxToken;
+  get Name(): string { return this.Identifier.Text; }
+}
+
+export abstract class MemberDeclarationSyntax extends SyntaxNode {
+  constructor(kind: SyntaxKind, slots: SyntaxElement?[]) { super(kind, slots); }
+}
+
+export abstract class LiteralLikeExpressionSyntax extends ExpressionSyntax {
+  constructor(kind: SyntaxKind, slots: SyntaxElement?[]) { super(kind, slots); }
+}
+
+export sealed class CompilationUnitSyntax extends SyntaxNode {
+  constructor(statements: SyntaxNode, endOfFile: SyntaxToken) {
+    super(SyntaxKind.CompilationUnit, [statements, endOfFile]);
+  }
+  get Statements(): SyntaxList<StatementSyntax> { return this.L<StatementSyntax>(0); }
+  get EndOfFileToken(): SyntaxToken { return this.Tok(1); }
+}
+
+export sealed class IdentifierNameSyntax extends SimpleNameSyntax {
+  constructor(identifier: SyntaxToken) { super(SyntaxKind.IdentifierName, [identifier]); }
+  override get Identifier(): SyntaxToken { return this.Tok(0); }
+}
+
+export sealed class GenericNameSyntax extends SimpleNameSyntax {
+  constructor(identifier: SyntaxToken, args: TypeArgumentListSyntax) {
+    super(SyntaxKind.GenericName, [identifier, args]);
+  }
+  override get Identifier(): SyntaxToken { return this.Tok(0); }
+  get TypeArguments(): TypeArgumentListSyntax { return this.Node<TypeArgumentListSyntax>(1); }
+}
+
+export sealed class QualifiedNameSyntax extends NameSyntax {
+  constructor(left: NameSyntax, dot: SyntaxToken, right: SimpleNameSyntax) {
+    super(SyntaxKind.QualifiedName, [left, dot, right]);
+  }
+  get Left(): NameSyntax { return this.Node<NameSyntax>(0); }
+  get DotToken(): SyntaxToken { return this.Tok(1); }
+  get Right(): SimpleNameSyntax { return this.Node<SimpleNameSyntax>(2); }
+}
+
+export sealed class TypeArgumentListSyntax extends SyntaxNode {
+  constructor(lt: SyntaxToken, args: SyntaxNode, gt: SyntaxToken) {
+    super(SyntaxKind.TypeArgumentList, [lt, args, gt]);
+  }
+  get LessThanToken(): SyntaxToken { return this.Tok(0); }
+  get Arguments(): SeparatedSyntaxList<TypeSyntax> { return this.SL<TypeSyntax>(1); }
+  get GreaterThanToken(): SyntaxToken { return this.Tok(2); }
+}
+
+export sealed class ArrayTypeSyntax extends TypeSyntax {
+  constructor(element: TypeSyntax, open: SyntaxToken, close: SyntaxToken) {
+    super(SyntaxKind.ArrayType, [element, open, close]);
+  }
+  get ElementType(): TypeSyntax { return this.Node<TypeSyntax>(0); }
+}
+
+export sealed class ReadonlyArrayTypeSyntax extends TypeSyntax {
+  constructor(readonlyKeyword: SyntaxToken, type: TypeSyntax) {
+    super(SyntaxKind.ReadonlyArrayType, [readonlyKeyword, type]);
+  }
+  get ReadonlyKeyword(): SyntaxToken { return this.Tok(0); }
+  get Type(): TypeSyntax { return this.Node<TypeSyntax>(1); }
+}
+
+export sealed class TupleTypeSyntax extends TypeSyntax {
+  constructor(open: SyntaxToken, elements: SyntaxNode, close: SyntaxToken) {
+    super(SyntaxKind.TupleType, [open, elements, close]);
+  }
+  get Elements(): SeparatedSyntaxList<TupleElementSyntax> { return this.SL<TupleElementSyntax>(1); }
+}
+
+export sealed class TupleElementSyntax extends SyntaxNode {
+  constructor(name: SyntaxToken?, colon: SyntaxToken?, type: TypeSyntax) {
+    super(SyntaxKind.TupleElement, [name, colon, type]);
+  }
+  get NameToken(): SyntaxToken? { return this.TokOpt(0); }
+  get Type(): TypeSyntax { return this.Node<TypeSyntax>(2); }
+}
+
+export sealed class UnionTypeSyntax extends TypeSyntax {
+  constructor(leadingBar: SyntaxToken?, types: SyntaxNode) {
+    super(SyntaxKind.UnionType, [leadingBar, types]);
+  }
+  get Types(): SeparatedSyntaxList<TypeSyntax> { return this.SL<TypeSyntax>(1); }
+}
+
+export sealed class IntersectionTypeSyntax extends TypeSyntax {
+  constructor(types: SyntaxNode) { super(SyntaxKind.IntersectionType, [types]); }
+  get Types(): SeparatedSyntaxList<TypeSyntax> { return this.SL<TypeSyntax>(0); }
+}
+
+export sealed class NullableTypeSyntax extends TypeSyntax {
+  constructor(type: TypeSyntax, question: SyntaxToken) {
+    super(SyntaxKind.NullableType, [type, question]);
+  }
+  get ElementType(): TypeSyntax { return this.Node<TypeSyntax>(0); }
+}
+
+export sealed class FunctionTypeSyntax extends TypeSyntax {
+  constructor(typeParams: TypeParameterListSyntax?, parameters: ParameterListSyntax,
+    arrow: SyntaxToken, returnType: TypeSyntax) {
+    super(SyntaxKind.FunctionType, [typeParams, parameters, arrow, returnType]);
+  }
+  get TypeParameters(): TypeParameterListSyntax? { return this.NodeOpt<TypeParameterListSyntax>(0); }
+  get Parameters(): ParameterListSyntax { return this.Node<ParameterListSyntax>(1); }
+  get ReturnType(): TypeSyntax { return this.Node<TypeSyntax>(3); }
+}
+
+export sealed class ObjectTypeSyntax extends TypeSyntax {
+  constructor(open: SyntaxToken, members: SyntaxNode, close: SyntaxToken) {
+    super(SyntaxKind.ObjectType, [open, members, close]);
+  }
+  get Members(): SyntaxList<MemberDeclarationSyntax> { return this.L<MemberDeclarationSyntax>(1); }
+}
+
+export sealed class LiteralTypeSyntax extends TypeSyntax {
+  constructor(literal: ExpressionSyntax) { super(SyntaxKind.LiteralType, [literal]); }
+  get Literal(): ExpressionSyntax { return this.Node<ExpressionSyntax>(0); }
+}
+
+export sealed class ParenthesizedTypeSyntax extends TypeSyntax {
+  constructor(open: SyntaxToken, type: TypeSyntax, close: SyntaxToken) {
+    super(SyntaxKind.ParenthesizedType, [open, type, close]);
+  }
+  get Type(): TypeSyntax { return this.Node<TypeSyntax>(1); }
+}
+
+export sealed class NewConstraintTypeSyntax extends TypeSyntax {
+  constructor(newKeyword: SyntaxToken, open: SyntaxToken, close: SyntaxToken) {
+    super(SyntaxKind.NewConstraintType, [newKeyword, open, close]);
+  }
+}
+
+export sealed class SpecialConstraintTypeSyntax extends TypeSyntax {
+  constructor(keyword: SyntaxToken) { super(SyntaxKind.SpecialConstraintType, [keyword]); }
+  get Keyword(): SyntaxToken { return this.Tok(0); }
+}
+
+export sealed class MissingTypeSyntax extends TypeSyntax {
+  constructor(missing: SyntaxToken) { super(SyntaxKind.MissingType, [missing]); }
+}
+
+export sealed class TypeAnnotationSyntax extends SyntaxNode {
+  constructor(colon: SyntaxToken, type: TypeSyntax) {
+    super(SyntaxKind.TypeAnnotation, [colon, type]);
+  }
+  get ColonToken(): SyntaxToken { return this.Tok(0); }
+  get Type(): TypeSyntax { return this.Node<TypeSyntax>(1); }
+}
+
+export sealed class EqualsValueClauseSyntax extends SyntaxNode {
+  constructor(equals: SyntaxToken, value: ExpressionSyntax) {
+    super(SyntaxKind.EqualsValueClause, [equals, value]);
+  }
+  get Value(): ExpressionSyntax { return this.Node<ExpressionSyntax>(1); }
+}
+
+export sealed class TypeParameterListSyntax extends SyntaxNode {
+  constructor(lt: SyntaxToken, parameters: SyntaxNode, gt: SyntaxToken) {
+    super(SyntaxKind.TypeParameterList, [lt, parameters, gt]);
+  }
+  get Parameters(): SeparatedSyntaxList<TypeParameterSyntax> { return this.SL<TypeParameterSyntax>(1); }
+}
+
+export sealed class TypeParameterSyntax extends SyntaxNode {
+  constructor(variance: SyntaxToken?, identifier: SyntaxToken, extendsKeyword: SyntaxToken?,
+    constraint: TypeSyntax?, defaultType: EqualsValueClauseSyntax?) {
+    super(SyntaxKind.TypeParameter, [variance, identifier, extendsKeyword, constraint, defaultType]);
+  }
+  get VarianceKeyword(): SyntaxToken? { return this.TokOpt(0); }
+  get Identifier(): SyntaxToken { return this.Tok(1); }
+  get Constraint(): TypeSyntax? { return this.NodeOpt<TypeSyntax>(3); }
+}
+
+export sealed class DecoratorSyntax extends SyntaxNode {
+  constructor(at: SyntaxToken, expression: ExpressionSyntax) {
+    super(SyntaxKind.Decorator, [at, expression]);
+  }
+  get Expression(): ExpressionSyntax { return this.Node<ExpressionSyntax>(1); }
+}
+
+export sealed class ParameterListSyntax extends SyntaxNode {
+  constructor(open: SyntaxToken, parameters: SyntaxNode, close: SyntaxToken) {
+    super(SyntaxKind.ParameterList, [open, parameters, close]);
+  }
+  get Parameters(): SeparatedSyntaxList<ParameterSyntax> { return this.SL<ParameterSyntax>(1); }
+}
+
+export sealed class ParameterSyntax extends SyntaxNode {
+  constructor(decorators: SyntaxNode, modifiers: SyntaxNode, dotDotDot: SyntaxToken?,
+    identifier: SyntaxToken?, pattern: BindingPatternSyntax?, question: SyntaxToken?,
+    type: TypeAnnotationSyntax?, initializer: EqualsValueClauseSyntax?) {
+    super(SyntaxKind.Parameter, [decorators, modifiers, dotDotDot, identifier, pattern, question, type, initializer]);
+  }
+  get Decorators(): SyntaxList<DecoratorSyntax> { return this.L<DecoratorSyntax>(0); }
+  get Modifiers(): SyntaxList<SyntaxToken> { return this.L<SyntaxToken>(1); }
+  get DotDotDotToken(): SyntaxToken? { return this.TokOpt(2); }
+  get Identifier(): SyntaxToken? { return this.TokOpt(3); }
+  get Pattern(): BindingPatternSyntax? { return this.NodeOpt<BindingPatternSyntax>(4); }
+  get QuestionToken(): SyntaxToken? { return this.TokOpt(5); }
+  get TypeAnnotation(): TypeAnnotationSyntax? { return this.NodeOpt<TypeAnnotationSyntax>(6); }
+  get Initializer(): EqualsValueClauseSyntax? { return this.NodeOpt<EqualsValueClauseSyntax>(7); }
+}
+
+export abstract class BindingPatternSyntax extends SyntaxNode {
+  constructor(kind: SyntaxKind, slots: SyntaxElement?[]) { super(kind, slots); }
+}
+
+export sealed class ObjectBindingPatternSyntax extends BindingPatternSyntax {
+  constructor(open: SyntaxToken, elements: SyntaxNode, close: SyntaxToken) {
+    super(SyntaxKind.ObjectBindingPattern, [open, elements, close]);
+  }
+  get Elements(): SeparatedSyntaxList<BindingElementSyntax> { return this.SL<BindingElementSyntax>(1); }
+}
+
+export sealed class ArrayBindingPatternSyntax extends BindingPatternSyntax {
+  constructor(open: SyntaxToken, elements: SyntaxNode, close: SyntaxToken) {
+    super(SyntaxKind.ArrayBindingPattern, [open, elements, close]);
+  }
+  get Elements(): SeparatedSyntaxList<BindingElementSyntax> { return this.SL<BindingElementSyntax>(1); }
+}
+
+export sealed class BindingElementSyntax extends SyntaxNode {
+  constructor(dotDotDot: SyntaxToken?, propertyName: SyntaxToken?, colon: SyntaxToken?,
+    identifier: SyntaxToken?, nested: BindingPatternSyntax?, initializer: EqualsValueClauseSyntax?) {
+    super(SyntaxKind.BindingElement, [dotDotDot, propertyName, colon, identifier, nested, initializer]);
+  }
+  get DotDotDotToken(): SyntaxToken? { return this.TokOpt(0); }
+  get PropertyName(): SyntaxToken? { return this.TokOpt(1); }
+  get Identifier(): SyntaxToken? { return this.TokOpt(3); }
+  get NestedPattern(): BindingPatternSyntax? { return this.NodeOpt<BindingPatternSyntax>(4); }
+  get Initializer(): EqualsValueClauseSyntax? { return this.NodeOpt<EqualsValueClauseSyntax>(5); }
+  get IsOmitted(): bool { return this.Identifier == null && this.NestedPattern == null; }
+}
+
+export sealed class ImportDeclarationSyntax extends StatementSyntax {
+  constructor(importKeyword: SyntaxToken, typeKeyword: SyntaxToken?, clause: SyntaxNode?,
+    fromKeyword: SyntaxToken?, moduleSpecifier: SyntaxToken, semicolon: SyntaxToken?) {
+    super(SyntaxKind.ImportDeclaration, [importKeyword, typeKeyword, clause, fromKeyword, moduleSpecifier, semicolon]);
+  }
+  get ImportKeyword(): SyntaxToken { return this.Tok(0); }
+  get TypeKeyword(): SyntaxToken? { return this.TokOpt(1); }
+  get Clause(): SyntaxNode? { return this.NodeOpt<SyntaxNode>(2); }
+  get ModuleSpecifier(): SyntaxToken { return this.Tok(4); }
+  get ModuleName(): string { return this.ModuleSpecifier.ValueText; }
+}
+
+export sealed class NamedImportsSyntax extends SyntaxNode {
+  constructor(open: SyntaxToken, specifiers: SyntaxNode, close: SyntaxToken) {
+    super(SyntaxKind.NamedImports, [open, specifiers, close]);
+  }
+  get Specifiers(): SeparatedSyntaxList<ImportSpecifierSyntax> { return this.SL<ImportSpecifierSyntax>(1); }
+}
+
+export sealed class ImportSpecifierSyntax extends SyntaxNode {
+  constructor(typeKeyword: SyntaxToken?, name: SyntaxToken, asKeyword: SyntaxToken?, alias: SyntaxToken?) {
+    super(SyntaxKind.ImportSpecifier, [typeKeyword, name, asKeyword, alias]);
+  }
+  get TypeKeyword(): SyntaxToken? { return this.TokOpt(0); }
+  get NameToken(): SyntaxToken { return this.Tok(1); }
+  get AliasToken(): SyntaxToken? { return this.TokOpt(3); }
+  get LocalName(): string { return (this.AliasToken ?? this.NameToken).Text; }
+}
+
+export sealed class NamespaceImportSyntax extends SyntaxNode {
+  constructor(star: SyntaxToken, asKeyword: SyntaxToken, alias: SyntaxToken) {
+    super(SyntaxKind.NamespaceImport, [star, asKeyword, alias]);
+  }
+  get AliasToken(): SyntaxToken { return this.Tok(2); }
+}
+
+export sealed class FunctionDeclarationSyntax extends StatementSyntax {
+  constructor(decorators: SyntaxNode, modifiers: SyntaxNode, functionKeyword: SyntaxToken,
+    asterisk: SyntaxToken?, identifier: SyntaxToken, typeParams: TypeParameterListSyntax?,
+    parameters: ParameterListSyntax, returnType: TypeAnnotationSyntax?, body: BlockSyntax?,
+    semicolon: SyntaxToken?) {
+    super(SyntaxKind.FunctionDeclaration, [decorators, modifiers, functionKeyword, asterisk, identifier, typeParams, parameters, returnType, body, semicolon]);
+  }
+  get Decorators(): SyntaxList<DecoratorSyntax> { return this.L<DecoratorSyntax>(0); }
+  get Modifiers(): SyntaxList<SyntaxToken> { return this.L<SyntaxToken>(1); }
+  get AsteriskToken(): SyntaxToken? { return this.TokOpt(3); }
+  get Identifier(): SyntaxToken { return this.Tok(4); }
+  get TypeParameters(): TypeParameterListSyntax? { return this.NodeOpt<TypeParameterListSyntax>(5); }
+  get Parameters(): ParameterListSyntax { return this.Node<ParameterListSyntax>(6); }
+  get ReturnType(): TypeAnnotationSyntax? { return this.NodeOpt<TypeAnnotationSyntax>(7); }
+  get Body(): BlockSyntax? { return this.NodeOpt<BlockSyntax>(8); }
+}
+
+export sealed class HeritageClauseSyntax extends SyntaxNode {
+  constructor(keyword: SyntaxToken, types: SyntaxNode) {
+    super(SyntaxKind.HeritageClause, [keyword, types]);
+  }
+  get Keyword(): SyntaxToken { return this.Tok(0); }
+  get Types(): SeparatedSyntaxList<TypeSyntax> { return this.SL<TypeSyntax>(1); }
+}
+
+export sealed class ClassDeclarationSyntax extends StatementSyntax {
+  constructor(decorators: SyntaxNode, modifiers: SyntaxNode, classKeyword: SyntaxToken,
+    identifier: SyntaxToken, typeParams: TypeParameterListSyntax?, extendsClause: HeritageClauseSyntax?,
+    implementsClause: HeritageClauseSyntax?, open: SyntaxToken, members: SyntaxNode, close: SyntaxToken) {
+    super(SyntaxKind.ClassDeclaration, [decorators, modifiers, classKeyword, identifier, typeParams, extendsClause, implementsClause, open, members, close]);
+  }
+  get Decorators(): SyntaxList<DecoratorSyntax> { return this.L<DecoratorSyntax>(0); }
+  get Modifiers(): SyntaxList<SyntaxToken> { return this.L<SyntaxToken>(1); }
+  get Identifier(): SyntaxToken { return this.Tok(3); }
+  get TypeParameters(): TypeParameterListSyntax? { return this.NodeOpt<TypeParameterListSyntax>(4); }
+  get ExtendsClause(): HeritageClauseSyntax? { return this.NodeOpt<HeritageClauseSyntax>(5); }
+  get ImplementsClause(): HeritageClauseSyntax? { return this.NodeOpt<HeritageClauseSyntax>(6); }
+  get Members(): SyntaxList<MemberDeclarationSyntax> { return this.L<MemberDeclarationSyntax>(8); }
+}
+
+export sealed class InterfaceDeclarationSyntax extends StatementSyntax {
+  constructor(decorators: SyntaxNode, modifiers: SyntaxNode, interfaceKeyword: SyntaxToken,
+    identifier: SyntaxToken, typeParams: TypeParameterListSyntax?, extendsClause: HeritageClauseSyntax?,
+    open: SyntaxToken, members: SyntaxNode, close: SyntaxToken) {
+    super(SyntaxKind.InterfaceDeclaration, [decorators, modifiers, interfaceKeyword, identifier, typeParams, extendsClause, open, members, close]);
+  }
+  get Decorators(): SyntaxList<DecoratorSyntax> { return this.L<DecoratorSyntax>(0); }
+  get Modifiers(): SyntaxList<SyntaxToken> { return this.L<SyntaxToken>(1); }
+  get Identifier(): SyntaxToken { return this.Tok(3); }
+  get TypeParameters(): TypeParameterListSyntax? { return this.NodeOpt<TypeParameterListSyntax>(4); }
+  get ExtendsClause(): HeritageClauseSyntax? { return this.NodeOpt<HeritageClauseSyntax>(5); }
+  get Members(): SyntaxList<MemberDeclarationSyntax> { return this.L<MemberDeclarationSyntax>(7); }
+}
+
+export sealed class EnumDeclarationSyntax extends StatementSyntax {
+  constructor(decorators: SyntaxNode, modifiers: SyntaxNode, enumKeyword: SyntaxToken,
+    identifier: SyntaxToken, open: SyntaxToken, members: SyntaxNode, close: SyntaxToken) {
+    super(SyntaxKind.EnumDeclaration, [decorators, modifiers, enumKeyword, identifier, open, members, close]);
+  }
+  get Decorators(): SyntaxList<DecoratorSyntax> { return this.L<DecoratorSyntax>(0); }
+  get Modifiers(): SyntaxList<SyntaxToken> { return this.L<SyntaxToken>(1); }
+  get Identifier(): SyntaxToken { return this.Tok(3); }
+  get Members(): SeparatedSyntaxList<EnumMemberSyntax> { return this.SL<EnumMemberSyntax>(5); }
+}
+
+export sealed class EnumMemberSyntax extends SyntaxNode {
+  constructor(identifier: SyntaxToken, initializer: EqualsValueClauseSyntax?) {
+    super(SyntaxKind.EnumMember, [identifier, initializer]);
+  }
+  get Identifier(): SyntaxToken { return this.Tok(0); }
+  get Initializer(): EqualsValueClauseSyntax? { return this.NodeOpt<EqualsValueClauseSyntax>(1); }
+}
+
+export sealed class TypeAliasDeclarationSyntax extends StatementSyntax {
+  constructor(decorators: SyntaxNode, modifiers: SyntaxNode, typeKeyword: SyntaxToken,
+    identifier: SyntaxToken, typeParams: TypeParameterListSyntax?, equals: SyntaxToken,
+    type: TypeSyntax, semicolon: SyntaxToken?) {
+    super(SyntaxKind.TypeAliasDeclaration, [decorators, modifiers, typeKeyword, identifier, typeParams, equals, type, semicolon]);
+  }
+  get Decorators(): SyntaxList<DecoratorSyntax> { return this.L<DecoratorSyntax>(0); }
+  get Modifiers(): SyntaxList<SyntaxToken> { return this.L<SyntaxToken>(1); }
+  get Identifier(): SyntaxToken { return this.Tok(3); }
+  get TypeParameters(): TypeParameterListSyntax? { return this.NodeOpt<TypeParameterListSyntax>(4); }
+  get Type(): TypeSyntax { return this.Node<TypeSyntax>(6); }
+}
+
+export sealed class PropertyDeclarationSyntax extends MemberDeclarationSyntax {
+  constructor(decorators: SyntaxNode, modifiers: SyntaxNode, identifier: SyntaxToken,
+    question: SyntaxToken?, type: TypeAnnotationSyntax?, initializer: EqualsValueClauseSyntax?,
+    separator: SyntaxToken?) {
+    super(SyntaxKind.PropertyDeclaration, [decorators, modifiers, identifier, question, type, initializer, separator]);
+  }
+  get Decorators(): SyntaxList<DecoratorSyntax> { return this.L<DecoratorSyntax>(0); }
+  get Modifiers(): SyntaxList<SyntaxToken> { return this.L<SyntaxToken>(1); }
+  get Identifier(): SyntaxToken { return this.Tok(2); }
+  get QuestionToken(): SyntaxToken? { return this.TokOpt(3); }
+  get TypeAnnotation(): TypeAnnotationSyntax? { return this.NodeOpt<TypeAnnotationSyntax>(4); }
+  get Initializer(): EqualsValueClauseSyntax? { return this.NodeOpt<EqualsValueClauseSyntax>(5); }
+}
+
+export sealed class MethodDeclarationSyntax extends MemberDeclarationSyntax {
+  constructor(decorators: SyntaxNode, modifiers: SyntaxNode, asterisk: SyntaxToken?,
+    identifier: SyntaxToken, question: SyntaxToken?, typeParams: TypeParameterListSyntax?,
+    parameters: ParameterListSyntax, returnType: TypeAnnotationSyntax?, body: BlockSyntax?,
+    separator: SyntaxToken?) {
+    super(SyntaxKind.MethodDeclaration, [decorators, modifiers, asterisk, identifier, question, typeParams, parameters, returnType, body, separator]);
+  }
+  get Decorators(): SyntaxList<DecoratorSyntax> { return this.L<DecoratorSyntax>(0); }
+  get Modifiers(): SyntaxList<SyntaxToken> { return this.L<SyntaxToken>(1); }
+  get AsteriskToken(): SyntaxToken? { return this.TokOpt(2); }
+  get Identifier(): SyntaxToken { return this.Tok(3); }
+  get TypeParameters(): TypeParameterListSyntax? { return this.NodeOpt<TypeParameterListSyntax>(5); }
+  get Parameters(): ParameterListSyntax { return this.Node<ParameterListSyntax>(6); }
+  get ReturnType(): TypeAnnotationSyntax? { return this.NodeOpt<TypeAnnotationSyntax>(7); }
+  get Body(): BlockSyntax? { return this.NodeOpt<BlockSyntax>(8); }
+}
+
+export sealed class ConstructorDeclarationSyntax extends MemberDeclarationSyntax {
+  constructor(decorators: SyntaxNode, modifiers: SyntaxNode, keyword: SyntaxToken,
+    parameters: ParameterListSyntax, body: BlockSyntax?, semicolon: SyntaxToken?) {
+    super(SyntaxKind.ConstructorDeclaration, [decorators, modifiers, keyword, parameters, body, semicolon]);
+  }
+  get Decorators(): SyntaxList<DecoratorSyntax> { return this.L<DecoratorSyntax>(0); }
+  get Modifiers(): SyntaxList<SyntaxToken> { return this.L<SyntaxToken>(1); }
+  get Keyword(): SyntaxToken { return this.Tok(2); }
+  get Parameters(): ParameterListSyntax { return this.Node<ParameterListSyntax>(3); }
+  get Body(): BlockSyntax? { return this.NodeOpt<BlockSyntax>(4); }
+}
+
+export sealed class AccessorDeclarationSyntax extends MemberDeclarationSyntax {
+  constructor(kind: SyntaxKind, decorators: SyntaxNode, modifiers: SyntaxNode,
+    accessorKeyword: SyntaxToken, identifier: SyntaxToken, parameters: ParameterListSyntax,
+    returnType: TypeAnnotationSyntax?, body: BlockSyntax?, semicolon: SyntaxToken?) {
+    super(kind, [decorators, modifiers, accessorKeyword, identifier, parameters, returnType, body, semicolon]);
+  }
+  get Decorators(): SyntaxList<DecoratorSyntax> { return this.L<DecoratorSyntax>(0); }
+  get Modifiers(): SyntaxList<SyntaxToken> { return this.L<SyntaxToken>(1); }
+  get IsGetter(): bool { return this.Kind == SyntaxKind.GetAccessorDeclaration; }
+  get Identifier(): SyntaxToken { return this.Tok(3); }
+  get Parameters(): ParameterListSyntax { return this.Node<ParameterListSyntax>(4); }
+  get ReturnType(): TypeAnnotationSyntax? { return this.NodeOpt<TypeAnnotationSyntax>(5); }
+  get Body(): BlockSyntax? { return this.NodeOpt<BlockSyntax>(6); }
+}
+
+export sealed class BlockSyntax extends StatementSyntax {
+  constructor(open: SyntaxToken, statements: SyntaxNode, close: SyntaxToken) {
+    super(SyntaxKind.Block, [open, statements, close]);
+  }
+  get OpenBraceToken(): SyntaxToken { return this.Tok(0); }
+  get Statements(): SyntaxList<StatementSyntax> { return this.L<StatementSyntax>(1); }
+  get CloseBraceToken(): SyntaxToken { return this.Tok(2); }
+}
+
+export sealed class VariableStatementSyntax extends StatementSyntax {
+  constructor(decorators: SyntaxNode, modifiers: SyntaxNode,
+    declarations: VariableDeclarationListSyntax, semicolon: SyntaxToken?) {
+    super(SyntaxKind.VariableStatement, [decorators, modifiers, declarations, semicolon]);
+  }
+  get Decorators(): SyntaxList<DecoratorSyntax> { return this.L<DecoratorSyntax>(0); }
+  get Modifiers(): SyntaxList<SyntaxToken> { return this.L<SyntaxToken>(1); }
+  get Declaration(): VariableDeclarationListSyntax { return this.Node<VariableDeclarationListSyntax>(2); }
+}
+
+export sealed class VariableDeclarationListSyntax extends SyntaxNode {
+  constructor(awaitKeyword: SyntaxToken?, keyword: SyntaxToken, declarators: SyntaxNode) {
+    super(SyntaxKind.VariableDeclarationList, [awaitKeyword, keyword, declarators]);
+  }
+  get AwaitKeyword(): SyntaxToken? { return this.TokOpt(0); }
+  get Keyword(): SyntaxToken { return this.Tok(1); }
+  get Declarators(): SeparatedSyntaxList<VariableDeclaratorSyntax> { return this.SL<VariableDeclaratorSyntax>(2); }
+  get IsConst(): bool { return this.Keyword.Kind == SyntaxKind.ConstKeyword; }
+  get IsUsing(): bool { return this.Keyword.Kind == SyntaxKind.UsingKeyword; }
+}
+
+export sealed class VariableDeclaratorSyntax extends SyntaxNode {
+  constructor(identifier: SyntaxToken?, pattern: BindingPatternSyntax?,
+    type: TypeAnnotationSyntax?, initializer: EqualsValueClauseSyntax?) {
+    super(SyntaxKind.VariableDeclarator, [identifier, pattern, type, initializer]);
+  }
+  get Identifier(): SyntaxToken? { return this.TokOpt(0); }
+  get Pattern(): BindingPatternSyntax? { return this.NodeOpt<BindingPatternSyntax>(1); }
+  get TypeAnnotation(): TypeAnnotationSyntax? { return this.NodeOpt<TypeAnnotationSyntax>(2); }
+  get Initializer(): EqualsValueClauseSyntax? { return this.NodeOpt<EqualsValueClauseSyntax>(3); }
+}
+
+export sealed class ExpressionStatementSyntax extends StatementSyntax {
+  constructor(expression: ExpressionSyntax, semicolon: SyntaxToken?) {
+    super(SyntaxKind.ExpressionStatement, [expression, semicolon]);
+  }
+  get Expression(): ExpressionSyntax { return this.Node<ExpressionSyntax>(0); }
+}
+
+export sealed class IfStatementSyntax extends StatementSyntax {
+  constructor(ifKeyword: SyntaxToken, open: SyntaxToken, condition: ExpressionSyntax,
+    close: SyntaxToken, thenStatement: StatementSyntax, elseKeyword: SyntaxToken?,
+    elseStatement: StatementSyntax?) {
+    super(SyntaxKind.IfStatement, [ifKeyword, open, condition, close, thenStatement, elseKeyword, elseStatement]);
+  }
+  get Condition(): ExpressionSyntax { return this.Node<ExpressionSyntax>(2); }
+  get Then(): StatementSyntax { return this.Node<StatementSyntax>(4); }
+  get Else(): StatementSyntax? { return this.NodeOpt<StatementSyntax>(6); }
+}
+
+export sealed class ForStatementSyntax extends StatementSyntax {
+  constructor(forKeyword: SyntaxToken, open: SyntaxToken, initializer: SyntaxNode?,
+    semi1: SyntaxToken, condition: ExpressionSyntax?, semi2: SyntaxToken,
+    incrementor: ExpressionSyntax?, close: SyntaxToken, body: StatementSyntax) {
+    super(SyntaxKind.ForStatement, [forKeyword, open, initializer, semi1, condition, semi2, incrementor, close, body]);
+  }
+  get Initializer(): SyntaxNode? { return this.NodeOpt<SyntaxNode>(2); }
+  get Condition(): ExpressionSyntax? { return this.NodeOpt<ExpressionSyntax>(4); }
+  get Incrementor(): ExpressionSyntax? { return this.NodeOpt<ExpressionSyntax>(6); }
+  get Body(): StatementSyntax { return this.Node<StatementSyntax>(8); }
+}
+
+export sealed class ForOfStatementSyntax extends StatementSyntax {
+  constructor(forKeyword: SyntaxToken, awaitKeyword: SyntaxToken?, open: SyntaxToken,
+    left: SyntaxNode, ofKeyword: SyntaxToken, expression: ExpressionSyntax,
+    close: SyntaxToken, body: StatementSyntax) {
+    super(SyntaxKind.ForOfStatement, [forKeyword, awaitKeyword, open, left, ofKeyword, expression, close, body]);
+  }
+  get AwaitKeyword(): SyntaxToken? { return this.TokOpt(1); }
+  get Left(): SyntaxNode { return this.Node<SyntaxNode>(3); }
+  get Expression(): ExpressionSyntax { return this.Node<ExpressionSyntax>(5); }
+  get Body(): StatementSyntax { return this.Node<StatementSyntax>(7); }
+}
+
+export sealed class ForInStatementSyntax extends StatementSyntax {
+  constructor(forKeyword: SyntaxToken, open: SyntaxToken, left: SyntaxNode,
+    inKeyword: SyntaxToken, expression: ExpressionSyntax, close: SyntaxToken, body: StatementSyntax) {
+    super(SyntaxKind.ForInStatement, [forKeyword, open, left, inKeyword, expression, close, body]);
+  }
+  get InKeyword(): SyntaxToken { return this.Tok(3); }
+  get Expression(): ExpressionSyntax { return this.Node<ExpressionSyntax>(4); }
+  get Body(): StatementSyntax { return this.Node<StatementSyntax>(6); }
+}
+
+export sealed class WhileStatementSyntax extends StatementSyntax {
+  constructor(whileKeyword: SyntaxToken, open: SyntaxToken, condition: ExpressionSyntax,
+    close: SyntaxToken, body: StatementSyntax) {
+    super(SyntaxKind.WhileStatement, [whileKeyword, open, condition, close, body]);
+  }
+  get Condition(): ExpressionSyntax { return this.Node<ExpressionSyntax>(2); }
+  get Body(): StatementSyntax { return this.Node<StatementSyntax>(4); }
+}
+
+export sealed class DoStatementSyntax extends StatementSyntax {
+  constructor(doKeyword: SyntaxToken, body: StatementSyntax, whileKeyword: SyntaxToken,
+    open: SyntaxToken, condition: ExpressionSyntax, close: SyntaxToken, semicolon: SyntaxToken?) {
+    super(SyntaxKind.DoStatement, [doKeyword, body, whileKeyword, open, condition, close, semicolon]);
+  }
+  get Body(): StatementSyntax { return this.Node<StatementSyntax>(1); }
+  get Condition(): ExpressionSyntax { return this.Node<ExpressionSyntax>(4); }
+}
+
+export sealed class ReturnStatementSyntax extends StatementSyntax {
+  constructor(keyword: SyntaxToken, expression: ExpressionSyntax?, semicolon: SyntaxToken?) {
+    super(SyntaxKind.ReturnStatement, [keyword, expression, semicolon]);
+  }
+  get Keyword(): SyntaxToken { return this.Tok(0); }
+  get Expression(): ExpressionSyntax? { return this.NodeOpt<ExpressionSyntax>(1); }
+}
+
+export sealed class BreakStatementSyntax extends StatementSyntax {
+  constructor(keyword: SyntaxToken, label: SyntaxToken?, semicolon: SyntaxToken?) {
+    super(SyntaxKind.BreakStatement, [keyword, label, semicolon]);
+  }
+  get Label(): SyntaxToken? { return this.TokOpt(1); }
+}
+
+export sealed class ContinueStatementSyntax extends StatementSyntax {
+  constructor(keyword: SyntaxToken, label: SyntaxToken?, semicolon: SyntaxToken?) {
+    super(SyntaxKind.ContinueStatement, [keyword, label, semicolon]);
+  }
+  get Label(): SyntaxToken? { return this.TokOpt(1); }
+}
+
+export sealed class ThrowStatementSyntax extends StatementSyntax {
+  constructor(keyword: SyntaxToken, expression: ExpressionSyntax?, semicolon: SyntaxToken?) {
+    super(SyntaxKind.ThrowStatement, [keyword, expression, semicolon]);
+  }
+  get Keyword(): SyntaxToken { return this.Tok(0); }
+  get Expression(): ExpressionSyntax? { return this.NodeOpt<ExpressionSyntax>(1); }
+}
+
+export sealed class TryStatementSyntax extends StatementSyntax {
+  constructor(tryKeyword: SyntaxToken, block: BlockSyntax, catches: SyntaxNode,
+    finallyClause: FinallyClauseSyntax?) {
+    super(SyntaxKind.TryStatement, [tryKeyword, block, catches, finallyClause]);
+  }
+  get Block(): BlockSyntax { return this.Node<BlockSyntax>(1); }
+  get Catches(): SyntaxList<CatchClauseSyntax> { return this.L<CatchClauseSyntax>(2); }
+  get Finally(): FinallyClauseSyntax? { return this.NodeOpt<FinallyClauseSyntax>(3); }
+}
+
+export sealed class CatchClauseSyntax extends SyntaxNode {
+  constructor(catchKeyword: SyntaxToken, open: SyntaxToken?, identifier: SyntaxToken?,
+    type: TypeAnnotationSyntax?, close: SyntaxToken?, block: BlockSyntax) {
+    super(SyntaxKind.CatchClause, [catchKeyword, open, identifier, type, close, block]);
+  }
+  get Identifier(): SyntaxToken? { return this.TokOpt(2); }
+  get TypeAnnotation(): TypeAnnotationSyntax? { return this.NodeOpt<TypeAnnotationSyntax>(3); }
+  get Block(): BlockSyntax { return this.Node<BlockSyntax>(5); }
+}
+
+export sealed class FinallyClauseSyntax extends SyntaxNode {
+  constructor(keyword: SyntaxToken, block: BlockSyntax) {
+    super(SyntaxKind.FinallyClause, [keyword, block]);
+  }
+  get Block(): BlockSyntax { return this.Node<BlockSyntax>(1); }
+}
+
+export sealed class SwitchStatementSyntax extends StatementSyntax {
+  constructor(keyword: SyntaxToken, open: SyntaxToken, expression: ExpressionSyntax,
+    close: SyntaxToken, openBrace: SyntaxToken, sections: SyntaxNode, closeBrace: SyntaxToken) {
+    super(SyntaxKind.SwitchStatement, [keyword, open, expression, close, openBrace, sections, closeBrace]);
+  }
+  get Expression(): ExpressionSyntax { return this.Node<ExpressionSyntax>(2); }
+  get Sections(): SyntaxList<SwitchSectionSyntax> { return this.L<SwitchSectionSyntax>(5); }
+}
+
+export sealed class SwitchSectionSyntax extends SyntaxNode {
+  constructor(labels: SyntaxNode, statements: SyntaxNode) {
+    super(SyntaxKind.SwitchSection, [labels, statements]);
+  }
+  get Labels(): SyntaxList<SwitchLabelSyntax> { return this.L<SwitchLabelSyntax>(0); }
+  get Statements(): SyntaxList<StatementSyntax> { return this.L<StatementSyntax>(1); }
+}
+
+export sealed class SwitchLabelSyntax extends SyntaxNode {
+  constructor(kind: SyntaxKind, keyword: SyntaxToken, value: ExpressionSyntax?, colon: SyntaxToken) {
+    super(kind, [keyword, value, colon]);
+  }
+  get IsDefault(): bool { return this.Kind == SyntaxKind.DefaultSwitchLabel; }
+  get Value(): ExpressionSyntax? { return this.NodeOpt<ExpressionSyntax>(1); }
+}
+
+export sealed class LabeledStatementSyntax extends StatementSyntax {
+  constructor(label: SyntaxToken, colon: SyntaxToken, statement: StatementSyntax) {
+    super(SyntaxKind.LabeledStatement, [label, colon, statement]);
+  }
+  get Label(): SyntaxToken { return this.Tok(0); }
+  get Statement(): StatementSyntax { return this.Node<StatementSyntax>(2); }
+}
+
+export sealed class EmptyStatementSyntax extends StatementSyntax {
+  constructor(semicolon: SyntaxToken) { super(SyntaxKind.EmptyStatement, [semicolon]); }
+}
+
+export sealed class MissingStatementSyntax extends StatementSyntax {
+  constructor(missing: SyntaxToken) { super(SyntaxKind.MissingStatement, [missing]); }
+}
+
+export sealed class LiteralExpressionSyntax extends LiteralLikeExpressionSyntax {
+  constructor(kind: SyntaxKind, token: SyntaxToken) { super(kind, [token]); }
+  get Token(): SyntaxToken { return this.Tok(0); }
+}
+
+export sealed class TemplateExpressionSyntax extends ExpressionSyntax {
+  constructor(head: SyntaxToken, spans: SyntaxNode) {
+    super(SyntaxKind.TemplateExpression, [head, spans]);
+  }
+  get Head(): SyntaxToken { return this.Tok(0); }
+  get Spans(): SyntaxList<TemplateSpanSyntax> { return this.L<TemplateSpanSyntax>(1); }
+}
+
+export sealed class TemplateSpanSyntax extends SyntaxNode {
+  constructor(expression: ExpressionSyntax, literal: SyntaxToken) {
+    super(SyntaxKind.TemplateSpan, [expression, literal]);
+  }
+  get Expression(): ExpressionSyntax { return this.Node<ExpressionSyntax>(0); }
+  get Literal(): SyntaxToken { return this.Tok(1); }
+}
+
+export sealed class ThisExpressionSyntax extends ExpressionSyntax {
+  constructor(keyword: SyntaxToken) { super(SyntaxKind.ThisExpression, [keyword]); }
+}
+
+export sealed class SuperExpressionSyntax extends ExpressionSyntax {
+  constructor(keyword: SyntaxToken) { super(SyntaxKind.SuperExpression, [keyword]); }
+}
+
+export sealed class MissingExpressionSyntax extends ExpressionSyntax {
+  constructor(missing: SyntaxToken) { super(SyntaxKind.MissingExpression, [missing]); }
+}
+
+export sealed class ParenthesizedExpressionSyntax extends ExpressionSyntax {
+  constructor(open: SyntaxToken, expression: ExpressionSyntax, close: SyntaxToken) {
+    super(SyntaxKind.ParenthesizedExpression, [open, expression, close]);
+  }
+  get Expression(): ExpressionSyntax { return this.Node<ExpressionSyntax>(1); }
+}
+
+export sealed class ArrayLiteralExpressionSyntax extends ExpressionSyntax {
+  constructor(open: SyntaxToken, elements: SyntaxNode, close: SyntaxToken) {
+    super(SyntaxKind.ArrayLiteralExpression, [open, elements, close]);
+  }
+  get Elements(): SeparatedSyntaxList<ExpressionSyntax> { return this.SL<ExpressionSyntax>(1); }
+}
+
+export sealed class SpreadElementSyntax extends ExpressionSyntax {
+  constructor(dotDotDot: SyntaxToken, expression: ExpressionSyntax) {
+    super(SyntaxKind.SpreadElement, [dotDotDot, expression]);
+  }
+  get Expression(): ExpressionSyntax { return this.Node<ExpressionSyntax>(1); }
+}
+
+export sealed class ObjectLiteralExpressionSyntax extends ExpressionSyntax {
+  constructor(open: SyntaxToken, members: SyntaxNode, close: SyntaxToken) {
+    super(SyntaxKind.ObjectLiteralExpression, [open, members, close]);
+  }
+  get Members(): SeparatedSyntaxList<SyntaxNode> { return this.SL<SyntaxNode>(1); }
+}
+
+export sealed class PropertyAssignmentSyntax extends SyntaxNode {
+  constructor(name: SyntaxToken, colon: SyntaxToken, value: ExpressionSyntax) {
+    super(SyntaxKind.PropertyAssignment, [name, colon, value]);
+  }
+  get NameToken(): SyntaxToken { return this.Tok(0); }
+  get Value(): ExpressionSyntax { return this.Node<ExpressionSyntax>(2); }
+}
+
+export sealed class ShorthandPropertyAssignmentSyntax extends SyntaxNode {
+  constructor(name: SyntaxToken) { super(SyntaxKind.ShorthandPropertyAssignment, [name]); }
+  get NameToken(): SyntaxToken { return this.Tok(0); }
+}
+
+export sealed class SpreadAssignmentSyntax extends SyntaxNode {
+  constructor(dotDotDot: SyntaxToken, expression: ExpressionSyntax) {
+    super(SyntaxKind.SpreadAssignment, [dotDotDot, expression]);
+  }
+  get Expression(): ExpressionSyntax { return this.Node<ExpressionSyntax>(1); }
+}
+
+export sealed class FunctionExpressionSyntax extends ExpressionSyntax {
+  constructor(asyncKeyword: SyntaxToken?, functionKeyword: SyntaxToken, asterisk: SyntaxToken?,
+    identifier: SyntaxToken?, typeParams: TypeParameterListSyntax?, parameters: ParameterListSyntax,
+    returnType: TypeAnnotationSyntax?, body: BlockSyntax) {
+    super(SyntaxKind.FunctionExpression, [asyncKeyword, functionKeyword, asterisk, identifier, typeParams, parameters, returnType, body]);
+  }
+  get AsyncKeyword(): SyntaxToken? { return this.TokOpt(0); }
+  get AsteriskToken(): SyntaxToken? { return this.TokOpt(2); }
+  get Parameters(): ParameterListSyntax { return this.Node<ParameterListSyntax>(5); }
+  get ReturnType(): TypeAnnotationSyntax? { return this.NodeOpt<TypeAnnotationSyntax>(6); }
+  get Body(): BlockSyntax { return this.Node<BlockSyntax>(7); }
+}
+
+export sealed class ArrowFunctionSyntax extends ExpressionSyntax {
+  constructor(asyncKeyword: SyntaxToken?, typeParams: TypeParameterListSyntax?,
+    parameters: ParameterListSyntax?, singleParameter: SyntaxToken?, returnType: TypeAnnotationSyntax?,
+    arrow: SyntaxToken, body: SyntaxNode) {
+    super(SyntaxKind.ArrowFunction, [asyncKeyword, typeParams, parameters, singleParameter, returnType, arrow, body]);
+  }
+  get AsyncKeyword(): SyntaxToken? { return this.TokOpt(0); }
+  get TypeParameters(): TypeParameterListSyntax? { return this.NodeOpt<TypeParameterListSyntax>(1); }
+  get Parameters(): ParameterListSyntax? { return this.NodeOpt<ParameterListSyntax>(2); }
+  get SingleParameter(): SyntaxToken? { return this.TokOpt(3); }
+  get ReturnType(): TypeAnnotationSyntax? { return this.NodeOpt<TypeAnnotationSyntax>(4); }
+  get Body(): SyntaxNode { return this.Node<SyntaxNode>(6); }
+}
+
+export sealed class PrefixUnaryExpressionSyntax extends ExpressionSyntax {
+  constructor(op: SyntaxToken, operand: ExpressionSyntax) {
+    super(SyntaxKind.PrefixUnaryExpression, [op, operand]);
+  }
+  get OperatorToken(): SyntaxToken { return this.Tok(0); }
+  get Operand(): ExpressionSyntax { return this.Node<ExpressionSyntax>(1); }
+}
+
+export sealed class PostfixUnaryExpressionSyntax extends ExpressionSyntax {
+  constructor(operand: ExpressionSyntax, op: SyntaxToken) {
+    super(SyntaxKind.PostfixUnaryExpression, [operand, op]);
+  }
+  get Operand(): ExpressionSyntax { return this.Node<ExpressionSyntax>(0); }
+  get OperatorToken(): SyntaxToken { return this.Tok(1); }
+}
+
+export sealed class AwaitExpressionSyntax extends ExpressionSyntax {
+  constructor(keyword: SyntaxToken, operand: ExpressionSyntax) {
+    super(SyntaxKind.AwaitExpression, [keyword, operand]);
+  }
+  get Operand(): ExpressionSyntax { return this.Node<ExpressionSyntax>(1); }
+}
+
+export sealed class ThrowExpressionSyntax extends ExpressionSyntax {
+  constructor(keyword: SyntaxToken, operand: ExpressionSyntax) {
+    super(SyntaxKind.ThrowExpression, [keyword, operand]);
+  }
+  get Operand(): ExpressionSyntax { return this.Node<ExpressionSyntax>(1); }
+}
+
+export sealed class TypeOfExpressionSyntax extends ExpressionSyntax {
+  constructor(keyword: SyntaxToken, open: SyntaxToken, type: TypeSyntax, close: SyntaxToken) {
+    super(SyntaxKind.TypeOfExpression, [keyword, open, type, close]);
+  }
+  get Type(): TypeSyntax { return this.Node<TypeSyntax>(2); }
+}
+
+export sealed class YieldExpressionSyntax extends ExpressionSyntax {
+  constructor(keyword: SyntaxToken, asterisk: SyntaxToken?, operand: ExpressionSyntax?) {
+    super(SyntaxKind.YieldExpression, [keyword, asterisk, operand]);
+  }
+  get IsDelegating(): bool { return this.TokOpt(1) != null; }
+  get Operand(): ExpressionSyntax? { return this.NodeOpt<ExpressionSyntax>(2); }
+}
+
+export sealed class BinaryExpressionSyntax extends ExpressionSyntax {
+  constructor(left: ExpressionSyntax, op: SyntaxToken, right: ExpressionSyntax) {
+    super(SyntaxKind.BinaryExpression, [left, op, right]);
+  }
+  get Left(): ExpressionSyntax { return this.Node<ExpressionSyntax>(0); }
+  get OperatorToken(): SyntaxToken { return this.Tok(1); }
+  get Right(): ExpressionSyntax { return this.Node<ExpressionSyntax>(2); }
+  get OperatorKind(): SyntaxKind { return this.OperatorToken.Kind; }
+}
+
+export sealed class AssignmentExpressionSyntax extends ExpressionSyntax {
+  constructor(left: ExpressionSyntax, op: SyntaxToken, right: ExpressionSyntax) {
+    super(SyntaxKind.AssignmentExpression, [left, op, right]);
+  }
+  get Left(): ExpressionSyntax { return this.Node<ExpressionSyntax>(0); }
+  get OperatorToken(): SyntaxToken { return this.Tok(1); }
+  get Right(): ExpressionSyntax { return this.Node<ExpressionSyntax>(2); }
+}
+
+export sealed class ConditionalExpressionSyntax extends ExpressionSyntax {
+  constructor(condition: ExpressionSyntax, question: SyntaxToken, whenTrue: ExpressionSyntax,
+    colon: SyntaxToken, whenFalse: ExpressionSyntax) {
+    super(SyntaxKind.ConditionalExpression, [condition, question, whenTrue, colon, whenFalse]);
+  }
+  get Condition(): ExpressionSyntax { return this.Node<ExpressionSyntax>(0); }
+  get WhenTrue(): ExpressionSyntax { return this.Node<ExpressionSyntax>(2); }
+  get WhenFalse(): ExpressionSyntax { return this.Node<ExpressionSyntax>(4); }
+}
+
+export sealed class ArgumentListSyntax extends SyntaxNode {
+  constructor(open: SyntaxToken, arguments: SyntaxNode, close: SyntaxToken) {
+    super(SyntaxKind.ArgumentList, [open, arguments, close]);
+  }
+  get Arguments(): SeparatedSyntaxList<ExpressionSyntax> { return this.SL<ExpressionSyntax>(1); }
+}
+
+export sealed class InvocationExpressionSyntax extends ExpressionSyntax {
+  constructor(expression: ExpressionSyntax, arguments: ArgumentListSyntax) {
+    super(SyntaxKind.InvocationExpression, [expression, arguments]);
+  }
+  get Expression(): ExpressionSyntax { return this.Node<ExpressionSyntax>(0); }
+  get Arguments(): ArgumentListSyntax { return this.Node<ArgumentListSyntax>(1); }
+}
+
+export sealed class NewExpressionSyntax extends ExpressionSyntax {
+  constructor(newKeyword: SyntaxToken, type: TypeSyntax, arguments: ArgumentListSyntax?) {
+    super(SyntaxKind.NewExpression, [newKeyword, type, arguments]);
+  }
+  get Type(): TypeSyntax { return this.Node<TypeSyntax>(1); }
+  get Arguments(): ArgumentListSyntax? { return this.NodeOpt<ArgumentListSyntax>(2); }
+}
+
+export sealed class ArrayCreationExpressionSyntax extends ExpressionSyntax {
+  constructor(newKeyword: SyntaxToken, elementType: TypeSyntax, open: SyntaxToken,
+    size: ExpressionSyntax, close: SyntaxToken) {
+    super(SyntaxKind.ArrayCreationExpression, [newKeyword, elementType, open, size, close]);
+  }
+  get ElementType(): TypeSyntax { return this.Node<TypeSyntax>(1); }
+  get Size(): ExpressionSyntax { return this.Node<ExpressionSyntax>(3); }
+}
+
+export sealed class MemberAccessExpressionSyntax extends ExpressionSyntax {
+  constructor(expression: ExpressionSyntax, operatorToken: SyntaxToken, name: SimpleNameSyntax) {
+    super(SyntaxKind.MemberAccessExpression, [expression, operatorToken, name]);
+  }
+  get Expression(): ExpressionSyntax { return this.Node<ExpressionSyntax>(0); }
+  get OperatorToken(): SyntaxToken { return this.Tok(1); }
+  get IsConditional(): bool { return this.OperatorToken.Kind == SyntaxKind.QuestionDotToken; }
+  get Name(): SimpleNameSyntax { return this.Node<SimpleNameSyntax>(2); }
+}
+
+export sealed class ElementAccessExpressionSyntax extends ExpressionSyntax {
+  constructor(expression: ExpressionSyntax, questionDot: SyntaxToken?, open: SyntaxToken,
+    arguments: SyntaxNode, close: SyntaxToken) {
+    super(SyntaxKind.ElementAccessExpression, [expression, questionDot, open, arguments, close]);
+  }
+  get Expression(): ExpressionSyntax { return this.Node<ExpressionSyntax>(0); }
+  get IsConditional(): bool { return this.TokOpt(1) != null; }
+  get Arguments(): SeparatedSyntaxList<ExpressionSyntax> { return this.SL<ExpressionSyntax>(3); }
+}
+
+export sealed class NonNullExpressionSyntax extends ExpressionSyntax {
+  constructor(expression: ExpressionSyntax, bang: SyntaxToken) {
+    super(SyntaxKind.NonNullExpression, [expression, bang]);
+  }
+  get Expression(): ExpressionSyntax { return this.Node<ExpressionSyntax>(0); }
+}
+
+export sealed class AsExpressionSyntax extends ExpressionSyntax {
+  constructor(expression: ExpressionSyntax, asKeyword: SyntaxToken, type: TypeSyntax) {
+    super(SyntaxKind.AsExpression, [expression, asKeyword, type]);
+  }
+  get Expression(): ExpressionSyntax { return this.Node<ExpressionSyntax>(0); }
+  get Type(): TypeSyntax { return this.Node<TypeSyntax>(2); }
+}
+
+export sealed class SatisfiesExpressionSyntax extends ExpressionSyntax {
+  constructor(expression: ExpressionSyntax, keyword: SyntaxToken, type: TypeSyntax) {
+    super(SyntaxKind.SatisfiesExpression, [expression, keyword, type]);
+  }
+  get Expression(): ExpressionSyntax { return this.Node<ExpressionSyntax>(0); }
+  get Type(): TypeSyntax { return this.Node<TypeSyntax>(2); }
+}
+
+export sealed class InstanceOfExpressionSyntax extends ExpressionSyntax {
+  constructor(expression: ExpressionSyntax, keyword: SyntaxToken, type: TypeSyntax) {
+    super(SyntaxKind.InstanceOfExpression, [expression, keyword, type]);
+  }
+  get Expression(): ExpressionSyntax { return this.Node<ExpressionSyntax>(0); }
+  get Type(): TypeSyntax { return this.Node<TypeSyntax>(2); }
+}

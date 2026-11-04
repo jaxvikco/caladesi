@@ -1,0 +1,44 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { List } from "System.Collections.Generic";
+import { ImmutableArray } from "System.Collections.Immutable";
+import { LoweredProgram } from "Caladesi.Compiler.Emit";
+import { SynthesizedNamedType, SynthesizedFieldSymbol, SynthesizedMethodSymbol } from "Caladesi.Compiler.Symbols.Source";
+import { ErrorTypeSymbol, TypeKind, Accessibility, MethodKind, ParameterSymbol, Symbol } from "Caladesi.Compiler.Symbols";
+
+@TestClass
+export class LoweredProgramTests {
+  @TestMethod
+  membersEnumerateDeclaredThenSynthesized(): void {
+    const program = new LoweredProgram<string>();
+    const type = new SynthesizedNamedType("Container", ErrorTypeSymbol.Instance, TypeKind.Class);
+    const declared = new SynthesizedFieldSymbol(type, "declared", ErrorTypeSymbol.Instance);
+    const extra = new SynthesizedFieldSymbol(type, "extra", ErrorTypeSymbol.Instance);
+    type.AddMember(declared);
+    const additions = new List<Symbol>();
+    additions.Add(extra);
+    program.ExtraMembers[type] = additions;
+    let index = 0;
+    for (const member of program.MembersOf(type)) {
+      if (index == 0 && !Object.ReferenceEquals(member, declared)) throw new Exception("Declared member order");
+      if (index == 1 && !Object.ReferenceEquals(member, extra)) throw new Exception("Extra member order");
+      index++;
+    }
+    if (index != 2 || type.GetMembers().Length != 1) throw new Exception("Extra members must not mutate declarations");
+  }
+
+  @TestMethod
+  programStoresTypedSourceAssociations(): void {
+    const program = new LoweredProgram<string>();
+    const method = new SynthesizedMethodSymbol(ErrorTypeSymbol.Instance, "main", MethodKind.Ordinary,
+      Accessibility.Public, true, ErrorTypeSymbol.Instance, ImmutableArray<ParameterSymbol>.Empty);
+    if (program.EntryPoint != null || program.Types.Count != 0 || program.Bodies.Count != 0 ||
+        program.MethodFiles.Count != 0 || program.ClassTypeParameterMaps.Count != 0) {
+      throw new Exception("Lowered program defaults");
+    }
+    program.EntryPoint = method;
+    program.MethodFiles[method] = "main.cala";
+    if (!Object.ReferenceEquals(program.EntryPoint, method) || program.MethodFiles[method] != "main.cala") {
+      throw new Exception("Typed source association");
+    }
+  }
+}

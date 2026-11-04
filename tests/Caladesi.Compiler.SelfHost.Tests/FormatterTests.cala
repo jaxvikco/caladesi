@@ -1,0 +1,60 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { SyntaxTree } from "Caladesi.Compiler.Syntax";
+import { Formatter } from "Caladesi.Compiler.Formatting";
+
+@TestClass
+export class FormatterTests {
+  @TestMethod
+  emptyAndWhitespaceOnly(): void {
+    if (Formatter.Format(SyntaxTree.ParseText("")) != "" || Formatter.Format(SyntaxTree.ParseText(" \r\n \t\n\n")) != "") throw new Exception("Empty formatting");
+  }
+
+  @TestMethod
+  trimsTrailingWhitespaceAndAddsFinalNewline(): void {
+    if (Formatter.Format(SyntaxTree.ParseText("  let x = 1;  ")) != "let x = 1;\n") throw new Exception("Whitespace/final newline");
+  }
+
+  @TestMethod
+  normalizesLineEndings(): void {
+    if (Formatter.Format(SyntaxTree.ParseText("let x = 1;\r\nlet y = 2;\r\n")) != "let x = 1;\nlet y = 2;\n") throw new Exception("Line ending normalization");
+  }
+
+  @TestMethod
+  indentsNestedBraces(): void {
+    const source = "class C {\nf() {\nreturn 1;\n}\n}\n";
+    const expected = "class C {\n  f() {\n    return 1;\n  }\n}\n";
+    if (Formatter.Format(SyntaxTree.ParseText(source)) != expected) throw new Exception("Brace indentation");
+  }
+
+  @TestMethod
+  configurableIndentation(): void {
+    const tree = SyntaxTree.ParseText("class C {\nx: int;\n}");
+    if (Formatter.Format(tree, 4) != "class C {\n    x: int;\n}\n" || Formatter.Format(tree, 0) != "class C {\nx: int;\n}\n") throw new Exception("Indent size");
+  }
+
+  @TestMethod
+  collapsesBlankLines(): void {
+    if (Formatter.Format(SyntaxTree.ParseText("let x = 1;\n\n\n\nlet y = 2;\n\n")) != "let x = 1;\n\nlet y = 2;\n") throw new Exception("Blank line collapse");
+  }
+
+  @TestMethod
+  protectsTemplateContents(): void {
+    const source = "const x = `a \n    b  \r\nc  `;   \n";
+    if (Formatter.Format(SyntaxTree.ParseText(source)) != "const x = `a \n    b  \nc  `;\n") throw new Exception("Template protected whitespace");
+  }
+
+  @TestMethod
+  protectsMultilineCommentContents(): void {
+    const source = "/* a\n  b \n c  */  \n";
+    if (Formatter.Format(SyntaxTree.ParseText(source)) != "/* a\n  b \n c  */\n") throw new Exception("Comment protected whitespace");
+  }
+
+  @TestMethod
+  formattingIsIdempotent(): void {
+    const sources: string[] = ["class C {\nf() {\nreturn [\n1,\n2\n]; \n}\n}\n", "const x = `a ${ {x: 1} } b\n   ${f()} c`; \n", "} ] ) {\n[\n(\nx\n)\n]\n}\n", "   // only comment   \n"];
+    for (const source of sources) {
+      const formatted = Formatter.Format(SyntaxTree.ParseText(source));
+      if (Formatter.Format(SyntaxTree.ParseText(formatted)) != formatted) throw new Exception("Formatter idempotence");
+    }
+  }
+}

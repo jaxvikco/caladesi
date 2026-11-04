@@ -1,0 +1,384 @@
+import { Object, Func } from "System";
+import { List, Dictionary } from "System.Collections.Generic";
+import { ImmutableArray, ImmutableDictionary } from "System.Collections.Immutable";
+import { Binder } from "./Binder";
+import { BinderScope, BinderScopeKind } from "./BinderScope";
+import { BinderStatementLoops } from "./BinderStatementLoops";
+import { BinderStatementMethods } from "./BinderStatementMethods";
+import { BinderStatementSwitch } from "./BinderStatementSwitch";
+import { BinderStatementAttributes } from "./BinderStatementAttributes";
+import { FlowNarrowing, NarrowPath } from "./FlowNarrowing";
+import { BinderExpressions } from "./BinderExpressions";
+import { Symbol, AttributeData } from "../Symbols/Symbol";
+import { TypeSymbol, NullableTypeSymbol } from "../Symbols/TypeSymbols";
+import { NamedTypeSymbol } from "../Symbols/NamedTypeSymbol";
+import { LocalSymbol, ParameterSymbol, LabelSymbol } from "../Symbols/MemberSymbols";
+import { SourceMethodSymbol } from "../Symbols/Source/SourceMembers";
+import { SourceModuleClassSymbol } from "../Symbols/Source/SourceModuleClass";
+import { SpecialType } from "../Symbols/SpecialType";
+import { SyntaxNode, SyntaxList } from "../Syntax/SyntaxElement";
+import { SyntaxKind } from "../Syntax/SyntaxKind";
+import { StatementSyntax, BlockSyntax, EmptyStatementSyntax, ExpressionStatementSyntax,
+  ExpressionSyntax, ParenthesizedExpressionSyntax, VariableStatementSyntax, VariableDeclaratorSyntax,
+  IfStatementSyntax, WhileStatementSyntax, DoStatementSyntax, ForStatementSyntax, ForOfStatementSyntax,
+  ForInStatementSyntax, ReturnStatementSyntax, YieldExpressionSyntax, ThrowStatementSyntax,
+  BreakStatementSyntax, ContinueStatementSyntax, LabeledStatementSyntax, TryStatementSyntax,
+  SwitchStatementSyntax, FunctionDeclarationSyntax, ClassDeclarationSyntax, InterfaceDeclarationSyntax,
+  EnumDeclarationSyntax, TypeAliasDeclarationSyntax, ImportDeclarationSyntax, ParameterListSyntax } from "../Syntax/Nodes.Core";
+import { Descriptors } from "../Diagnostics/Descriptors";
+import { BoundNode, BoundStatement, BoundBlock, BoundStatementList, BoundNoOp, BoundExpression,
+  BoundExpressionStatement, BoundLocalDeclaration, BoundAssignment, BoundIf, BoundReturn, BoundThrow,
+  BoundYieldBreak, BoundGoto, BoundLabel, BoundTry, BoundCatch, BoundSequencePoint, BoundUnbound,
+  BoundLambda } from "../Bound/BoundNodes";
+
+export sealed class BinderStatements<TFile> {
+  private readonly completion: Dictionary<BoundStatement, bool> = new Dictionary<BoundStatement, bool>();
+  readonly Methods: BinderStatementMethods<TFile>;
+  readonly Loops: BinderStatementLoops<TFile>;
+  PendingLabel: string? = null;
+  InCatch: bool = false;
+  constructor(public readonly Binder: Binder<TFile>) {
+    this.Methods = new BinderStatementMethods<TFile>(Binder, this);
+    this.Loops = new BinderStatementLoops<TFile>(Binder, this);
+  }
+  get LocalOwner(): Symbol? { return this.Methods.Function ?? this.Binder.ContainingSymbol; }
+  At<T extends BoundNode>(node: T, syntax: SyntaxNode?): T { node.Syntax = syntax; return node; }
+  AsBlock(statement: BoundStatement): BoundBlock {
+    return statement instanceof BoundBlock ? statement as BoundBlock :
+      this.At(new BoundBlock(ImmutableArray<LocalSymbol>.Empty, ImmutableArray.Create<BoundStatement>(statement)), statement.Syntax);
+  }
+  SetCompletion(statement: BoundStatement, completes: bool): void { this.completion[statement] = completes; }
+  Natural(value: BoundExpression): BoundExpression {
+    if (value instanceof BoundUnbound && BinderExpressions<TFile>.HasNaturalType(value as BoundUnbound))
+      return (value as BoundUnbound).BindToType.Invoke(null);
+    return value;
+  }
+  Bind(syntax: StatementSyntax): BoundStatement {
+    if (syntax instanceof BlockSyntax) return this.BindBlock(syntax as BlockSyntax);
+    if (syntax instanceof EmptyStatementSyntax || syntax instanceof FunctionDeclarationSyntax)
+      return this.At(new BoundNoOp(), syntax);
+    if (syntax instanceof ExpressionStatementSyntax) {
+      const expression = (syntax as ExpressionStatementSyntax).Expression;
+      if (expression instanceof YieldExpressionSyntax) return this.Methods.Yield(expression as YieldExpressionSyntax);
+      return this.At(new BoundExpressionStatement(this.BindStatementExpression(expression)), syntax);
+    }
+    if (syntax instanceof VariableStatementSyntax) return this.BindVariables(syntax as VariableStatementSyntax);
+    if (syntax instanceof IfStatementSyntax) return this.BindIf(syntax as IfStatementSyntax);
+    if (syntax instanceof WhileStatementSyntax) return this.Loops.While(syntax as WhileStatementSyntax);
+    if (syntax instanceof DoStatementSyntax) return this.Loops.Do(syntax as DoStatementSyntax);
+    if (syntax instanceof ForStatementSyntax) return this.Loops.For(syntax as ForStatementSyntax);
+    if (syntax instanceof ForOfStatementSyntax) return this.Loops.ForOf(syntax as ForOfStatementSyntax);
+    if (syntax instanceof ForInStatementSyntax) {
+      // The parser already diagnoses for-in; bind its source for error recovery.
+      this.Binder.BindValue((syntax as ForInStatementSyntax).Expression);
+      return this.At(new BoundNoOp(), syntax);
+    }
+    if (syntax instanceof ReturnStatementSyntax) return this.Methods.Return(syntax as ReturnStatementSyntax);
+    if (syntax instanceof ThrowStatementSyntax) {
+      const statement = syntax as ThrowStatementSyntax;
+      if (statement.Expression == null && !this.InCatch) this.Binder.Report(Descriptors.RethrowOutsideCatch, statement, []);
+      return this.At(new BoundThrow(statement.Expression == null ? null :
+        this.Binder.BindToType(statement.Expression, this.Binder.Special(SpecialType.Exception))), syntax);
+    }
+    if (syntax instanceof BreakStatementSyntax) {
+      const jump = syntax as BreakStatementSyntax;
+      return this.BindJump(jump, jump.Label?.Text, false);
+    }
+    if (syntax instanceof ContinueStatementSyntax) {
+      const jump = syntax as ContinueStatementSyntax;
+      return this.BindJump(jump, jump.Label?.Text, true);
+    }
+    if (syntax instanceof LabeledStatementSyntax) return this.BindLabeled(syntax as LabeledStatementSyntax);
+    if (syntax instanceof TryStatementSyntax) return this.BindTry(syntax as TryStatementSyntax);
+    if (syntax instanceof SwitchStatementSyntax) return new BinderStatementSwitch<TFile>(this.Binder, this).Bind(syntax as SwitchStatementSyntax);
+    if (syntax instanceof ClassDeclarationSyntax || syntax instanceof InterfaceDeclarationSyntax ||
+      syntax instanceof EnumDeclarationSyntax || syntax instanceof TypeAliasDeclarationSyntax || syntax instanceof ImportDeclarationSyntax)
+      this.Binder.Report(Descriptors.DeclarationNotAllowedHere, syntax, []);
+    else this.Binder.Report(Descriptors.FeatureNotSupported, syntax, [syntax.Kind.ToString()]);
+    return this.At(new BoundNoOp(), syntax);
+  }
+  BindBlock(syntax: BlockSyntax): BoundBlock {
+    const scope = this.Binder.PushScope(BinderScopeKind.Block);
+    let block: BoundBlock;
+    try {
+      const statements = this.BindStatementList(syntax.Statements, 0, true);
+      block = this.At(new BoundBlock(ImmutableArray.CreateRange<LocalSymbol>(scope.Locals), statements), syntax);
+    } finally { this.Binder.PopScope(); }
+    this.FilterClosedLocals();
+    return block;
+  }
+  BindStatementList(statements: SyntaxList<StatementSyntax>, start: int, hoist: bool): ImmutableArray<BoundStatement> {
+    const result = ImmutableArray.CreateBuilder<BoundStatement>();
+    if (hoist) result.AddRange(this.Methods.Hoist(statements, start, true));
+    for (let i = start; i < statements.Count; i++) {
+      const syntax = statements.Get(i);
+      if (syntax instanceof FunctionDeclarationSyntax) continue;
+      if (syntax instanceof VariableStatementSyntax && (syntax as VariableStatementSyntax).Declaration.IsUsing) {
+        result.Add(this.BindUsing(syntax as VariableStatementSyntax, statements, i + 1, null));
+        break;
+      }
+      result.Add(this.Bind(syntax));
+    }
+    if (hoist) result.InsertRange(0, this.Methods.Hoist(statements, start, false));
+    return result.ToImmutable();
+  }
+  Embedded(syntax: StatementSyntax): BoundStatement {
+    if (syntax instanceof BlockSyntax) return this.BindBlock(syntax as BlockSyntax);
+    const scope = this.Binder.PushScope(BinderScopeKind.Block);
+    let result: BoundStatement;
+    try {
+      result = this.Bind(syntax);
+      if (scope.Locals.Count > 0) result = this.At(new BoundBlock(
+        ImmutableArray.CreateRange<LocalSymbol>(scope.Locals), ImmutableArray.Create<BoundStatement>(result)), syntax);
+    } finally { this.Binder.PopScope(); }
+    this.FilterClosedLocals();
+    return result;
+  }
+  FilterClosedLocals(): void {
+    let state = this.Binder.Flow.SaveState();
+    for (const path of state.Keys) {
+      if (!(path.Root instanceof LocalSymbol)) continue;
+      let found = false;
+      for (let scope: BinderScope? = this.Binder.Scope; scope != null; scope = scope.Parent) {
+        if (scope.Symbols.ContainsKey(path.Root.Name) && Object.ReferenceEquals(scope.Symbols[path.Root.Name], path.Root)) {
+          found = true; break;
+        }
+      }
+      if (!found) state = state.Remove(path);
+    }
+    this.Binder.Flow.RestoreState(state);
+  }
+  BindStatementExpression(syntax: ExpressionSyntax): BoundExpression {
+    let value = this.Natural(this.Binder.BindValue(syntax));
+    if (value instanceof BoundAssignment) (value as BoundAssignment).IsDiscarded = true;
+    if (value instanceof BoundUnbound) value = this.Binder.Conversions.ConvertImplicit(value, value.Type ?? this.Binder.ObjectType, syntax);
+    return value;
+  }
+  private BindVariables(syntax: VariableStatementSyntax): BoundStatement {
+    for (const modifier of syntax.Modifiers)
+      if (modifier.Kind == SyntaxKind.ExportKeyword) this.Binder.Report(Descriptors.ModifierNotAllowed, modifier, [modifier.Text]);
+    const statements = ImmutableArray.CreateBuilder<BoundStatement>();
+    for (const declaration of syntax.Declaration.Declarators)
+      statements.Add(this.BindDeclarator(declaration, syntax.Declaration.IsConst));
+    return statements.Count == 1 ? statements[0] : this.At(new BoundStatementList(statements.ToImmutable()), syntax);
+  }
+  BindDeclarator(syntax: VariableDeclaratorSyntax, isConst: bool): BoundStatement {
+    if (syntax.Pattern != null) return this.Binder.Expressions.BindDestructuringDeclaration(syntax, isConst);
+    const id = syntax.Identifier;
+    if (id == null || id.IsMissing) return this.At(new BoundNoOp(), syntax);
+    const declared = syntax.TypeAnnotation == null ? null : this.Binder.BindType(syntax.TypeAnnotation.Type);
+    let local: LocalSymbol? = null;
+    if (declared != null) {
+      local = new LocalSymbol(id.Text, declared, isConst, this.LocalOwner, syntax);
+      this.Binder.DeclareSymbol(id.Text, local, id);
+    }
+    let initializer: BoundExpression? = null;
+    if (syntax.Initializer != null) {
+      const value = this.Natural(this.Binder.BindValue(syntax.Initializer.Value, declared));
+      const type = declared ?? this.Binder.WidenInferredType(value, syntax.Initializer!.Value, true);
+      initializer = this.Binder.Conversions.ConvertImplicit(value, type, syntax.Initializer!.Value);
+      if (local == null) {
+        local = new LocalSymbol(id.Text, type, isConst, this.LocalOwner, syntax);
+        this.Binder.DeclareSymbol(id.Text, local, id);
+      }
+      this.AfterAssignment(local, value, type);
+    } else if (local == null) {
+      this.Binder.Report(Descriptors.TypeAnnotationRequired, syntax, []);
+      local = new LocalSymbol(id.Text, this.Binder.ErrorType, isConst, this.LocalOwner, syntax);
+      this.Binder.DeclareSymbol(id.Text, local, id);
+    } else if (isConst) this.Binder.Report(Descriptors.ConstNeedsInitializer, id, []);
+    if (isConst && initializer != null && !local.Type.IsErrorType) local.ConstantValue = initializer.ConstantValue;
+    this.Binder.Record(syntax, local);
+    return this.At(new BoundLocalDeclaration(local, initializer), syntax);
+  }
+  AfterAssignment(symbol: Symbol, value: BoundExpression, declared: TypeSymbol): void {
+    const path = new NarrowPath(ImmutableArray.Create<Symbol>(symbol));
+    let state = FlowNarrowing.RemovePathsStartingWith(this.Binder.Flow.SaveState(), path);
+    const type = value.Type;
+    if (type != null && declared instanceof NullableTypeSymbol && !(type instanceof NullableTypeSymbol) && !type.IsNullType &&
+      this.Binder.Classifier.ClassifyImplicit(null, type, (declared as NullableTypeSymbol).Underlying).Exists)
+      state = state.SetItem(path, type);
+    else if (type != null && declared instanceof NamedTypeSymbol && (declared as NamedTypeSymbol).IsUnionType)
+      for (const alternative of (declared as NamedTypeSymbol).UnionCases)
+        if (alternative.Equals(type)) { state = state.SetItem(path, type); break; }
+    this.Binder.Flow.RestoreState(state);
+  }
+  BindUsing(syntax: VariableStatementSyntax, statements: SyntaxList<StatementSyntax>, next: int,
+    bindRest: Func<ImmutableArray<BoundStatement>>?): BoundStatement {
+    const asyncDispose = syntax.Declaration.AwaitKeyword != null;
+    if (asyncDispose && !this.Binder.IsAsync) this.Binder.Report(Descriptors.AwaitOutsideAsync, syntax.Declaration.AwaitKeyword, []);
+    const declarations = new List<BoundStatement>();
+    for (const declaration of syntax.Declaration.Declarators) {
+      const bound = this.BindDeclarator(declaration, true);
+      declarations.Add(bound);
+      if (bound instanceof BoundLocalDeclaration) {
+        const resource = (bound as BoundLocalDeclaration).Local;
+        resource.IsUsingVariable = true;
+      }
+    }
+    let rest: BoundStatement = this.At(new BoundBlock(ImmutableArray<LocalSymbol>.Empty,
+      bindRest == null ? this.BindStatementList(statements, next, false) : bindRest.Invoke()), syntax);
+    // Each initializer belongs outside its own try, but inside earlier resources' tries.
+    for (let i = declarations.Count - 1; i >= 0; i--) {
+      let tail = rest;
+      if (declarations[i] instanceof BoundLocalDeclaration) {
+        const local = (declarations[i] as BoundLocalDeclaration).Local;
+        tail = this.At(new BoundTry(this.AsBlock(rest), ImmutableArray<BoundCatch>.Empty,
+          this.AsBlock(this.Loops.Dispose(local, asyncDispose, syntax, true))), syntax);
+      }
+      rest = this.At(new BoundStatementList(ImmutableArray.Create<BoundStatement>(declarations[i], tail)), syntax);
+    }
+    return rest;
+  }
+  private BindIf(syntax: IfStatementSyntax): BoundStatement {
+    const condition = this.Binder.Conversions.ConvertToBool(this.Binder.BindValue(syntax.Condition), syntax.Condition);
+    const branches = FlowNarrowing.GetNarrowing(condition);
+    const saved = this.Binder.Flow.SaveState();
+    this.Binder.Flow.Apply(branches.WhenTrue);
+    const consequence = this.Embedded(syntax.Then);
+    const thenEnd = this.Binder.Flow.SaveState();
+    this.Binder.Flow.RestoreState(saved);
+    this.Binder.Flow.Apply(branches.WhenFalse);
+    const alternative = syntax.Else == null ? null : this.Embedded(syntax.Else);
+    const elseEnd = this.Binder.Flow.SaveState();
+    const thenCompletes = this.CanCompleteNormally(consequence);
+    const elseCompletes = alternative == null || this.CanCompleteNormally(alternative);
+    this.Binder.Flow.RestoreState(!thenCompletes && elseCompletes ? elseEnd :
+      thenCompletes && !elseCompletes ? thenEnd :
+      thenCompletes && elseCompletes ? this.Merge(thenEnd, elseEnd) : saved);
+    const result = this.At(new BoundIf(condition, consequence, alternative), syntax);
+    this.SetCompletion(result, thenCompletes || elseCompletes);
+    return result;
+  }
+  private Merge(a: ImmutableDictionary<NarrowPath, TypeSymbol>, b: ImmutableDictionary<NarrowPath, TypeSymbol>): ImmutableDictionary<NarrowPath, TypeSymbol> {
+    let result = ImmutableDictionary<NarrowPath, TypeSymbol>.Empty;
+    for (const entry of a) if (b.ContainsKey(entry.Key) && b[entry.Key].Equals(entry.Value)) result = result.Add(entry.Key, entry.Value);
+    return result;
+  }
+  LeavesFinally(target: BinderScope?): bool {
+    for (let scope: BinderScope? = this.Binder.Scope; scope != null && !Object.ReferenceEquals(scope, target); scope = scope.Parent) {
+      if (scope.Kind == BinderScopeKind.Finally) return true;
+      if (scope.Kind == BinderScopeKind.Lambda || scope.Kind == BinderScopeKind.Method) break;
+    }
+    return false;
+  }
+  private BindJump(syntax: StatementSyntax, label: string?, continuing: bool): BoundStatement {
+    for (let scope: BinderScope? = this.Binder.Scope; scope != null; scope = scope.Parent) {
+      if (scope.Kind == BinderScopeKind.Method || scope.Kind == BinderScopeKind.Lambda) break;
+      if (label != null && scope.LabelName != label) continue;
+      const target = continuing ? (scope.Kind == BinderScopeKind.Loop ? scope.ContinueLabel : null) :
+        (label != null || scope.Kind == BinderScopeKind.Loop || scope.Kind == BinderScopeKind.Switch ? scope.BreakLabel : null);
+      if (target == null) continue;
+      if (!continuing) scope.BreakUsed = true;
+      if (this.LeavesFinally(scope)) this.Binder.Report(Descriptors.JumpOutOfFinally, syntax, [continuing ? "continue" : "break"]);
+      return this.At(new BoundGoto(target), syntax);
+    }
+    this.Binder.Report(label != null ? Descriptors.LabelNotFound :
+      continuing ? Descriptors.ContinueOutsideLoop : Descriptors.BreakOutsideLoop, syntax, [label]);
+    return this.At(new BoundNoOp(), syntax);
+  }
+  private BindLabeled(syntax: LabeledStatementSyntax): BoundStatement {
+    const inner = syntax.Statement;
+    if (inner instanceof WhileStatementSyntax || inner instanceof DoStatementSyntax ||
+      inner instanceof ForStatementSyntax || inner instanceof ForOfStatementSyntax || inner instanceof SwitchStatementSyntax) {
+      const pending = this.PendingLabel;
+      this.PendingLabel = syntax.Label.Text;
+      try { return this.Bind(inner); } finally { this.PendingLabel = pending; }
+    }
+    const scope = this.Binder.PushScope(BinderScopeKind.Block);
+    scope.LabelName = syntax.Label.Text;
+    scope.BreakLabel = new LabelSymbol(syntax.Label.Text);
+    try {
+      const body = this.Bind(inner);
+      const result = this.At(new BoundBlock(ImmutableArray.CreateRange<LocalSymbol>(scope.Locals),
+        ImmutableArray.Create<BoundStatement>(body, this.At(new BoundLabel(scope.BreakLabel!), syntax))), syntax);
+      this.SetCompletion(result, scope.BreakUsed || this.CanCompleteNormally(body));
+      return result;
+    } finally { this.Binder.PopScope(); }
+  }
+  private BindTry(syntax: TryStatementSyntax): BoundStatement {
+    const saved = this.Binder.Flow.SaveState();
+    const body = this.BindBlock(syntax.Block);
+    this.Binder.Flow.RestoreState(saved);
+    this.Binder.Flow.InvalidateAssignedIn(syntax);
+    const entry = this.Binder.Flow.SaveState();
+    const catches = ImmutableArray.CreateBuilder<BoundCatch>();
+    const exceptionType = this.Binder.Special(SpecialType.Exception);
+    for (const clause of syntax.Catches) {
+      this.Binder.Flow.RestoreState(entry);
+      const scope = this.Binder.PushScope(BinderScopeKind.Block);
+      const wasCatch = this.InCatch;
+      try {
+        let type = clause.TypeAnnotation == null ? exceptionType as TypeSymbol : this.Binder.BindType(clause.TypeAnnotation.Type);
+        if (!type.IsErrorType && !this.Binder.Classifier.ClassifyImplicit(null, type, exceptionType).Exists) {
+          let diagnosticSyntax: SyntaxNode = clause;
+          if (clause.TypeAnnotation != null) diagnosticSyntax = clause.TypeAnnotation.Type;
+          this.Binder.Report(Descriptors.CatchMustBeException, diagnosticSyntax, [type.ToDisplayString()]);
+          type = this.Binder.ErrorType;
+        }
+        let local: LocalSymbol? = null;
+        if (clause.Identifier != null && !clause.Identifier.IsMissing) {
+          local = new LocalSymbol(clause.Identifier.Text, type, false, this.LocalOwner, clause);
+          this.Binder.DeclareSymbol(local.Name, local, clause.Identifier);
+        }
+        this.InCatch = true;
+        let block = this.BindBlock(clause.Block);
+        if (scope.Locals.Count > 0) block = this.At(new BoundBlock(ImmutableArray.CreateRange<LocalSymbol>(scope.Locals),
+          ImmutableArray.Create<BoundStatement>(block)), clause.Block);
+        catches.Add(new BoundCatch(local, type, block));
+      } finally { this.InCatch = wasCatch; this.Binder.PopScope(); }
+    }
+    this.Binder.Flow.RestoreState(entry);
+    let finalizer: BoundBlock? = null;
+    if (syntax.Finally != null) {
+      this.Binder.PushScope(BinderScopeKind.Finally);
+      try { finalizer = this.BindBlock(syntax.Finally!.Block); } finally { this.Binder.PopScope(); }
+    }
+    this.Binder.Flow.RestoreState(entry);
+    const result = this.At(new BoundTry(body, catches.ToImmutable(), finalizer), syntax);
+    this.SetCompletion(result, this.CanCompleteNormally(result));
+    return result;
+  }
+  CanCompleteNormally(statement: BoundStatement): bool {
+    if (this.completion.ContainsKey(statement)) return this.completion[statement];
+    if (statement instanceof BoundReturn || statement instanceof BoundThrow || statement instanceof BoundYieldBreak || statement instanceof BoundGoto) return false;
+    if (statement instanceof BoundBlock) {
+      for (const child of (statement as BoundBlock).Statements) if (!this.CanCompleteNormally(child)) return false;
+    } else if (statement instanceof BoundStatementList) {
+      for (const child of (statement as BoundStatementList).Statements) if (!this.CanCompleteNormally(child)) return false;
+    } else if (statement instanceof BoundIf) {
+      const branch = statement as BoundIf;
+      return branch.Alternative == null || this.CanCompleteNormally(branch.Consequence) || this.CanCompleteNormally(branch.Alternative);
+    } else if (statement instanceof BoundTry) {
+      const tried = statement as BoundTry;
+      if (tried.Finally != null && !this.CanCompleteNormally(tried.Finally)) return false;
+      if (this.CanCompleteNormally(tried.Body)) return true;
+      for (const caught of tried.Catches) if (this.CanCompleteNormally(caught.Body)) return true;
+      return false;
+    } else if (statement instanceof BoundExpressionStatement) {
+      const type = (statement as BoundExpressionStatement).Expression.Type;
+      return type == null || !type.IsNeverType;
+    } else if (statement instanceof BoundSequencePoint) return this.CanCompleteNormally((statement as BoundSequencePoint).Statement);
+    return true;
+  }
+  BindMethodBody(method: SourceMethodSymbol<TFile>): BoundBlock? { return this.Methods.BindMethodBody(method); }
+  BindTopLevelStatements(method: SourceMethodSymbol<TFile>, module: SourceModuleClassSymbol<TFile>): BoundBlock {
+    return this.Methods.BindTopLevelStatements(method, module);
+  }
+  BindParameters(method: SourceMethodSymbol<TFile>, syntax: ParameterListSyntax): ImmutableArray<ParameterSymbol> {
+    return this.Methods.BindParameters(method, syntax);
+  }
+  BindAttributes(symbol: Symbol, syntax: ImmutableArray<SyntaxNode>): ImmutableArray<AttributeData> {
+    return new BinderStatementAttributes<TFile>(this.Binder, this).Bind(symbol, syntax);
+  }
+  BindLambdaBody(syntax: SyntaxNode, names: ImmutableArray<string>, parameterList: ParameterListSyntax?,
+    paramTypes: ImmutableArray<TypeSymbol>, delegateReturn: TypeSymbol?, delegateType: TypeSymbol?,
+    isAsync: bool, isGenerator: bool, body: SyntaxNode, inferOnly: bool): BoundLambda? {
+    return this.Methods.BindLambdaBody(syntax, names, parameterList, paramTypes, delegateReturn,
+      delegateType, isAsync, isGenerator, body, inferOnly);
+  }
+  BuildForEachLoop(source: BoundExpression, elementType: TypeSymbol, at: SyntaxNode,
+    bodyFactory: Func<LocalSymbol, BoundStatement>): BoundStatement {
+    return this.Loops.BuildForEachLoop(source, elementType, at, bodyFactory, null, null, false);
+  }
+}

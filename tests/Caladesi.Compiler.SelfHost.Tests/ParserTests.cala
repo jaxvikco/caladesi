@@ -1,0 +1,194 @@
+import { TestClassAttribute, TestMethodAttribute } from "Microsoft.VisualStudio.TestTools.UnitTesting";
+import { SyntaxTree, SyntaxNode, SyntaxKind, Parser, Lexer, ExpressionStatementSyntax, BinaryExpressionSyntax, InvocationExpressionSyntax, ReturnStatementSyntax } from "Caladesi.Compiler.Syntax";
+import { SourceText, TextSpan } from "Caladesi.Compiler.Text";
+import { DiagnosticBag } from "Caladesi.Compiler.Diagnostics";
+import { StringBuilder } from "System.Text";
+
+@TestClass
+export class ParserTests {
+  private static fidelity(source: string): void {
+    const tree = SyntaxTree.ParseText(source, "corpus.cala");
+    if (tree.Root.ToFullString() != source || tree.Root.FullWidth != source.Length || tree.Root.EndOfFileToken.FullEnd != source.Length) throw new Exception("Parser full fidelity: " + source);
+    for (const node of tree.Root.DescendantNodesAndSelf()) {
+      if (node.SyntaxTree != tree || node.FullWidth != node.ToFullString().Length) throw new Exception("Node tree/width");
+      for (let i = 0; i < node.SlotCount; i++) {
+        const child = node.Slot(i);
+        if (child != null && (child.Parent != node || child.IndexInParent != i)) throw new Exception("Parent/slot invariant");
+      }
+    }
+    for (const diagnostic of tree.Diagnostics) {
+      if (diagnostic.FilePath != "corpus.cala") throw new Exception("Diagnostic path");
+    }
+  }
+
+  @TestMethod
+  emptyCompilationUnit(): void {
+    const tree = SyntaxTree.ParseText("");
+    if (tree.Root.Kind != SyntaxKind.CompilationUnit || tree.Root.Statements.Count != 0 || tree.Diagnostics.Length != 0) throw new Exception("Empty compilation");
+  }
+
+  @TestMethod
+  statementKinds(): void {
+    const tree = SyntaxTree.ParseText("let x = 1; function f(): int { return 1; } class C {}");
+    if (tree.Diagnostics.Length != 0 || tree.Root.Statements.Count != 3 || tree.Root.Statements.Get(0).Kind != SyntaxKind.VariableStatement || tree.Root.Statements.Get(1).Kind != SyntaxKind.FunctionDeclaration || tree.Root.Statements.Get(2).Kind != SyntaxKind.ClassDeclaration) throw new Exception("Declaration kinds");
+  }
+
+  @TestMethod
+  multiplicationBindsBeforeAddition(): void {
+    const statement = SyntaxTree.ParseText("1 + 2 * 3;").Root.Statements.Get(0) as ExpressionStatementSyntax;
+    const sum = statement.Expression as BinaryExpressionSyntax;
+    if (sum.OperatorKind != SyntaxKind.PlusToken || !(sum.Right instanceof BinaryExpressionSyntax) || (sum.Right as BinaryExpressionSyntax).OperatorKind != SyntaxKind.AsteriskToken) throw new Exception("Arithmetic AST precedence");
+  }
+
+  @TestMethod
+  exponentIsRightAssociative(): void {
+    const statement = SyntaxTree.ParseText("2 ** 3 ** 4;").Root.Statements.Get(0) as ExpressionStatementSyntax;
+    const power = statement.Expression as BinaryExpressionSyntax;
+    if (power.Left instanceof BinaryExpressionSyntax || !(power.Right instanceof BinaryExpressionSyntax) || (power.Right as BinaryExpressionSyntax).OperatorKind != SyntaxKind.AsteriskAsteriskToken) throw new Exception("Exponent associativity");
+  }
+
+  @TestMethod
+  subtractionIsLeftAssociative(): void {
+    const statement = SyntaxTree.ParseText("3 - 2 - 1;").Root.Statements.Get(0) as ExpressionStatementSyntax;
+    const difference = statement.Expression as BinaryExpressionSyntax;
+    if (!(difference.Left instanceof BinaryExpressionSyntax) || difference.Right instanceof BinaryExpressionSyntax) throw new Exception("Subtraction associativity");
+  }
+
+  @TestMethod
+  separatedArguments(): void {
+    const statement = SyntaxTree.ParseText("f(a, b, c);").Root.Statements.Get(0) as ExpressionStatementSyntax;
+    const call = statement.Expression as InvocationExpressionSyntax;
+    const arguments = call.Arguments.Arguments;
+    if (arguments.Count != 3 || arguments.SeparatorCount != 2 || arguments.GetSeparator(0).Kind != SyntaxKind.CommaToken || arguments.Get(1).ToFullString().Trim() != "b") throw new Exception("Separated argument list");
+  }
+
+  @TestMethod
+  returnNewlineInsertsSemicolon(): void {
+    const tree = SyntaxTree.ParseText("return\nx;");
+    const statement = tree.Root.Statements.Get(0) as ReturnStatementSyntax;
+    if (statement.Expression != null || tree.Root.Statements.Count != 2) throw new Exception("Return newline");
+  }
+
+  @TestMethod
+  recoveryCreatesMissingTokens(): void {
+    const tree = SyntaxTree.ParseText("function f(");
+    let missing = 0;
+    for (const token of tree.Root.DescendantTokens()) {
+      if (token.IsMissing) {
+        missing++;
+        if (token.Text != "" || token.Width != 0) throw new Exception("Missing token width");
+      }
+    }
+    if (tree.Diagnostics.Length == 0 || missing == 0) throw new Exception("Missing token recovery");
+    ParserTests.fidelity("function f(");
+  }
+
+  @TestMethod
+  explicitLexerAndDiagnosticInputs(): void {
+    const diagnostics = new DiagnosticBag();
+    const tokens = new Lexer(SourceText.From("let x: = ; @"), "supplied.cala", diagnostics).LexAll();
+    const parser = new Parser("supplied.cala", tokens, diagnostics);
+    const root = parser.ParseCompilationUnit();
+    if (parser.Diagnostics != diagnostics || diagnostics.Count == 0 || root.ToFullString() != "let x: = ; @") throw new Exception("Explicit parser inputs");
+  }
+
+  @TestMethod
+  validLanguageCorpus(): void {
+    const sources: string[] = [
+      "import { A as B } from 'm';",
+      "function f<T>(x: T): T { return x; }",
+      "class C { public x: int = 1; f(): int { return this.x; } }",
+      "interface I { f(x: int): int; }",
+      "enum E { A, B = 2 } type T = int | string;",
+      "if (a) b(); else c(); while (a) { break; }",
+      "for (let i = 0; i < 10; i++) f(i); for (const x of xs) f(x);",
+      "try { f(); } catch (e: Exception) { throw e; } finally { g(); }",
+      "const x = (a: int): int => a + 1;",
+      "const x = `a${{x: `b${f()}`}.x}z`;",
+      "const x = new List<List<int>>();",
+      "type T = [x: int, string];"
+    ];
+    for (const source of sources) {
+      const tree = SyntaxTree.ParseText(source);
+      if (tree.Diagnostics.Length != 0) throw new Exception("Valid source rejected: " + source);
+      ParserTests.fidelity(source);
+    }
+  }
+
+  @TestMethod
+  prefixesAndDeletionsRetainSource(): void {
+    const source = "function f<T>(x: T): T { const y = [x, x]; return y[0]; }";
+    for (let length = 0; length <= source.Length; length++) ParserTests.fidelity(source.Substring(0, length));
+    for (let start = 0; start < source.Length; start += 3) ParserTests.fidelity(source.Remove(start, Math.Min(3, source.Length - start)));
+  }
+
+  @TestMethod
+  deterministicMalformedStructure(): void {
+    const random = new Random(51738);
+    const alphabet = "abcXYZ09_ $'\"`{}[]()<>/\\*+-.?=;:,&|!@\r\n\t\u2028α😀";
+    for (let sample = 0; sample < 300; sample++) {
+      const builder = new StringBuilder();
+      const length = random.Next(100);
+      for (let i = 0; i < length; i++) builder.Append(alphabet[random.Next(alphabet.Length)]);
+      ParserTests.fidelity(builder.ToString());
+    }
+  }
+
+  @TestMethod
+  nestingGuardReportsOnceAndRetainsSource(): void {
+    let source = "let x = ";
+    for (let i = 0; i < 600; i++) source += "(";
+    source += "0";
+    for (let i = 0; i < 600; i++) source += ")";
+    source += "; let tail = 1;";
+    const tree = SyntaxTree.ParseText(source);
+    let nestingErrors = 0;
+    for (const diagnostic of tree.Diagnostics) {
+      if (diagnostic.Id == "CAL0330") nestingErrors++;
+    }
+    if (nestingErrors != 1) throw new Exception("Nesting guard");
+    ParserTests.fidelity(source);
+  }
+
+  @TestMethod
+  findTokenUsesFullTriviaSpan(): void {
+    const tree = SyntaxTree.ParseText("  let x = 1;");
+    if (tree.Root.FindToken(0)!.Kind != SyntaxKind.LetKeyword || tree.Root.FindToken(6)!.Text != "x" || tree.Root.FindToken(12)!.Kind != SyntaxKind.EndOfFileToken) throw new Exception("Token navigation");
+  }
+
+  @TestMethod
+  findNodeReturnsSmallestContainingNode(): void {
+    const tree = SyntaxTree.ParseText("f(a + b);");
+    const node = tree.Root.FindNode(new TextSpan(2, 1));
+    if (node.Kind != SyntaxKind.IdentifierName || node.ToFullString().Trim() != "a") throw new Exception("Node navigation");
+  }
+
+  @TestMethod
+  ancestorNavigation(): void {
+    const tree = SyntaxTree.ParseText("f(a);");
+    const token = tree.Root.FindToken(2)!;
+    const invocation = token.FirstAncestorOrSelf<InvocationExpressionSyntax>();
+    if (invocation == null || invocation.Kind != SyntaxKind.InvocationExpression || invocation.SyntaxTree != tree) throw new Exception("Ancestor navigation");
+  }
+
+  @TestMethod
+  withTextPreservesPathAndOriginalTree(): void {
+    const original = SyntaxTree.ParseText("let x = 1;", "file.cala");
+    const updated = original.WithText("let y = ;");
+    if (original.Text.Text != "let x = 1;" || updated.FilePath != "file.cala" || updated.Root.SyntaxTree != updated || original.Root.SyntaxTree != original || updated.Diagnostics.Length == 0) throw new Exception("Immutable syntax tree update");
+    for (const diagnostic of updated.Diagnostics) {
+      if (diagnostic.FilePath != "file.cala") throw new Exception("Updated diagnostic path");
+    }
+  }
+
+  @TestMethod
+  libraryAndTestsDoNotReferenceBootstrapAtRuntime(): void {
+    if (typeof(SourceText).Assembly.GetName().Name != "Caladesi.Compiler.SelfHost") throw new Exception("Wrong frontend assembly");
+    for (const reference of typeof(SourceText).Assembly.GetReferencedAssemblies()) {
+      if (reference.Name == "Caladesi.Compiler" || reference.Name == "calac") throw new Exception("Frontend bootstrap dependency");
+    }
+    for (const reference of typeof(ParserTests).Assembly.GetReferencedAssemblies()) {
+      if (reference.Name == "Caladesi.Compiler" || reference.Name == "calac") throw new Exception("Tests bootstrap dependency");
+    }
+  }
+}
